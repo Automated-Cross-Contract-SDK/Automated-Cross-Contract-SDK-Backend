@@ -1,0 +1,24 @@
+{
+  "name": "soroban-resurrect-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/sdk",
+    "packages/react",
+    "packages/example"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "build:sdk": "npm run build -w packages/sdk",
+    "build:react": "npm run build -w packages/react",
+    "test": "npm run test -w packages/sdk && npm run test -w packages/react",
+    "test:coverage": "npm run test:coverage -w packages/sdk && npm run test:coverage -w packages/react",
+    "lint": "tsc --noEmit -p tsconfig.base.json",
+    "clean": "rm -rf packages/*/dist",
+    "example": "npm run dev -w packages/example"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "name": "@soroban-resurrect/sdk",
+  "version": "0.1.0",
+  "description": "Automated cross-contract state restoration SDK for Soroban — detects archived ledger entries and seamlessly restores them before executing transactions",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/soroban-resurrect",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/your-org/soroban-resurrect#readme",
+  "bugs": "https://github.com/your-org/soroban-resurrect/issues",
+  "keywords": [
+    "stellar",
+    "soroban",
+    "smart-contracts",
+    "state-restoration",
+    "cap-0066",
+    "ttl",
+    "blockchain",
+    "defi"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "prepublishOnly": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:integration": "vitest run --config vitest.integration.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^12.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^2.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
