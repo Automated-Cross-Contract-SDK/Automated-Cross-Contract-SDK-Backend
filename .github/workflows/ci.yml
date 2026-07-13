@@ -33,16 +33,30 @@ jobs:
 
       - run: npm run test
 
+      - run: npx tsc --noEmit -p packages/sdk/tsconfig.json
+      - run: npx tsc --noEmit -p packages/react/tsconfig.json
+
+  coverage:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [quality]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
       - name: Coverage (SDK)
         working-directory: packages/sdk
-        run: npx vitest run --coverage --coverage.thresholds.lines=80
+        run: npx vitest run --coverage
 
       - name: Coverage (React)
         working-directory: packages/react
-        run: npx vitest run --coverage --coverage.thresholds.lines=80
-
-      - run: npx tsc --noEmit -p packages/sdk/tsconfig.json
-      - run: npx tsc --noEmit -p packages/react/tsconfig.json
+        run: npx vitest run --coverage
 
   publish:
     if: github.event_name == 'release' && github.event.action == 'published'
