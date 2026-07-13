@@ -1,0 +1,8 @@
+# Default owners for all files
+* @Automated-Cross-Contract-SDK/maintainers
+
+# SDK package
+/packages/sdk/ @Automated-Cross-Contract-SDK/sdk-maintainers
+
+# React package
+/packages/react/ @Automated-Cross-Contract-SDK/react-maintainers
