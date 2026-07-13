@@ -18,3 +18,4 @@ export type {
   PreFlightConfig,
 } from './types.js'
 
+export { VERSION } from './version.js'
