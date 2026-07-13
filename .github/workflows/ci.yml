@@ -33,6 +33,14 @@ jobs:
 
       - run: npm run test
 
+      - name: Coverage (SDK)
+        working-directory: packages/sdk
+        run: npx vitest run --coverage --coverage.thresholds.lines=80
+
+      - name: Coverage (React)
+        working-directory: packages/react
+        run: npx vitest run --coverage --coverage.thresholds.lines=80
+
       - run: npx tsc --noEmit -p packages/sdk/tsconfig.json
       - run: npx tsc --noEmit -p packages/react/tsconfig.json
 
