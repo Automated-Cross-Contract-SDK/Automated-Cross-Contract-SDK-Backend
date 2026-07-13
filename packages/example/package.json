@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend",
+    "directory": "packages/example"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

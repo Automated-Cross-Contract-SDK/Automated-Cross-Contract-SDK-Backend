@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-org/soroban-resurrect",
+    "url": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend",
     "directory": "packages/sdk"
   },
   "homepage": "https://github.com/your-org/soroban-resurrect#readme",
