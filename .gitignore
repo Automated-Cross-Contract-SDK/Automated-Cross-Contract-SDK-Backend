@@ -4,5 +4,3 @@ coverage/
 .env
 *.tsbuildinfo
 .vite/
-.env
-.env.example
