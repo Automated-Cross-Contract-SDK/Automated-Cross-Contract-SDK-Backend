@@ -1,0 +1,70 @@
+{
+  "name": "@soroban-resurrect/react-native",
+  "version": "0.1.0",
+  "description": "React Native bindings for @soroban-resurrect/react — Hermes-compatible, no DOM/window dependency",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend",
+    "directory": "packages/react-native"
+  },
+  "homepage": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend#readme",
+  "bugs": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend/issues",
+  "keywords": [
+    "stellar",
+    "soroban",
+    "react-native",
+    "expo",
+    "hermes",
+    "state-restoration"
+  ],
+  "main": "./dist/index.native.js",
+  "module": "./dist/index.native.js",
+  "types": "./dist/index.d.ts",
+  "react-native": "./dist/index.native.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "react-native": "./dist/index.native.js",
+      "default": "./dist/index.native.js"
+    },
+    "./crypto/quick-crypto": "./dist/crypto.quick-crypto.js",
+    "./crypto/expo-crypto": "./dist/crypto.expo-crypto.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "build:watch": "tsup --watch",
+    "prepublishOnly": "npm run build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@soroban-resurrect/react": "^0.1.0",
+    "@soroban-resurrect/sdk": "^0.1.0",
+    "react": "^18.0.0",
+    "react-native": ">=0.72.0",
+    "react-native-quick-crypto": ">=0.7.0",
+    "expo-crypto": ">=13.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react-native-quick-crypto": {
+      "optional": true
+    },
+    "expo-crypto": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
