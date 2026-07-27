@@ -14,6 +14,10 @@ export type {
   SorobanResurrectConfig,
   SimulationCheckResult,
   RestoreTransactionResult,
+  RestoreBatchResult,
+  RestoreAllBatchesResult,
+  ConcurrentRestoreResult,
+  ContractKeyGroup,
   ExecutionResult,
   PreFlightConfig,
 } from './types.js'
