@@ -1,0 +1,37 @@
+{
+  "name": "@soroban-resurrect/angular",
+  "version": "0.1.0",
+  "description": "Angular signals-based service for @soroban-resurrect/sdk — pre-flight state restoration for Soroban dApps",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@soroban-resurrect/sdk": "^0.1.0",
+    "@angular/core": "^16.0.0"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^12.0.0"
+  }
+}
