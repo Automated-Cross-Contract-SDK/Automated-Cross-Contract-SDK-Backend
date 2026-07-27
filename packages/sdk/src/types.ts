@@ -8,12 +8,32 @@ export interface ArchivedKey {
 }
 
 export interface SorobanResurrectConfig {
-  rpcUrl: string
+  /** Single RPC URL or an ordered list of fallback URLs */
+  rpcUrl: string | string[]
   networkPassphrase: string
   allowHttp?: boolean
   restoreFee?: string
   maxRestoreBatchSize?: number
   onLog?: (level: 'info' | 'warn' | 'error', message: string, data?: unknown) => void
+  /** Failover / health-tracking configuration (only meaningful when rpcUrl is an array) */
+  rpcFailover?: {
+    /** How often (ms) to run background health checks. Default: 30 000 */
+    healthCheckIntervalMs: number
+    /** Consecutive failures before an endpoint is marked unhealthy. Default: 3 */
+    maxFailuresBeforeFallback: number
+    /** Consecutive successes needed to restore an unhealthy endpoint. Default: 2 */
+    successThresholdToRestore: number
+  }
+  /**
+   * Controls automatic Soroban RPC version negotiation.
+   * Defaults to `{ enabled: true, failOnUnsupported: true }`.
+   */
+  versionNegotiation?: {
+    /** Whether to negotiate the protocol version on first use. Default: true */
+    enabled: boolean
+    /** Throw an error when the node reports an unsupported protocol. Default: true */
+    failOnUnsupported?: boolean
+  }
 }
 
 export interface SimulationCheckResult {
@@ -45,7 +65,7 @@ export interface PreFlightConfig {
 export class SorobanResurrectError extends Error {
   constructor(
     message: string,
-    public code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR',
+    public code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR' | 'RPC_FAILOVER_EXHAUSTED' | 'UNSUPPORTED_PROTOCOL',
     public cause?: unknown
   ) {
     super(message)
