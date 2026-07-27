@@ -127,6 +127,9 @@ describe('SorobanResurrect', () => {
           contract: () => ({
             contractId: () => Buffer.from('abc123', 'hex'),
           }),
+          // key() must return an ScVal-alike; use a non-SAC symbol (type 15)
+          // so that keyType resolves to 'contractData' (not 'contractInstance')
+          key: () => ({ switch: () => ({ value: 15 }), value: () => Buffer.from('custom') }),
         }),
       } as unknown as xdr.LedgerKey
 

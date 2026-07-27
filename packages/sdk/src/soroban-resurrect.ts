@@ -171,6 +171,12 @@ export class SorobanResurrect {
       }
     }
 
+    // Sort by restorePriority so contractInstance (0) entries come before
+    // contractCode (1) and contractData (2) entries.  This guarantees that a
+    // contract's instance is live before we attempt to restore its data, which
+    // is required by the Soroban VM (issue #48).
+    archivedKeys.sort((a, b) => a.restorePriority - b.restorePriority)
+
     return {
       needsRestoration: archivedKeys.length > 0,
       archivedKeys,

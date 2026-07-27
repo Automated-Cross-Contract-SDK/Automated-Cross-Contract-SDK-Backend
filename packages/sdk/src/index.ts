@@ -2,6 +2,7 @@ export { SorobanResurrect } from './soroban-resurrect.js'
 export {
   extractKeysFromFootprint,
   classifyLedgerKey,
+  classifySacKey,
   encodeLedgerKey,
   extractFootprintFromTransaction,
 } from './footprint-parser.js'
@@ -11,6 +12,8 @@ export {
 } from './types.js'
 export type {
   ArchivedKey,
+  SacKeyType,
+  RestorePriority,
   SorobanResurrectConfig,
   SimulationCheckResult,
   RestoreTransactionResult,
