@@ -14,6 +14,8 @@ import {
   RestoreTransactionResult,
   ExecutionResult,
   SorobanResurrectError,
+  WsTransactionStatusEvent,
+  TransactionWaitResult,
 } from './types.js'
 import {
   FootprintKeys,
@@ -45,6 +47,7 @@ export class SorobanResurrect {
       restoreFee: DEFAULT_RESTORE_FEE,
       maxRestoreBatchSize: 50,
       onLog: () => {},
+      useWebSocket: false,
       ...config,
     }
     this.server = new SorobanRpc.Server(this.config.rpcUrl, {
@@ -323,7 +326,8 @@ export class SorobanResurrect {
 
     if (sendResult.status === 'PENDING' || sendResult.status === 'DUPLICATE') {
       const hash = sendResult.hash
-      return await this.pollForReceipt(hash)
+      const { hash: confirmedHash } = await this.waitForTransaction(hash)
+      return confirmedHash
     }
 
     if (sendResult.status === 'ERROR') {
@@ -339,6 +343,194 @@ export class SorobanResurrect {
       'NETWORK_ERROR',
       sendResult,
     )
+  }
+
+  /**
+   * Derive the WebSocket endpoint URL from the configured HTTP RPC URL.
+   * Returns `null` when the URL scheme cannot be mapped to a WS scheme
+   * (e.g. plain `http://` without `allowHttp`).
+   */
+  private getWebSocketUrl(): string | null {
+    try {
+      const url = new URL(this.config.rpcUrl)
+      if (url.protocol === 'https:') {
+        url.protocol = 'wss:'
+      } else if (url.protocol === 'http:' && this.config.allowHttp) {
+        url.protocol = 'ws:'
+      } else {
+        return null
+      }
+      // Soroban RPC WebSocket endpoint is the same path as HTTP
+      return url.toString()
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Probe whether a WebSocket connection to the server can be established.
+   * Returns `true` if the handshake succeeds within `timeoutMs`.
+   */
+  private probeWebSocketSupport(wsUrl: string, timeoutMs = 3000): Promise<boolean> {
+    return new Promise(resolve => {
+      let settled = false
+      const settle = (result: boolean): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        try { ws.close() } catch { /* ignore */ }
+        resolve(result)
+      }
+
+      let ws: WebSocket
+      try {
+        ws = new WebSocket(wsUrl)
+      } catch {
+        return resolve(false)
+      }
+
+      const timer = setTimeout(() => settle(false), timeoutMs)
+      ws.onopen  = () => settle(true)
+      ws.onerror = () => settle(false)
+    })
+  }
+
+  /**
+   * Wait for a submitted transaction to reach a terminal status.
+   *
+   * When `useWebSocket` is `true` (and WebSocket is reachable), this method
+   * subscribes to `transaction_status` events over the WebSocket endpoint.
+   * If `useWebSocket` is `false`, or if the WebSocket probe fails, it falls
+   * back to polling `getTransaction` every second.
+   */
+  async waitForTransaction(
+    hash: string,
+    maxPollAttempts = 30,
+  ): Promise<TransactionWaitResult> {
+    if (this.config.useWebSocket) {
+      const wsUrl = this.getWebSocketUrl()
+      if (wsUrl) {
+        const supported = await this.probeWebSocketSupport(wsUrl)
+        if (supported) {
+          this.log('info', `Using WebSocket for transaction status: ${hash}`)
+          try {
+            await this.wsWaitForTransaction(hash, wsUrl, maxPollAttempts)
+            return { hash, transport: 'websocket' }
+          } catch (err) {
+            // If the WS path threw something other than a SorobanResurrectError
+            // (e.g. a connection drop) fall through to polling.
+            if (err instanceof SorobanResurrectError) throw err
+            this.log('warn', `WebSocket wait failed, falling back to polling: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        } else {
+          this.log('warn', 'WebSocket not supported by server, falling back to polling')
+        }
+      } else {
+        this.log('warn', 'Could not derive WebSocket URL, falling back to polling')
+      }
+    }
+
+    await this.pollForReceipt(hash, maxPollAttempts)
+    return { hash, transport: 'polling' }
+  }
+
+  /**
+   * Subscribe to transaction status over WebSocket and resolve when the
+   * transaction reaches a terminal state (`SUCCESS` or `FAILED`).
+   *
+   * Protocol: send a JSON-RPC 2.0 `subscribe` request with method
+   * `subscribeTransactionStatus`, then listen for `transaction_status`
+   * notification messages.
+   */
+  private wsWaitForTransaction(
+    hash: string,
+    wsUrl: string,
+    maxPollAttempts: number,
+  ): Promise<void> {
+    const timeoutMs = maxPollAttempts * 1000
+
+    return new Promise<void>((resolve, reject) => {
+      let settled = false
+      let ws: WebSocket
+
+      const finish = (err?: SorobanResurrectError): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        try { ws.close() } catch { /* ignore */ }
+        if (err) reject(err)
+        else resolve()
+      }
+
+      const timer = setTimeout(() => {
+        finish(new SorobanResurrectError(
+          `Transaction ${hash} not confirmed via WebSocket after ${timeoutMs}ms`,
+          'NETWORK_ERROR',
+        ))
+      }, timeoutMs)
+
+      try {
+        ws = new WebSocket(wsUrl)
+      } catch (err) {
+        clearTimeout(timer)
+        return reject(err)
+      }
+
+      ws.onopen = () => {
+        // Send a JSON-RPC 2.0 subscription request
+        const subscribeMsg = JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'subscribeTransactionStatus',
+          params: { hash },
+        })
+        ws.send(subscribeMsg)
+      }
+
+      ws.onmessage = (event: MessageEvent) => {
+        let msg: WsTransactionStatusEvent
+        try {
+          msg = JSON.parse(event.data as string) as WsTransactionStatusEvent
+        } catch {
+          return // ignore non-JSON frames
+        }
+
+        // Only handle transaction_status notifications for our hash
+        if (msg.method !== 'transaction_status') return
+        if (msg.params?.hash !== hash) return
+
+        const status = msg.params.status
+        if (status === 'SUCCESS') {
+          this.log('info', `Transaction ${hash} confirmed via WebSocket`)
+          finish()
+        } else if (status === 'FAILED') {
+          finish(new SorobanResurrectError(
+            `Transaction ${hash} failed: ${msg.params.error ?? 'unknown error'}`,
+            'ORIGINAL_TX_FAILED',
+            msg.params,
+          ))
+        }
+        // PENDING / NOT_FOUND — keep waiting
+      }
+
+      ws.onerror = (event: Event) => {
+        finish(new SorobanResurrectError(
+          `WebSocket error waiting for transaction ${hash}`,
+          'NETWORK_ERROR',
+          event,
+        ))
+      }
+
+      ws.onclose = (event: CloseEvent) => {
+        if (!settled) {
+          finish(new SorobanResurrectError(
+            `WebSocket closed unexpectedly (code ${event.code}) while waiting for ${hash}`,
+            'NETWORK_ERROR',
+            event,
+          ))
+        }
+      }
+    })
   }
 
   private async pollForReceipt(hash: string, maxAttempts = 30): Promise<string> {
