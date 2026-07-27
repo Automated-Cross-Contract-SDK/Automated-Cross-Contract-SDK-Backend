@@ -198,4 +198,267 @@ describe('SorobanResurrect', () => {
       expect(result.restoreTransactionXDR).toBeUndefined()
     })
   })
+
+  describe('event emitter', () => {
+    describe('.on() and .off()', () => {
+      it('registers and removes listeners', () => {
+        const instance = new SorobanResurrect(defaultConfig)
+        const listener = vi.fn()
+
+        instance.on('restore:start', listener)
+        instance.off('restore:start', listener)
+
+        // @ts-expect-error accessing private field for testing
+        expect(instance.listeners['restore:start']?.has(listener)).toBe(false)
+      })
+
+      it('allows multiple listeners for the same event', () => {
+        const instance = new SorobanResurrect(defaultConfig)
+        const listener1 = vi.fn()
+        const listener2 = vi.fn()
+
+        instance.on('restore:start', listener1)
+        instance.on('restore:start', listener2)
+
+        // @ts-expect-error accessing private field for testing
+        expect(instance.listeners['restore:start']?.size).toBe(2)
+      })
+
+      it('supports chaining', () => {
+        const instance = new SorobanResurrect(defaultConfig)
+        const listener1 = vi.fn()
+        const listener2 = vi.fn()
+
+        const result = instance
+          .on('restore:start', listener1)
+          .on('original:complete', listener2)
+
+        expect(result).toBe(instance)
+      })
+
+      it('does nothing when removing a non-existent listener', () => {
+        const instance = new SorobanResurrect(defaultConfig)
+        const listener = vi.fn()
+
+        expect(() => {
+          instance.off('restore:start', listener)
+        }).not.toThrow()
+      })
+    })
+
+    describe('restore:start event', () => {
+      it('emits when buildRestoreTransaction is called', async () => {
+        const instance = new SorobanResurrect(defaultConfig)
+        const listener = vi.fn()
+        instance.on('restore:start', listener)
+
+        const mockKeys = [
+          { key: {} as xdr.LedgerKey, keyBase64: 'abc', keyType: 'contractData' as const },
+        ]
+
+        vi.spyOn(instance, 'getRpcServer').mockReturnValue({
+          getAccount: vi.fn().mockResolvedValue({
+            accountId: () => 'GABC',
+            sequenceNumber: () => '123',
+            incrementSequenceNumber: vi.fn(),
+          }),
+        } as any)
+
+        await instance.buildRestoreTransaction(mockKeys, 'GABC')
+
+        expect(listener).toHaveBeenCalledOnce()
+        expect(listener).toHaveBeenCalledWith(mockKeys)
+      })
+    })
+
+    describe('restore:batch:complete event', () => {
+      it('emits after each batch is built', async () => {
+        const instance = new SorobanResurrect(defaultConfig)
+        const listener = vi.fn()
+        instance.on('restore:batch:complete', listener)
+
+        const mockKeys = [
+          { key: {} as xdr.LedgerKey, keyBase64: 'abc', keyType: 'contractData' as const },
+        ]
+
+        vi.spyOn(instance, 'getRpcServer').mockReturnValue({
+          getAccount: vi.fn().mockResolvedValue({
+            accountId: () => 'GABC',
+            sequenceNumber: () => '123',
+            incrementSequenceNumber: vi.fn(),
+          }),
+        } as any)
+
+        await instance.buildRestoreTransaction(mockKeys, 'GABC')
+
+        expect(listener).toHaveBeenCalledOnce()
+        expect(listener).toHaveBeenCalledWith(0, 1)
+      })
+    })
+
+    describe('restore:complete event', () => {
+      it('emits after buildRestoreTransaction completes', async () => {
+        const instance = new SorobanResurrect(defaultConfig)
+        const listener = vi.fn()
+        instance.on('restore:complete', listener)
+
+        const mockKeys = [
+          { key: {} as xdr.LedgerKey, keyBase64: 'abc', keyType: 'contractData' as const },
+        ]
+
+        vi.spyOn(instance, 'getRpcServer').mockReturnValue({
+          getAccount: vi.fn().mockResolvedValue({
+            accountId: () => 'GABC',
+            sequenceNumber: () => '123',
+            incrementSequenceNumber: vi.fn(),
+          }),
+        } as any)
+
+        await instance.buildRestoreTransaction(mockKeys, 'GABC')
+
+        expect(listener).toHaveBeenCalledOnce()
+        expect(listener).toHaveBeenCalledWith({
+          transactionXDR: expect.any(String),
+          keysRestored: 1,
+        })
+      })
+    })
+
+    describe('original:start event', () => {
+      it('emits before original transaction is submitted', async () => {
+        const instance = new SorobanResurrect(defaultConfig)
+        const listener = vi.fn()
+        instance.on('original:start', listener)
+
+        const mockSignFn = vi.fn().mockResolvedValue('signed-xdr')
+        
+        vi.spyOn(instance, 'getRpcServer').mockReturnValue({
+          sendTransaction: vi.fn().mockResolvedValue({ status: 'PENDING', hash: 'abc123' }),
+          getTransaction: vi.fn().mockResolvedValue({ status: 'SUCCESS' }),
+        } as any)
+
+        await instance.executeRestoreThenOriginal('restore-xdr', 'original-xdr', mockSignFn)
+
+        expect(listener).toHaveBeenCalledOnce()
+        expect(listener).toHaveBeenCalledWith()
+      })
+    })
+
+    describe('original:complete event', () => {
+      it('emits after original transaction is confirmed', async () => {
+        const instance = new SorobanResurrect(defaultConfig)
+        const listener = vi.fn()
+        instance.on('original:complete', listener)
+
+        const mockSignFn = vi.fn().mockResolvedValue('signed-xdr')
+        
+        vi.spyOn(instance, 'getRpcServer').mockReturnValue({
+          sendTransaction: vi.fn().mockResolvedValue({ status: 'PENDING', hash: 'txhash456' }),
+          getTransaction: vi.fn().mockResolvedValue({ status: 'SUCCESS' }),
+        } as any)
+
+        await instance.executeRestoreThenOriginal('restore-xdr', 'original-xdr', mockSignFn)
+
+        expect(listener).toHaveBeenCalledOnce()
+        expect(listener).toHaveBeenCalledWith('txhash456')
+      })
+    })
+
+    describe('error event', () => {
+      it('emits when restore transaction fails', async () => {
+        const instance = new SorobanResurrect(defaultConfig)
+        const listener = vi.fn()
+        instance.on('error', listener)
+
+        const mockSignFn = vi.fn().mockRejectedValue(new Error('Network failure'))
+        
+        vi.spyOn(instance, 'getRpcServer').mockReturnValue({
+          sendTransaction: vi.fn().mockRejectedValue(new Error('Network failure')),
+        } as any)
+
+        await expect(
+          instance.executeRestoreThenOriginal('restore-xdr', 'original-xdr', mockSignFn)
+        ).rejects.toThrow()
+
+        expect(listener).toHaveBeenCalledOnce()
+        expect(listener).toHaveBeenCalledWith(expect.objectContaining({
+          name: 'SorobanResurrectError',
+          code: 'RESTORE_FAILED',
+        }))
+      })
+
+      it('emits when original transaction fails', async () => {
+        const instance = new SorobanResurrect(defaultConfig)
+        const listener = vi.fn()
+        instance.on('error', listener)
+
+        let callCount = 0
+        const mockSignFn = vi.fn().mockResolvedValue('signed-xdr')
+        
+        vi.spyOn(instance, 'getRpcServer').mockReturnValue({
+          sendTransaction: vi.fn().mockImplementation(() => {
+            callCount++
+            if (callCount === 1) {
+              return Promise.resolve({ status: 'PENDING', hash: 'restore-hash' })
+            }
+            return Promise.reject(new Error('Original tx failed'))
+          }),
+          getTransaction: vi.fn().mockResolvedValue({ status: 'SUCCESS' }),
+        } as any)
+
+        await expect(
+          instance.executeRestoreThenOriginal('restore-xdr', 'original-xdr', mockSignFn)
+        ).rejects.toThrow()
+
+        expect(listener).toHaveBeenCalledOnce()
+        expect(listener).toHaveBeenCalledWith(expect.objectContaining({
+          name: 'SorobanResurrectError',
+          code: 'ORIGINAL_TX_FAILED',
+        }))
+      })
+    })
+
+    describe('event ordering', () => {
+      it('emits events in correct sequence for full flow', async () => {
+        const instance = new SorobanResurrect(defaultConfig)
+        const events: string[] = []
+
+        instance.on('restore:start', () => events.push('restore:start'))
+        instance.on('restore:batch:complete', () => events.push('restore:batch:complete'))
+        instance.on('restore:complete', () => events.push('restore:complete'))
+        instance.on('original:start', () => events.push('original:start'))
+        instance.on('original:complete', () => events.push('original:complete'))
+
+        const mockKeys = [
+          { key: {} as xdr.LedgerKey, keyBase64: 'abc', keyType: 'contractData' as const },
+        ]
+
+        vi.spyOn(instance, 'getRpcServer').mockReturnValue({
+          getAccount: vi.fn().mockResolvedValue({
+            accountId: () => 'GABC',
+            sequenceNumber: () => '123',
+            incrementSequenceNumber: vi.fn(),
+          }),
+          sendTransaction: vi.fn().mockResolvedValue({ status: 'PENDING', hash: 'hash123' }),
+          getTransaction: vi.fn().mockResolvedValue({ status: 'SUCCESS' }),
+        } as any)
+
+        const restoreTx = await instance.buildRestoreTransaction(mockKeys, 'GABC')
+        await instance.executeRestoreThenOriginal(
+          restoreTx.transactionXDR,
+          'original-xdr',
+          vi.fn().mockResolvedValue('signed'),
+        )
+
+        expect(events).toEqual([
+          'restore:start',
+          'restore:batch:complete',
+          'restore:complete',
+          'original:start',
+          'original:complete',
+        ])
+      })
+    })
+  })
 })
+

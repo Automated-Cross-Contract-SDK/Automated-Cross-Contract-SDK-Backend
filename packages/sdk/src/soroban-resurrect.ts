@@ -14,6 +14,7 @@ import {
   RestoreTransactionResult,
   ExecutionResult,
   SorobanResurrectError,
+  SorobanResurrectEvents,
 } from './types.js'
 import {
   FootprintKeys,
@@ -38,6 +39,9 @@ function isFeeBumpTx(tx: ReturnType<typeof TransactionBuilder.fromXDR>): tx is R
 export class SorobanResurrect {
   private server: SorobanRpc.Server
   private config: Required<SorobanResurrectConfig>
+  private listeners: {
+    [K in keyof SorobanResurrectEvents]?: Set<SorobanResurrectEvents[K]>
+  } = {}
 
   constructor(config: SorobanResurrectConfig) {
     this.config = {
@@ -50,6 +54,38 @@ export class SorobanResurrect {
     this.server = new SorobanRpc.Server(this.config.rpcUrl, {
       allowHttp: this.config.allowHttp,
     })
+  }
+
+  /**
+   * Register a listener for a transaction lifecycle event.
+   * Returns `this` for chaining.
+   */
+  on<K extends keyof SorobanResurrectEvents>(event: K, listener: SorobanResurrectEvents[K]): this {
+    if (!this.listeners[event]) {
+      this.listeners[event] = new Set() as Set<SorobanResurrectEvents[K]>
+    }
+    ;(this.listeners[event] as Set<SorobanResurrectEvents[K]>).add(listener)
+    return this
+  }
+
+  /**
+   * Remove a previously registered listener.
+   * Returns `this` for chaining.
+   */
+  off<K extends keyof SorobanResurrectEvents>(event: K, listener: SorobanResurrectEvents[K]): this {
+    (this.listeners[event] as Set<SorobanResurrectEvents[K]> | undefined)?.delete(listener)
+    return this
+  }
+
+  private emit<K extends keyof SorobanResurrectEvents>(
+    event: K,
+    ...args: Parameters<SorobanResurrectEvents[K]>
+  ): void {
+    const set = this.listeners[event] as Set<SorobanResurrectEvents[K]> | undefined
+    if (!set) return
+    for (const listener of set) {
+      (listener as (...a: Parameters<SorobanResurrectEvents[K]>) => void)(...args)
+    }
   }
 
   private log(level: 'info' | 'warn' | 'error', message: string, data?: unknown): void {
@@ -196,7 +232,13 @@ export class SorobanResurrect {
       this.log('info', `Splitting restore into ${batches.length} batches (${archivedKeys.length} total keys)`)
     }
 
+    this.emit('restore:start', archivedKeys)
+
     const result = await this.buildSingleRestoreTransaction(batches[0], sourceAccountID)
+
+    this.emit('restore:batch:complete', 0, batches.length)
+    this.emit('restore:complete', result)
+
     return result
   }
 
@@ -269,23 +311,29 @@ export class SorobanResurrect {
       restoreTxHash = await this.submitSignedTransaction(restoreXDR, signTransaction)
       this.log('info', `Restore transaction confirmed: ${restoreTxHash}`)
     } catch (err) {
-      throw new SorobanResurrectError(
+      const resurrErr = new SorobanResurrectError(
         `Restore transaction failed: ${err instanceof Error ? err.message : String(err)}`,
         'RESTORE_FAILED',
         err,
       )
+      this.emit('error', resurrErr)
+      throw resurrErr
     }
 
     try {
       this.log('info', 'Executing original transaction')
+      this.emit('original:start')
       originalTxHash = await this.submitSignedTransaction(originalXDR, signTransaction)
       this.log('info', `Original transaction confirmed: ${originalTxHash}`)
+      this.emit('original:complete', originalTxHash)
     } catch (err) {
-      throw new SorobanResurrectError(
+      const resurrErr = new SorobanResurrectError(
         `Original transaction failed after successful restore: ${err instanceof Error ? err.message : String(err)}`,
         'ORIGINAL_TX_FAILED',
         err,
       )
+      this.emit('error', resurrErr)
+      throw resurrErr
     }
 
     let keysRestored = 0

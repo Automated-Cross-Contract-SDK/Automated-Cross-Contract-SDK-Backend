@@ -52,3 +52,21 @@ export class SorobanResurrectError extends Error {
     this.name = 'SorobanResurrectError'
   }
 }
+
+/**
+ * Event map for all transaction lifecycle events emitted by SorobanResurrect.
+ */
+export interface SorobanResurrectEvents {
+  /** Fired when key restoration begins, before any batch is submitted. */
+  'restore:start': (keys: ArchivedKey[]) => void
+  /** Fired after each individual restore batch transaction is confirmed. */
+  'restore:batch:complete': (batchIndex: number, totalBatches: number) => void
+  /** Fired once all restore batches have been confirmed successfully. */
+  'restore:complete': (result: RestoreTransactionResult) => void
+  /** Fired just before the original (user) transaction is submitted. */
+  'original:start': () => void
+  /** Fired once the original transaction is confirmed on-chain. */
+  'original:complete': (hash: string) => void
+  /** Fired whenever a SorobanResurrectError is thrown during execution. */
+  'error': (error: SorobanResurrectError) => void
+}

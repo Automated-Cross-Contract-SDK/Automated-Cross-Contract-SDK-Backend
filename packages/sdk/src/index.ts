@@ -16,6 +16,7 @@ export type {
   RestoreTransactionResult,
   ExecutionResult,
   PreFlightConfig,
+  SorobanResurrectEvents,
 } from './types.js'
 
 export { VERSION } from './version.js'
