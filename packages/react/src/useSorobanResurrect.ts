@@ -43,6 +43,7 @@ export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSor
         rpcUrl: options.rpcUrl,
         networkPassphrase: options.networkPassphrase,
         allowHttp: options.allowHttp,
+        simulateOnly: options.simulateOnly,
         onLog: (level, message) => {
           if (options.preFlight?.enabled ?? true) {
             if (level === 'error') console.error(`[SorobanResurrect] ${message}`)
@@ -53,7 +54,7 @@ export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSor
       clientRef.current = new SorobanResurrect(config)
     }
     return clientRef.current
-  }, [options.rpcUrl, options.networkPassphrase, options.allowHttp, options.preFlight?.enabled])
+  }, [options.rpcUrl, options.networkPassphrase, options.allowHttp, options.simulateOnly, options.preFlight?.enabled])
 
   const checkTransaction = useCallback(async (txXDR: string) => {
     setIsChecking(true)

@@ -4,6 +4,7 @@ export interface UseSorobanResurrectOptions {
   rpcUrl: string
   networkPassphrase: string
   allowHttp?: boolean
+  simulateOnly?: boolean
   preFlight?: PreFlightConfig
   onError?: (error: Error) => void
 }

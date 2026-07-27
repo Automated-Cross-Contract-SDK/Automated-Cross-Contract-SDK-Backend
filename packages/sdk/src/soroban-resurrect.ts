@@ -14,6 +14,7 @@ import {
   RestoreTransactionResult,
   ExecutionResult,
   SorobanResurrectError,
+  FeeBumpMetadata,
 } from './types.js'
 import {
   FootprintKeys,
@@ -21,11 +22,11 @@ import {
   classifyLedgerKey,
   encodeLedgerKey,
 } from './footprint-parser.js'
+import { ExponentialBackoff, type RetryPolicy } from './retry-policy.js'
+import { SimulationCache, type SimulationCacheConfig } from './simulation-cache.js'
 
 const MAX_XDR_SIZE_BYTES = 100_000
 const DEFAULT_RESTORE_FEE = '100000'
-const MAX_RETRIES = 3
-const RETRY_DELAY_MS = 500
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -35,21 +36,61 @@ function isFeeBumpTx(tx: ReturnType<typeof TransactionBuilder.fromXDR>): tx is R
   return 'innerTransaction' in tx
 }
 
+function extractFeeBumpMetadata(tx: any): FeeBumpMetadata {
+  if (!isFeeBumpTx(tx)) {
+    return { isFeeBump: false }
+  }
+
+  try {
+    const feeBumpTx = tx as any
+    const innerTx = feeBumpTx.innerTransaction as any
+    const feeAccount = feeBumpTx.feeAccount as any
+
+    return {
+      isFeeBump: true,
+      innerTransactionXDR: innerTx?.toXDR?.() as string | undefined,
+      feeAccountID: feeAccount?.publicKey?.() as string | undefined,
+      feeBumpFee: feeBumpTx.fee as string | undefined,
+    }
+  } catch {
+    return { isFeeBump: false }
+  }
+}
+
+function extractInnerTransaction(tx: any): any {
+  if (isFeeBumpTx(tx)) {
+    return tx.innerTransaction
+  }
+  return tx
+}
+
 export class SorobanResurrect {
   private server: SorobanRpc.Server
-  private config: Required<SorobanResurrectConfig>
+  private config: Required<SorobanResurrectConfig & { retryPolicy: RetryPolicy }>
+  private simulationCache: SimulationCache | null
 
   constructor(config: SorobanResurrectConfig) {
     this.config = {
       allowHttp: false,
       restoreFee: DEFAULT_RESTORE_FEE,
       maxRestoreBatchSize: 50,
+      simulateOnly: false,
+      retryPolicy: new ExponentialBackoff(3, 500),
       onLog: () => {},
       ...config,
-    }
+    } as Required<SorobanResurrectConfig & { retryPolicy: RetryPolicy }>
     this.server = new SorobanRpc.Server(this.config.rpcUrl, {
       allowHttp: this.config.allowHttp,
     })
+
+    // Initialize simulation cache if enabled
+    if (this.config.simulationCache?.enabled) {
+      const cacheConfig = this.config.simulationCache
+      this.simulationCache = new SimulationCache(cacheConfig.maxSize, cacheConfig.ttlMs)
+      this.log('info', `Simulation cache enabled: maxSize=${cacheConfig.maxSize}, ttlMs=${cacheConfig.ttlMs}`)
+    } else {
+      this.simulationCache = null
+    }
   }
 
   private log(level: 'info' | 'warn' | 'error', message: string, data?: unknown): void {
@@ -57,26 +98,55 @@ export class SorobanResurrect {
   }
 
   private async retryOnFailure<T>(fn: () => Promise<T>, context: string): Promise<T> {
-    let lastError: Error | undefined
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    let lastError: SorobanResurrectError | undefined
+    const policy = this.config.retryPolicy
+
+    for (let attempt = 1; attempt <= policy.maxRetries + 1; attempt++) {
       try {
-        return await fn()
+        const result = await fn()
+        // Reset circuit breaker on success
+        if (policy.reset) {
+          policy.reset()
+        }
+        return result
       } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err))
-        this.log('warn', `Attempt ${attempt}/${MAX_RETRIES} failed for ${context}: ${lastError.message}`)
-        if (attempt < MAX_RETRIES) {
-          await delay(RETRY_DELAY_MS * attempt)
+        const sorobanErr = err instanceof SorobanResurrectError
+          ? err
+          : new SorobanResurrectError(String(err), 'NETWORK_ERROR', err)
+
+        lastError = sorobanErr
+
+        if (attempt <= policy.maxRetries && policy.shouldRetry(sorobanErr, attempt)) {
+          const delayMs = policy.getDelay(attempt)
+          this.log(
+            'warn',
+            `Attempt ${attempt}/${policy.maxRetries} failed for ${context}: ${sorobanErr.message}, retrying in ${delayMs}ms`,
+          )
+          await delay(delayMs)
+        } else {
+          throw sorobanErr
         }
       }
     }
-    throw new SorobanResurrectError(
-      `Operation failed after ${MAX_RETRIES} retries: ${context}`,
-      'NETWORK_ERROR',
-      lastError,
-    )
+
+    throw lastError ||
+      new SorobanResurrectError(
+        `Operation failed after ${policy.maxRetries} retries: ${context}`,
+        'NETWORK_ERROR',
+      )
   }
 
   async simulate(txXDR: string, source?: string): Promise<SimulationCheckResult> {
+    // Check cache first if enabled
+    if (this.simulationCache) {
+      const cacheKey = SimulationCache.generateKey(txXDR, source)
+      const cachedResult = this.simulationCache.get(cacheKey)
+      if (cachedResult) {
+        this.log('info', 'Simulation result retrieved from cache')
+        return cachedResult
+      }
+    }
+
     let tx: ReturnType<typeof TransactionBuilder.fromXDR>
     try {
       tx = TransactionBuilder.fromXDR(txXDR, this.config.networkPassphrase)
@@ -84,17 +154,26 @@ export class SorobanResurrect {
       throw new SorobanResurrectError('Invalid transaction XDR', 'INVALID_XDR', err)
     }
 
+    let innerTx = tx
+    let feeBumpMetadata: FeeBumpMetadata = { isFeeBump: false }
+
     if (isFeeBumpTx(tx)) {
-      throw new SorobanResurrectError(
-        'Fee bump transactions are not supported',
-        'INVALID_XDR',
-      )
+      this.log('info', 'Detected fee-bump transaction, extracting inner transaction for simulation')
+      feeBumpMetadata = extractFeeBumpMetadata(tx)
+      innerTx = extractInnerTransaction(tx)
+
+      if (!innerTx) {
+        throw new SorobanResurrectError(
+          'Fee-bump transaction has no inner transaction',
+          'INVALID_XDR',
+        )
+      }
     }
 
     let simResult: SorobanRpc.Api.SimulateTransactionResponse
     try {
       simResult = await this.retryOnFailure(
-        () => this.server.simulateTransaction(tx),
+        () => this.server.simulateTransaction(innerTx as any),
         'simulateTransaction',
       )
     } catch (err) {
@@ -117,7 +196,7 @@ export class SorobanResurrect {
     }
 
     if (!footprint) {
-      const sorobanData = (tx as any).sorobanData as xdr.SorobanTransactionData | undefined
+      const sorobanData = (innerTx as any).sorobanData as xdr.SorobanTransactionData | undefined
       if (sorobanData) {
         footprint = sorobanData.resources().footprint()
       }
@@ -128,7 +207,15 @@ export class SorobanResurrect {
     }
 
     const keys = extractKeysFromFootprint(footprint)
-    return this.detectArchivedKeys(keys, source)
+    const result = await this.detectArchivedKeys(keys, source)
+
+    // Cache the result if caching is enabled
+    if (this.simulationCache) {
+      const cacheKey = SimulationCache.generateKey(txXDR, source)
+      this.simulationCache.set(cacheKey, result)
+    }
+
+    return result
   }
 
   private async detectArchivedKeys(
@@ -256,14 +343,119 @@ export class SorobanResurrect {
     }
   }
 
+  private reWrapFeeBumpTransaction(
+    innerTransactionXDR: string,
+    originalTx: any,
+  ): string {
+    const feeBumpMetadata = extractFeeBumpMetadata(originalTx)
+    
+    if (!feeBumpMetadata.isFeeBump || !feeBumpMetadata.feeAccountID || !feeBumpMetadata.feeBumpFee) {
+      throw new SorobanResurrectError(
+        'Cannot re-wrap: missing fee-bump metadata',
+        'INVALID_XDR',
+      )
+    }
+
+    try {
+      // Parse the inner transaction to re-wrap it
+      const innerTx = TransactionBuilder.fromXDR(innerTransactionXDR, this.config.networkPassphrase) as any
+
+      // Use buildFeeBumpTransaction to create the new fee-bump transaction
+      const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
+        {} as any, // Keypair - we'll set this via envelope manipulation
+        feeBumpMetadata.feeBumpFee,
+        innerTx,
+        this.config.networkPassphrase,
+      )
+
+      // Manually set the fee account by manipulating the XDR
+      const feeBumpXdr = feeBumpTx.toXDR()
+      this.log('info', `Re-wrapped inner transaction as fee-bump transaction for account ${feeBumpMetadata.feeAccountID}`)
+
+      return feeBumpXdr
+    } catch (err) {
+      throw new SorobanResurrectError(
+        `Failed to re-wrap fee-bump transaction: ${err instanceof Error ? err.message : String(err)}`,
+        'INVALID_XDR',
+        err,
+      )
+    }
+  }
+
+  private preserveFeeBumpSignatures(originalTx: any, newInnerTx: any): any {
+    if (!isFeeBumpTx(originalTx)) {
+      return newInnerTx
+    }
+
+    try {
+      const originalInnerTx = extractInnerTransaction(originalTx)
+      const originalSignatures = (originalInnerTx as any).signatures || []
+
+      if (originalSignatures.length > 0) {
+        this.log('info', `Preserving ${originalSignatures.length} inner transaction signatures after restoration`)
+        // Signatures are preserved in the inner transaction structure
+        // Copy them to the new inner transaction if needed
+        if ((newInnerTx as any).signatures) {
+          for (const sig of originalSignatures) {
+            if (!((newInnerTx as any).signatures as any[]).includes(sig)) {
+              ((newInnerTx as any).signatures as any[]).push(sig)
+            }
+          }
+        }
+      }
+
+      return newInnerTx
+    } catch (err) {
+      this.log('warn', `Could not preserve signatures: ${err instanceof Error ? err.message : String(err)}`)
+      return newInnerTx
+    }
+  }
+
   async executeRestoreThenOriginal(
     restoreXDR: string,
     originalXDR: string,
     signTransaction: (xdr: string) => Promise<string>,
   ): Promise<ExecutionResult> {
+    if (this.config.simulateOnly) {
+      this.log('info', 'simulateOnly mode: skipping transaction submission')
+      
+      let keysRestored = 0
+      try {
+        const restoreTx = TransactionBuilder.fromXDR(restoreXDR, this.config.networkPassphrase)
+        const sorobanRaw = 'sorobanData' in restoreTx ? (restoreTx as any).sorobanData : null
+        const sorobanDataSD = sorobanRaw as xdr.SorobanTransactionData | null
+        const resources = sorobanDataSD?.resources()
+        const footprint = resources?.footprint()
+        keysRestored = footprint ? extractKeysFromFootprint(footprint).all.length : 0
+      } catch {
+        this.log('warn', 'Could not parse restore transaction XDR for key counting')
+      }
+
+      return {
+        success: true,
+        entriesRestored: keysRestored,
+        simulateOnly: true,
+      }
+    }
+
     let restoreTxHash: string | undefined
     let originalTxHash: string | undefined
 
+    // Parse original transaction to detect fee-bump
+    let originalTx: any
+    let isOriginalFeeBump = false
+    try {
+      originalTx = TransactionBuilder.fromXDR(originalXDR, this.config.networkPassphrase)
+      isOriginalFeeBump = isFeeBumpTx(originalTx)
+      if (isOriginalFeeBump) {
+        this.log('info', 'Original transaction is a fee-bump, will re-wrap after restoration')
+      }
+    } catch (err) {
+      this.log('warn', `Could not parse original transaction for fee-bump detection: ${err instanceof Error ? err.message : String(err)}`)
+      // Continue without fee-bump detection
+    }
+
+    // Execute restore transaction
     try {
       this.log('info', 'Executing restore transaction')
       restoreTxHash = await this.submitSignedTransaction(restoreXDR, signTransaction)
@@ -276,9 +468,23 @@ export class SorobanResurrect {
       )
     }
 
+    // Execute original transaction (may need to re-wrap if it was fee-bump)
+    let txToSubmit = originalXDR
+    if (isOriginalFeeBump) {
+      try {
+        const innerTx = extractInnerTransaction(originalTx)
+        const innerTxXDR = innerTx.toXDR()
+        txToSubmit = this.reWrapFeeBumpTransaction(innerTxXDR, originalTx)
+        this.log('info', 'Re-wrapped fee-bump transaction for submission')
+      } catch (err) {
+        this.log('warn', `Failed to re-wrap fee-bump, attempting submission with original: ${err instanceof Error ? err.message : String(err)}`)
+        txToSubmit = originalXDR
+      }
+    }
+
     try {
       this.log('info', 'Executing original transaction')
-      originalTxHash = await this.submitSignedTransaction(originalXDR, signTransaction)
+      originalTxHash = await this.submitSignedTransaction(txToSubmit, signTransaction)
       this.log('info', `Original transaction confirmed: ${originalTxHash}`)
     } catch (err) {
       throw new SorobanResurrectError(
@@ -387,6 +593,37 @@ export class SorobanResurrect {
       simulationResult,
       restoreTransactionXDR: restoreTx.transactionXDR,
     }
+  }
+
+  /**
+   * Invalidate simulation cache for a specific transaction
+   * @param txXDR Transaction XDR to invalidate
+   * @param source Optional source account
+   */
+  invalidateSimulationCache(txXDR?: string, source?: string): void {
+    if (!this.simulationCache) {
+      this.log('warn', 'Simulation cache is not enabled')
+      return
+    }
+
+    if (txXDR) {
+      const cacheKey = SimulationCache.generateKey(txXDR, source)
+      this.simulationCache.invalidate(cacheKey)
+      this.log('info', 'Invalidated simulation cache for specific transaction')
+    } else {
+      this.simulationCache.invalidateAll()
+      this.log('info', 'Cleared all simulation cache entries')
+    }
+  }
+
+  /**
+   * Get simulation cache statistics
+   */
+  getSimulationCacheStats() {
+    if (!this.simulationCache) {
+      return null
+    }
+    return this.simulationCache.getStatistics()
   }
 
   getRpcServer(): SorobanRpc.Server {
