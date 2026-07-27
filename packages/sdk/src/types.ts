@@ -1,4 +1,6 @@
 import { xdr } from '@stellar/stellar-sdk'
+import type { RetryPolicy } from './retry-policy.js'
+import type { SimulationCacheConfig } from './simulation-cache.js'
 
 export interface ArchivedKey {
   key: xdr.LedgerKey
@@ -14,12 +16,10 @@ export interface SorobanResurrectConfig {
   restoreFee?: string
   maxRestoreBatchSize?: number
   /**
-   * Maximum number of restore batches to execute concurrently.
-   * Batches containing keys from different contracts are independent and
-   * can safely run in parallel. Defaults to 5.
-   * Set to 1 to force sequential execution (same as executeRestoreBatches).
+   * Timeout in milliseconds for RPC requests made by SorobanRpc.Server.
+   * Defaults to the Stellar SDK default when not set.
    */
-  maxConcurrency?: number
+  timeout?: number
   onLog?: (level: 'info' | 'warn' | 'error', message: string, data?: unknown) => void
 }
 
@@ -46,41 +46,11 @@ export interface RestoreTransactionResult {
   keysRestored: number
 }
 
-export interface RestoreBatchResult {
-  batchIndex: number
-  transactionXDR: string
-  keysRestored: number
-  txHash?: string
-  status: 'pending' | 'success' | 'failed'
-  error?: string
-}
-
-export interface RestoreAllBatchesResult {
-  success: boolean
-  batches: RestoreBatchResult[]
-  totalKeysRestored: number
-  failedAtBatchIndex?: number
-  error?: string
-}
-
-/**
- * Result of a concurrent batch restore operation.
- * Unlike the sequential result, all batches are always attempted — partial
- * failures are collected rather than short-circuiting execution.
- */
-export interface ConcurrentRestoreResult {
-  /** True only when every batch succeeded. */
-  success: boolean
-  batches: RestoreBatchResult[]
-  totalKeysRestored: number
-  /** Number of batches that failed. 0 on full success. */
-  failedBatchCount: number
-  /** Indices of failed batches, in the order they were detected. */
-  failedBatchIndices: number[]
-  /** Aggregated error message when failedBatchCount > 0. */
-  error?: string
-  /** Concurrency level actually used. */
-  concurrencyUsed: number
+export interface FeeBumpMetadata {
+  isFeeBump: boolean
+  innerTransactionXDR?: string
+  feeAccountID?: string
+  feeBumpFee?: string
 }
 
 export interface ExecutionResult {
@@ -88,6 +58,7 @@ export interface ExecutionResult {
   restoreTxHash?: string
   originalTxHash?: string
   entriesRestored: number
+  simulateOnly?: boolean
   error?: string
   batchResults?: RestoreAllBatchesResult
   concurrentBatchResults?: ConcurrentRestoreResult
@@ -100,13 +71,38 @@ export interface PreFlightConfig {
   onError?: (error: Error) => void
 }
 
+/**
+ * Extra context attached to every SorobanResurrectError for easier debugging.
+ */
+export interface SorobanResurrectErrorContext {
+  /** The RPC endpoint that was being used when the error occurred. */
+  rpcUrl?: string
+  /** The transaction hash involved in the failing operation, when available. */
+  txHash?: string
+  /** Archived ledger-key details that triggered the failure, when available. */
+  archivedKeys?: Array<{ keyBase64: string; keyType: string; contractId?: string }>
+}
+
 export class SorobanResurrectError extends Error {
+  /** RPC endpoint URL at the time of the error. */
+  public rpcUrl?: string
+  /** Transaction hash involved in the failing operation. */
+  public txHash?: string
+  /** Archived key details when detection/restore fails. */
+  public archivedKeys?: Array<{ keyBase64: string; keyType: string; contractId?: string }>
+
   constructor(
     message: string,
     public code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR',
-    public cause?: unknown
+    public cause?: unknown,
+    context?: SorobanResurrectErrorContext,
   ) {
     super(message)
     this.name = 'SorobanResurrectError'
+    if (context) {
+      this.rpcUrl = context.rpcUrl
+      this.txHash = context.txHash
+      this.archivedKeys = context.archivedKeys
+    }
   }
 }
