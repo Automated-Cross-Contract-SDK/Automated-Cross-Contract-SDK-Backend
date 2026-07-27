@@ -18,7 +18,6 @@ updates:
       stellar-sdk:
         patterns:
           - "@stellar/stellar-sdk"
-          - "@stellar/stellar-base"
       testing:
         patterns:
           - "vitest"
