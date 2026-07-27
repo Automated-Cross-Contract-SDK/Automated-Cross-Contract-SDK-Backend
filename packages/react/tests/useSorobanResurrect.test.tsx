@@ -412,8 +412,10 @@ describe('SorobanResurrectProvider + useSorobanResurrectContext', () => {
       return null
     }
 
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     expect(() => render(<BadComponent />)).toThrow(
       'useSorobanResurrectContext must be used within a <SorobanResurrectProvider>',
     )
+    spy.mockRestore()
   })
 })

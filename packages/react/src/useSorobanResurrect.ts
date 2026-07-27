@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useMemo } from 'react'
 import { TransactionBuilder, Transaction } from '@stellar/stellar-sdk'
 import { SorobanResurrect, SorobanResurrectError } from '@soroban-resurrect/sdk'
 import type { SorobanResurrectConfig, ExecutionResult, ArchivedKey } from '@soroban-resurrect/sdk'
@@ -37,23 +37,45 @@ export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSor
   const [needsRestore, setNeedsRestore] = useState(false)
   const [archivedKeys, setArchivedKeys] = useState<ArchivedKey[]>([])
 
+  // Stabilize onLog so it doesn't trigger config re-memoization when options change
+  const preFlightEnabled = options.preFlight?.enabled ?? true
+  const onLog = useCallback<NonNullable<SorobanResurrectConfig['onLog']>>(
+    (level, message) => {
+      if (preFlightEnabled) {
+        if (level === 'error') console.error(`[SorobanResurrect] ${message}`)
+        else console.debug(`[SorobanResurrect] ${message}`)
+      }
+    },
+    [preFlightEnabled],
+  )
+
+  // Memoize the config object so SorobanResurrect is only re-instantiated when
+  // connection-relevant options actually change.
+  const config = useMemo<SorobanResurrectConfig>(
+    () => ({
+      rpcUrl: options.rpcUrl,
+      networkPassphrase: options.networkPassphrase,
+      allowHttp: options.allowHttp,
+      timeout: options.timeout,
+      onLog,
+    }),
+    [options.rpcUrl, options.networkPassphrase, options.allowHttp, options.timeout, onLog],
+  )
+
+  // Re-instantiate SorobanResurrect only when the memoized config changes
   const getClient = useCallback((): SorobanResurrect => {
     if (!clientRef.current) {
-      const config: SorobanResurrectConfig = {
-        rpcUrl: options.rpcUrl,
-        networkPassphrase: options.networkPassphrase,
-        allowHttp: options.allowHttp,
-        onLog: (level, message) => {
-          if (options.preFlight?.enabled ?? true) {
-            if (level === 'error') console.error(`[SorobanResurrect] ${message}`)
-            else console.debug(`[SorobanResurrect] ${message}`)
-          }
-        },
-      }
       clientRef.current = new SorobanResurrect(config)
     }
     return clientRef.current
-  }, [options.rpcUrl, options.networkPassphrase, options.allowHttp, options.preFlight?.enabled])
+  }, [config])
+
+  // When config changes (rpcUrl, passphrase, etc.) we need a fresh client instance
+  const prevConfigRef = useRef<SorobanResurrectConfig | null>(null)
+  if (prevConfigRef.current !== config) {
+    prevConfigRef.current = config
+    clientRef.current = null // force re-instantiation on next getClient() call
+  }
 
   const checkTransaction = useCallback(async (txXDR: string) => {
     setIsChecking(true)

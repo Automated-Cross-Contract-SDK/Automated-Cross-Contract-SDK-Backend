@@ -99,3 +99,18 @@ npm run build       # Build all packages
 npm run test        # Run SDK tests
 npm run example     # Start example app
 ```
+
+## Developer notes
+
+- Node: `>=18` is required (see `packages/*/package.json` engines).
+- To run the full test matrix including integration tests (if available):
+
+```bash
+npm ci
+npm run test --workspaces
+npm run test -w packages/sdk --if-present # integration tests via vitest config
+```
+
+- Dependencies: run `npm audit` and `npm audit fix` regularly. Dependabot is enabled (weekly) to keep deps up-to-date.
+
+- CI: ensure CI uses Node 18+ and consider adding `npm audit` to the CI pipeline or a scheduled job.
