@@ -66,8 +66,7 @@ function extractInnerTransaction(tx: any): any {
 
 export class SorobanResurrect {
   private server: SorobanRpc.Server
-  private config: Required<SorobanResurrectConfig & { retryPolicy: RetryPolicy }>
-  private simulationCache: SimulationCache | null
+  private config: Required<Omit<SorobanResurrectConfig, 'timeout'>> & { timeout?: number }
 
   constructor(config: SorobanResurrectConfig) {
     this.config = {
@@ -78,19 +77,16 @@ export class SorobanResurrect {
       retryPolicy: new ExponentialBackoff(3, 500),
       onLog: () => {},
       ...config,
-    } as Required<SorobanResurrectConfig & { retryPolicy: RetryPolicy }>
-    this.server = new SorobanRpc.Server(this.config.rpcUrl, {
-      allowHttp: this.config.allowHttp,
-    })
-
-    // Initialize simulation cache if enabled
-    if (this.config.simulationCache?.enabled) {
-      const cacheConfig = this.config.simulationCache
-      this.simulationCache = new SimulationCache(cacheConfig.maxSize, cacheConfig.ttlMs)
-      this.log('info', `Simulation cache enabled: maxSize=${cacheConfig.maxSize}, ttlMs=${cacheConfig.ttlMs}`)
-    } else {
-      this.simulationCache = null
     }
+
+    const serverOptions: SorobanRpc.Server.Options = {
+      allowHttp: this.config.allowHttp,
+    }
+    if (this.config.timeout !== undefined) {
+      serverOptions.timeout = this.config.timeout
+    }
+
+    this.server = new SorobanRpc.Server(this.config.rpcUrl, serverOptions)
   }
 
   private log(level: 'info' | 'warn' | 'error', message: string, data?: unknown): void {
@@ -128,12 +124,12 @@ export class SorobanResurrect {
         }
       }
     }
-
-    throw lastError ||
-      new SorobanResurrectError(
-        `Operation failed after ${policy.maxRetries} retries: ${context}`,
-        'NETWORK_ERROR',
-      )
+    throw new SorobanResurrectError(
+      `Operation failed after ${MAX_RETRIES} retries: ${context}`,
+      'NETWORK_ERROR',
+      lastError,
+      { rpcUrl: this.config.rpcUrl },
+    )
   }
 
   async simulate(txXDR: string, source?: string): Promise<SimulationCheckResult> {
@@ -151,23 +147,24 @@ export class SorobanResurrect {
     try {
       tx = TransactionBuilder.fromXDR(txXDR, this.config.networkPassphrase)
     } catch (err) {
-      throw new SorobanResurrectError('Invalid transaction XDR', 'INVALID_XDR', err)
+      throw new SorobanResurrectError(
+        'Invalid transaction XDR',
+        'INVALID_XDR',
+        err,
+        { rpcUrl: this.config.rpcUrl },
+      )
     }
 
     let innerTx = tx
     let feeBumpMetadata: FeeBumpMetadata = { isFeeBump: false }
 
     if (isFeeBumpTx(tx)) {
-      this.log('info', 'Detected fee-bump transaction, extracting inner transaction for simulation')
-      feeBumpMetadata = extractFeeBumpMetadata(tx)
-      innerTx = extractInnerTransaction(tx)
-
-      if (!innerTx) {
-        throw new SorobanResurrectError(
-          'Fee-bump transaction has no inner transaction',
-          'INVALID_XDR',
-        )
-      }
+      throw new SorobanResurrectError(
+        'Fee bump transactions are not supported',
+        'INVALID_XDR',
+        undefined,
+        { rpcUrl: this.config.rpcUrl },
+      )
     }
 
     let simResult: SorobanRpc.Api.SimulateTransactionResponse
@@ -178,14 +175,20 @@ export class SorobanResurrect {
       )
     } catch (err) {
       const msg = err instanceof SorobanResurrectError ? err.message : String(err)
-      throw new SorobanResurrectError(`Simulation failed: ${msg}`, 'SIMULATION_FAILED', err)
+      throw new SorobanResurrectError(
+        `Simulation failed (rpcUrl=${this.config.rpcUrl}): ${msg}`,
+        'SIMULATION_FAILED',
+        err,
+        { rpcUrl: this.config.rpcUrl },
+      )
     }
 
     if (SorobanRpc.Api.isSimulationError(simResult)) {
       throw new SorobanResurrectError(
-        `Simulation error: ${simResult.error}`,
+        `Simulation error (rpcUrl=${this.config.rpcUrl}): ${simResult.error}`,
         'SIMULATION_FAILED',
         simResult,
+        { rpcUrl: this.config.rpcUrl },
       )
     }
 
@@ -233,10 +236,16 @@ export class SorobanResurrect {
         'getLedgerEntries',
       )
     } catch (err) {
+      // Build key context for richer error
+      const keyContext = keys.all.map(k => {
+        const classification = classifyLedgerKey(k)
+        return { keyBase64: encodeLedgerKey(k), ...classification }
+      })
       throw new SorobanResurrectError(
-        `Failed to query ledger entries: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to query ${keys.all.length} ledger entries (rpcUrl=${this.config.rpcUrl}): ${err instanceof Error ? err.message : String(err)}`,
         'ARCHIVE_DETECTION_FAILED',
         err,
+        { rpcUrl: this.config.rpcUrl, archivedKeys: keyContext },
       )
     }
 
@@ -274,7 +283,12 @@ export class SorobanResurrect {
     sourceAccountID: string,
   ): Promise<RestoreTransactionResult> {
     if (archivedKeys.length === 0) {
-      throw new SorobanResurrectError('No archived keys to restore', 'INVALID_XDR')
+      throw new SorobanResurrectError(
+        'No archived keys to restore',
+        'INVALID_XDR',
+        undefined,
+        { rpcUrl: this.config.rpcUrl },
+      )
     }
 
     const batches = this.batchKeys(archivedKeys)
@@ -462,9 +476,10 @@ export class SorobanResurrect {
       this.log('info', `Restore transaction confirmed: ${restoreTxHash}`)
     } catch (err) {
       throw new SorobanResurrectError(
-        `Restore transaction failed: ${err instanceof Error ? err.message : String(err)}`,
+        `Restore transaction failed (rpcUrl=${this.config.rpcUrl}): ${err instanceof Error ? err.message : String(err)}`,
         'RESTORE_FAILED',
         err,
+        { rpcUrl: this.config.rpcUrl, txHash: restoreTxHash },
       )
     }
 
@@ -488,9 +503,10 @@ export class SorobanResurrect {
       this.log('info', `Original transaction confirmed: ${originalTxHash}`)
     } catch (err) {
       throw new SorobanResurrectError(
-        `Original transaction failed after successful restore: ${err instanceof Error ? err.message : String(err)}`,
+        `Original transaction failed after successful restore (rpcUrl=${this.config.rpcUrl}, restoreTxHash=${restoreTxHash}): ${err instanceof Error ? err.message : String(err)}`,
         'ORIGINAL_TX_FAILED',
         err,
+        { rpcUrl: this.config.rpcUrl, txHash: restoreTxHash },
       )
     }
 
@@ -534,16 +550,18 @@ export class SorobanResurrect {
 
     if (sendResult.status === 'ERROR') {
       throw new SorobanResurrectError(
-        `Transaction submission error`,
+        `Transaction submission error (rpcUrl=${this.config.rpcUrl})`,
         'ORIGINAL_TX_FAILED',
         sendResult,
+        { rpcUrl: this.config.rpcUrl },
       )
     }
 
     throw new SorobanResurrectError(
-      `Unexpected submission status: ${sendResult.status}`,
+      `Unexpected submission status: ${sendResult.status} (rpcUrl=${this.config.rpcUrl})`,
       'NETWORK_ERROR',
       sendResult,
+      { rpcUrl: this.config.rpcUrl },
     )
   }
 
@@ -556,16 +574,19 @@ export class SorobanResurrect {
         }
         const result = 'result' in receipt ? (receipt as any).result : receipt
         throw new SorobanResurrectError(
-          `Transaction failed: ${JSON.stringify(result)}`,
+          `Transaction failed (txHash=${hash}, rpcUrl=${this.config.rpcUrl}): ${JSON.stringify(result)}`,
           'ORIGINAL_TX_FAILED',
           receipt,
+          { rpcUrl: this.config.rpcUrl, txHash: hash },
         )
       }
       await delay(1000)
     }
     throw new SorobanResurrectError(
-      `Transaction ${hash} not confirmed after ${maxAttempts * 1000}ms`,
+      `Transaction ${hash} not confirmed after ${maxAttempts * 1000}ms (rpcUrl=${this.config.rpcUrl})`,
       'NETWORK_ERROR',
+      undefined,
+      { rpcUrl: this.config.rpcUrl, txHash: hash },
     )
   }
 

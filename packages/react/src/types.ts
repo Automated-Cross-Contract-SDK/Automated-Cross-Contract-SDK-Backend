@@ -4,7 +4,11 @@ export interface UseSorobanResurrectOptions {
   rpcUrl: string
   networkPassphrase: string
   allowHttp?: boolean
-  simulateOnly?: boolean
+  /**
+   * Timeout in milliseconds for RPC requests.
+   * Forwarded to SorobanResurrectConfig.timeout → SorobanRpc.Server.
+   */
+  timeout?: number
   preFlight?: PreFlightConfig
   onError?: (error: Error) => void
 }
