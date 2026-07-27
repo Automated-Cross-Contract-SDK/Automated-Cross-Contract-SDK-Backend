@@ -21,6 +21,7 @@ import {
   classifyLedgerKey,
   encodeLedgerKey,
 } from './footprint-parser.js'
+import { VersionNegotiator, ServerVersionInfo } from './version-negotiator.js'
 
 const MAX_XDR_SIZE_BYTES = 100_000
 const DEFAULT_RESTORE_FEE = '100000'
@@ -37,7 +38,9 @@ function isFeeBumpTx(tx: ReturnType<typeof TransactionBuilder.fromXDR>): tx is R
 
 export class SorobanResurrect {
   private server: SorobanRpc.Server
-  private config: Required<SorobanResurrectConfig>
+  private versionNegotiator: VersionNegotiator
+  private serverVersionInfo: ServerVersionInfo | null = null
+  private config: Required<Omit<SorobanResurrectConfig, 'versionNegotiation'>> & Pick<SorobanResurrectConfig, 'versionNegotiation'>
 
   constructor(config: SorobanResurrectConfig) {
     this.config = {
@@ -50,10 +53,36 @@ export class SorobanResurrect {
     this.server = new SorobanRpc.Server(this.config.rpcUrl, {
       allowHttp: this.config.allowHttp,
     })
+    this.versionNegotiator = new VersionNegotiator(this.log.bind(this))
   }
 
   private log(level: 'info' | 'warn' | 'error', message: string, data?: unknown): void {
     this.config.onLog(level, message, data)
+  }
+
+  /**
+   * Explicitly negotiate the Soroban RPC protocol version with the active
+   * endpoint and cache the result.  Calling this is optional — version
+   * negotiation also happens lazily the first time `simulate()` is invoked
+   * when `versionNegotiation.enabled` is true (the default).
+   */
+  async initialize(): Promise<void> {
+    const versionInfo = await this.versionNegotiator.negotiate(this.server)
+    this.serverVersionInfo = versionInfo
+    this.log('info', `Initialized with protocol version ${versionInfo.protocolVersion} (${versionInfo.xdrVariant})`, {
+      protocolVersion: versionInfo.protocolVersion,
+      xdrVariant: versionInfo.xdrVariant,
+      supported: versionInfo.supported,
+      coreVersion: versionInfo.coreVersion,
+    })
+  }
+
+  /**
+   * Returns the cached server version info, or `null` if version negotiation
+   * has not been performed yet.
+   */
+  getServerVersion(): ServerVersionInfo | null {
+    return this.serverVersionInfo
   }
 
   private async retryOnFailure<T>(fn: () => Promise<T>, context: string): Promise<T> {
@@ -77,6 +106,29 @@ export class SorobanResurrect {
   }
 
   async simulate(txXDR: string, source?: string): Promise<SimulationCheckResult> {
+    // Lazy version negotiation — runs once unless already negotiated
+    const negotiationEnabled = this.config.versionNegotiation?.enabled ?? true
+    if (negotiationEnabled && this.serverVersionInfo === null) {
+      try {
+        const versionInfo = await this.versionNegotiator.negotiate(this.server)
+        this.serverVersionInfo = versionInfo
+        // Store XDR encoding hints for future use
+        this.versionNegotiator.adaptXdrEncoding(versionInfo.xdrVariant)
+      } catch (err) {
+        const failOnUnsupported = this.config.versionNegotiation?.failOnUnsupported ?? true
+        const isUnsupported = err instanceof Error && (err as any).code === 'UNSUPPORTED_PROTOCOL'
+        if (isUnsupported && failOnUnsupported) {
+          throw new SorobanResurrectError(
+            err.message,
+            'UNSUPPORTED_PROTOCOL',
+            err,
+          )
+        }
+        // Non-fatal: log and continue
+        this.log('warn', `Version negotiation failed, proceeding anyway: ${err instanceof Error ? err.message : String(err)}`, err)
+      }
+    }
+
     let tx: ReturnType<typeof TransactionBuilder.fromXDR>
     try {
       tx = TransactionBuilder.fromXDR(txXDR, this.config.networkPassphrase)

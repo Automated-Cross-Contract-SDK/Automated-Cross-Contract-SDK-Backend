@@ -14,6 +14,16 @@ export interface SorobanResurrectConfig {
   restoreFee?: string
   maxRestoreBatchSize?: number
   onLog?: (level: 'info' | 'warn' | 'error', message: string, data?: unknown) => void
+  /**
+   * Controls automatic Soroban RPC version negotiation.
+   * Defaults to `{ enabled: true, failOnUnsupported: true }`.
+   */
+  versionNegotiation?: {
+    /** Whether to negotiate the protocol version on first use. Default: true */
+    enabled: boolean
+    /** Throw an error when the node reports an unsupported protocol. Default: true */
+    failOnUnsupported?: boolean
+  }
 }
 
 export interface SimulationCheckResult {
@@ -45,7 +55,7 @@ export interface PreFlightConfig {
 export class SorobanResurrectError extends Error {
   constructor(
     message: string,
-    public code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR',
+    public code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR' | 'UNSUPPORTED_PROTOCOL',
     public cause?: unknown
   ) {
     super(message)
