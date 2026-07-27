@@ -82,6 +82,12 @@ export interface SorobanResurrectConfig {
    * automatically falls back to polling. Defaults to `false`.
    */
   useWebSocket?: boolean
+  /**
+   * When `true`, a mismatch between `networkPassphrase` and the passphrase
+   * reported by the RPC server's `getNetwork()` throws a `SorobanResurrectError`
+   * with code `NETWORK_ERROR` instead of only logging a warning.
+   */
+  strictNetworkValidation?: boolean
 }
 
 /**

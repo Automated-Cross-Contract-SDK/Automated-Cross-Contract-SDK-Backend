@@ -93,6 +93,34 @@ export class SorobanResurrect {
     }
 
     this.server = new SorobanRpc.Server(this.config.rpcUrl, serverOptions)
+
+    void this.validateNetworkPassphrase()
+  }
+
+  /**
+   * Confirms the configured `networkPassphrase` matches what the RPC server
+   * reports via `getNetwork()`. Runs fire-and-forget from the constructor:
+   * mismatches are logged as a warning, or thrown as a `NETWORK_ERROR` when
+   * `strictNetworkValidation` is enabled.
+   */
+  private async validateNetworkPassphrase(): Promise<void> {
+    try {
+      const network = await this.server.getNetwork()
+      if (network.passphrase !== this.config.networkPassphrase) {
+        const rpcUrl = Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl
+        const message = `Network passphrase mismatch: configured "${this.config.networkPassphrase}" but RPC server reports "${network.passphrase}"`
+        if (this.config.strictNetworkValidation) {
+          throw new SorobanResurrectError(message, 'NETWORK_ERROR', undefined, { rpcUrl })
+        }
+        this.config.onLog('warn', message)
+      }
+    } catch (err) {
+      if (err instanceof SorobanResurrectError) {
+        this.config.onLog('error', err.message)
+        throw err
+      }
+      this.config.onLog('warn', `Failed to validate network passphrase: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   /**
