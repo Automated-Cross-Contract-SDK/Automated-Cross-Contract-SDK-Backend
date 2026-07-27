@@ -14,9 +14,25 @@ export type {
   SorobanResurrectConfig,
   SimulationCheckResult,
   RestoreTransactionResult,
+  RestoreBatchResult,
+  RestoreAllBatchesResult,
+  ConcurrentRestoreResult,
+  ContractKeyGroup,
   ExecutionResult,
   PreFlightConfig,
-  SorobanResurrectEvents,
+  FeeBumpMetadata,
 } from './types.js'
+export {
+  ExponentialBackoff,
+  FixedDelay,
+  JitterBackoff,
+  CircuitBreaker,
+  DEFAULT_RETRY_POLICY,
+} from './retry-policy.js'
+export type { RetryPolicy } from './retry-policy.js'
+export {
+  SimulationCache,
+} from './simulation-cache.js'
+export type { SimulationCacheConfig, CacheStatistics } from './simulation-cache.js'
 
 export { VERSION } from './version.js'
