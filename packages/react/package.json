@@ -22,14 +22,14 @@
     "blockchain",
     "defi"
   ],
-  "main": "./dist/index.js",
+  "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
-      "default": "./dist/index.js"
+      "require": "./dist/index.cjs"
     }
   },
   "files": [
@@ -41,8 +41,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsc",
-    "build:watch": "tsc --watch",
+    "build": "tsup",
+    "build:watch": "tsup --watch",
     "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -62,6 +62,7 @@
     "jsdom": "^24.0.0",
     "react": "^18.0.0",
     "react-dom": "^18.0.0",
+    "tsup": "^8.3.0",
     "vitest": "^2.0.0"
   },
   "dependencies": {
