@@ -54,7 +54,7 @@
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^2.0.0",
-    "tsup": "^8.3.0",
+    "tsup": "^8.5.1",
     "vitest": "^2.0.0"
   },
   "publishConfig": {
