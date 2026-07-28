@@ -27,8 +27,34 @@ function computeHash(signedXDR: string, networkPassphrase: string): string {
   }
 }
 
+type SimulationCacheEntry = {
+  expiresAt: number
+  simulation: {
+    needsRestoration: boolean
+    archivedKeys: ArchivedKey[]
+  }
+}
+
+const CACHE_TTL_MS = 30_000
+
+async function hashTxXDR(txXDR: string): Promise<string> {
+  const cryptoObj = typeof globalThis !== 'undefined' ? (globalThis as any).crypto : undefined
+  if (cryptoObj?.subtle?.digest) {
+    const encoder = new TextEncoder()
+    const buffer = await cryptoObj.subtle.digest('SHA-256', encoder.encode(txXDR))
+    return Array.from(new Uint8Array(buffer)).map((byte: number) => byte.toString(16).padStart(2, '0')).join('')
+  }
+
+  let hash = 5381
+  for (let i = 0; i < txXDR.length; i += 1) {
+    hash = ((hash << 5) + hash) ^ txXDR.charCodeAt(i)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
 export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSorobanResurrectReturn {
   const clientRef = useRef<SorobanResurrect | null>(null)
+  const simulationCacheRef = useRef<Map<string, SimulationCacheEntry>>(new Map())
 
   const [isChecking, setIsChecking] = useState(false)
   const [isExecuting, setIsExecuting] = useState(false)
@@ -75,14 +101,38 @@ export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSor
   if (prevConfigRef.current !== config) {
     prevConfigRef.current = config
     clientRef.current = null // force re-instantiation on next getClient() call
+    simulationCacheRef.current.clear()
   }
 
-  const checkTransaction = useCallback(async (txXDR: string) => {
+  const getCachedSimulation = useCallback(async (txXDR: string, forceRefresh = false) => {
+    const cacheKey = await hashTxXDR(txXDR)
+    if (!forceRefresh) {
+      const cached = simulationCacheRef.current.get(cacheKey)
+      if (cached && cached.expiresAt > Date.now()) {
+        return cached.simulation
+      }
+    }
+
+    const client = getClient()
+    const simulation = await client.simulate(txXDR)
+    simulationCacheRef.current.set(cacheKey, {
+      simulation: {
+        needsRestoration: simulation.needsRestoration,
+        archivedKeys: simulation.archivedKeys,
+      },
+      expiresAt: Date.now() + CACHE_TTL_MS,
+    })
+    return simulation
+  }, [getClient])
+
+  const checkTransaction = useCallback(async (
+    txXDR: string,
+    { forceRefresh = false }: { forceRefresh?: boolean } = {},
+  ) => {
     setIsChecking(true)
     setError(null)
     try {
-      const client = getClient()
-      const result = await client.simulate(txXDR)
+      const result = await getCachedSimulation(txXDR, forceRefresh)
 
       setNeedsRestore(result.needsRestoration)
       setArchivedKeys(result.archivedKeys)
@@ -110,13 +160,14 @@ export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSor
   const executeWithRestore = useCallback(async (
     txXDR: string,
     signTransaction: (xdr: string) => Promise<string>,
+    { forceRefresh = false }: { forceRefresh?: boolean } = {},
   ): Promise<ExecutionResult> => {
     setIsExecuting(true)
     setError(null)
     try {
       const client = getClient()
 
-      const simulation = await client.simulate(txXDR)
+      const simulation = await getCachedSimulation(txXDR, forceRefresh)
 
       if (!simulation.needsRestoration) {
         const signedXDR = await signTransaction(txXDR)

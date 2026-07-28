@@ -14,8 +14,15 @@ export interface UseSorobanResurrectOptions {
 }
 
 export interface UseSorobanResurrectReturn {
-  executeWithRestore: (txXDR: string, signTransaction: (xdr: string) => Promise<string>) => Promise<ExecutionResult>
-  checkTransaction: (txXDR: string) => Promise<{
+  executeWithRestore: (
+    txXDR: string,
+    signTransaction: (xdr: string) => Promise<string>,
+    options?: { forceRefresh?: boolean },
+  ) => Promise<ExecutionResult>
+  checkTransaction: (
+    txXDR: string,
+    options?: { forceRefresh?: boolean },
+  ) => Promise<{
     needsRestoration: boolean
     archivedKeys: ArchivedKey[]
   }>
