@@ -45,3 +45,20 @@ export { VERSION } from './version.js'
 
 export { RpcFailoverManager } from './rpc-failover.js'
 export type { RpcEndpointHealth, RpcFailoverConfig } from './rpc-failover.js'
+
+export { WalletAdapterError, loadOptionalWalletDependency, bytesToBase64 } from './wallet-adapter.js'
+export type { SorobanWalletAdapter, SignTransactionOptions, WalletConnectionResult, WalletAdapterErrorCode } from './wallet-adapter.js'
+
+export { XBullAdapter } from './xbull-adapter.js'
+export { LobstrAdapter } from './lobstr-adapter.js'
+export {
+  WalletConnectAdapter,
+  STELLAR_CAIP2_NAMESPACE,
+  STELLAR_MAINNET_CHAIN_ID,
+  STELLAR_TESTNET_CHAIN_ID,
+  SOROBAN_WC_METHODS,
+  SOROBAN_WC_EVENTS,
+} from './walletconnect-adapter.js'
+export type { WalletConnectAdapterConfig, WalletMetadata } from './walletconnect-adapter.js'
+export { LedgerAdapter } from './ledger-adapter.js'
+export type { LedgerAdapterConfig } from './ledger-adapter.js'
