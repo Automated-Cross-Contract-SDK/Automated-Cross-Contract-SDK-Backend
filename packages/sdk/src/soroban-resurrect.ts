@@ -24,7 +24,7 @@ import {
 import {
   FootprintKeys,
   extractKeysFromFootprint,
-  classifyLedgerKey,
+  classifyDeferredKeys,
   encodeLedgerKey,
 } from './footprint-parser.js'
 import { ExponentialBackoff, type RetryPolicy } from './retry-policy.js'
@@ -318,11 +318,11 @@ export class SorobanResurrect {
         'getLedgerEntries',
       )
     } catch (err) {
-      // Build key context for richer error
-      const keyContext = keys.all.map(k => {
-        const classification = classifyLedgerKey(k)
-        return { keyBase64: encodeLedgerKey(k), ...classification }
-      })
+      // On error, classify lazily only for the error context
+      const keyContext = keys.all.map(k => ({
+        keyBase64: encodeLedgerKey(k),
+        keyType: 'unknown' as const,
+      }))
       throw new SorobanResurrectError(
         `Failed to query ${keys.all.length} ledger entries (rpcUrl=${this.config.rpcUrl}): ${err instanceof Error ? err.message : String(err)}`,
         'ARCHIVE_DETECTION_FAILED',
@@ -340,20 +340,16 @@ export class SorobanResurrect {
     for (const key of keys.all) {
       const encoded = encodeLedgerKey(key)
       if (!existingEntries.has(encoded)) {
-        const classification = classifyLedgerKey(key)
+        // Store keys without classification — classification is deferred
+        // until buildRestoreTransaction or the caller explicitly classifies.
         archivedKeys.push({
           key,
           keyBase64: encoded,
-          ...classification,
+          keyType: 'unknown',
+          restorePriority: 3,
         })
       }
     }
-
-    // Sort by restorePriority so contractInstance (0) entries come before
-    // contractCode (1) and contractData (2) entries.  This guarantees that a
-    // contract's instance is live before we attempt to restore its data, which
-    // is required by the Soroban VM (issue #48).
-    archivedKeys.sort((a, b) => a.restorePriority - b.restorePriority)
 
     return {
       needsRestoration: archivedKeys.length > 0,
@@ -379,13 +375,18 @@ export class SorobanResurrect {
       )
     }
 
-    const batches = this.batchKeys(archivedKeys)
+    // Classify keys on demand before batch building (deferred from simulation)
+    const classified = classifyDeferredKeys(
+      archivedKeys.map(k => ({ key: k.key, keyBase64: k.keyBase64 })),
+    )
+
+    const batches = this.batchKeys(classified)
 
     if (batches.length > 1) {
       this.log('info', `Splitting restore into ${batches.length} batches (${archivedKeys.length} total keys)`)
     }
 
-    this.emit('restore:start', archivedKeys)
+    this.emit('restore:start', classified)
 
     const result = await this.buildSingleRestoreTransaction(batches[0], sourceAccountID)
 
@@ -403,7 +404,12 @@ export class SorobanResurrect {
       throw new SorobanResurrectError('No archived keys to restore', 'INVALID_XDR')
     }
 
-    const batches = this.batchKeys(archivedKeys)
+    // Classify keys on demand before batch building (deferred from simulation)
+    const classified = classifyDeferredKeys(
+      archivedKeys.map(k => ({ key: k.key, keyBase64: k.keyBase64 })),
+    )
+
+    const batches = this.batchKeys(classified)
 
     if (batches.length > 1) {
       this.log(
@@ -630,12 +636,17 @@ export class SorobanResurrect {
       throw new SorobanResurrectError('No archived keys to restore', 'INVALID_XDR')
     }
 
-    const groups = this.groupKeysByContract(archivedKeys)
+    // Classify keys on demand before batch building (deferred from simulation)
+    const classified = classifyDeferredKeys(
+      archivedKeys.map(k => ({ key: k.key, keyBase64: k.keyBase64 })),
+    )
+
+    const groups = this.groupKeysByContract(classified)
     const batches = this.batchKeyGroups(groups)
 
     this.log(
       'info',
-      `Concurrent build: ${archivedKeys.length} keys → ${groups.length} contract groups → ${batches.length} batches`,
+      `Concurrent build: ${classified.length} keys → ${groups.length} contract groups → ${batches.length} batches`,
     )
 
     // Fetch account once for the initial sequence number
@@ -697,8 +708,13 @@ export class SorobanResurrect {
   ): Promise<ExecutionResult> {
     const { requireAllBatches = true, concurrency } = options
 
+    // Classify keys on demand before batch building (deferred from simulation)
+    const classified = classifyDeferredKeys(
+      archivedKeys.map(k => ({ key: k.key, keyBase64: k.keyBase64 })),
+    )
+
     const restoreBatches = await this.buildRestoreTransactionBatchesConcurrent(
-      archivedKeys,
+      classified,
       sourceAccountID,
     )
 

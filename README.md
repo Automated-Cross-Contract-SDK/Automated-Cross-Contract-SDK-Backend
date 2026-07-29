@@ -13,7 +13,11 @@ Soroban archives "Persistent" data once its TTL rent expires. If a front-end or 
 | Package | Description |
 |---------|-------------|
 | `@soroban-resurrect/sdk` | Core SDK — intercepts simulations, detects archived keys, builds restore transactions |
+| `@soroban-resurrect/mock-rpc` | Lightweight mock RPC server — deterministic unit testing, fixture recording/replay, network simulation |
 | `@soroban-resurrect/react` | React hooks & context provider for dApp integration |
+
+[![CI](https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend/actions/workflows/ci.yml/badge.svg)](https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend/actions/workflows/ci.yml)
+[![Integration Tests](https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend/actions/workflows/ci.yml/badge.svg?event=schedule)](https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend/actions/workflows/ci.yml)
 
 ## Quick Start (React)
 
