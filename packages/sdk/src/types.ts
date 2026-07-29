@@ -88,6 +88,16 @@ export interface SorobanResurrectConfig {
    * with code `NETWORK_ERROR` instead of only logging a warning.
    */
   strictNetworkValidation?: boolean
+  /**
+   * Delay in milliseconds between polling attempts when waiting for a
+   * transaction to reach a terminal status. Defaults to `1000`.
+   */
+  pollIntervalMs?: number
+  /**
+   * Maximum number of polling attempts before giving up on a transaction.
+   * Defaults to `30`.
+   */
+  maxPollAttempts?: number
 }
 
 /**
@@ -185,7 +195,7 @@ export class SorobanResurrectError extends Error {
 
   constructor(
     message: string,
-    public code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR',
+    public code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR' | 'ABORTED',
     public cause?: unknown,
     context?: SorobanResurrectErrorContext,
   ) {

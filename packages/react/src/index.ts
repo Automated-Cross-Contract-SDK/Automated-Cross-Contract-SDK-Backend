@@ -5,6 +5,8 @@ export type {
   UseSorobanResurrectOptions,
   UseSorobanResurrectReturn,
   SorobanResurrectContextValue,
+  RestoreProgress,
+  RestoreStatus,
 } from './types.js'
 export type { SorobanResurrectProviderProps } from './SorobanResurrectProvider.js'
 

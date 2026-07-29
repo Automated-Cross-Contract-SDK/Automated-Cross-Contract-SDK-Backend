@@ -82,6 +82,8 @@ export class SorobanResurrect {
       retryPolicy: new ExponentialBackoff(3, 500),
       onLog: () => {},
       useWebSocket: false,
+      pollIntervalMs: 1000,
+      maxPollAttempts: 30,
       ...config,
     }
 
@@ -991,6 +993,7 @@ export class SorobanResurrect {
 
     try {
       this.log('info', 'Executing original transaction')
+      this.emit('original:start')
       originalTxHash = await this.submitSignedTransaction(txToSubmit, signTransaction)
       this.log('info', `Original transaction confirmed: ${originalTxHash}`)
       this.emit('original:complete', originalTxHash)
@@ -1176,7 +1179,7 @@ export class SorobanResurrect {
    */
   async waitForTransaction(
     hash: string,
-    maxPollAttempts = 30,
+    maxPollAttempts = this.config.maxPollAttempts,
   ): Promise<TransactionWaitResult> {
     if (this.config.useWebSocket) {
       const wsUrl = this.getWebSocketUrl()
@@ -1218,7 +1221,7 @@ export class SorobanResurrect {
     wsUrl: string,
     maxPollAttempts: number,
   ): Promise<void> {
-    const timeoutMs = maxPollAttempts * 1000
+    const timeoutMs = maxPollAttempts * (this.config.pollIntervalMs ?? 1000)
 
     return new Promise<void>((resolve, reject) => {
       let settled = false
@@ -1304,7 +1307,8 @@ export class SorobanResurrect {
     })
   }
 
-  private async pollForReceipt(hash: string, maxAttempts = 30): Promise<string> {
+  private async pollForReceipt(hash: string, maxAttempts = this.config.maxPollAttempts): Promise<string> {
+    const intervalMs = this.config.pollIntervalMs ?? 1000
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const receipt = await this.getServer().getTransaction(hash)
       if (receipt.status !== 'NOT_FOUND') {
@@ -1319,10 +1323,10 @@ export class SorobanResurrect {
           { rpcUrl: this.config.rpcUrl, txHash: hash },
         )
       }
-      await delay(1000)
+      await delay(intervalMs)
     }
     throw new SorobanResurrectError(
-      `Transaction ${hash} not confirmed after ${maxAttempts * 1000}ms (rpcUrl=${this.config.rpcUrl})`,
+      `Transaction ${hash} not confirmed after ${maxAttempts * intervalMs}ms (rpcUrl=${this.config.rpcUrl})`,
       'NETWORK_ERROR',
       undefined,
       { rpcUrl: this.config.rpcUrl, txHash: hash },
