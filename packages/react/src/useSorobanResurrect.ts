@@ -4,7 +4,45 @@ import { useState, useCallback, useRef, useMemo } from 'react'
 import { TransactionBuilder, Transaction } from '@stellar/stellar-sdk'
 import { SorobanResurrect, SorobanResurrectError } from '@soroban-resurrect/sdk'
 import type { SorobanResurrectConfig, ExecutionResult, ArchivedKey } from '@soroban-resurrect/sdk'
-import type { UseSorobanResurrectOptions, UseSorobanResurrectReturn, RestoreProgress } from './types.js'
+import type {
+  UseSorobanResurrectOptions,
+  UseSorobanResurrectReturn,
+  SigningStrategy,
+  TransactionRecord,
+} from './types.js'
+
+const DEFAULT_HISTORY_STORAGE_KEY = 'soroban-resurrect:history'
+
+function resolveSigner(strategy: SigningStrategy | undefined): ((xdr: string) => Promise<string>) | undefined {
+  if (!strategy) return undefined
+  if (typeof strategy === 'function') return (xdr: string) => strategy(xdr)
+  return (xdr: string) => strategy.signTransaction(xdr)
+}
+
+function generateId(): string {
+  const cryptoObj = typeof globalThis !== 'undefined' ? (globalThis as any).crypto : undefined
+  if (cryptoObj?.randomUUID) return cryptoObj.randomUUID()
+  return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`
+}
+
+function loadHistory(storageKey: string | undefined): TransactionRecord[] {
+  if (!storageKey || typeof window === 'undefined' || !window.localStorage) return []
+  try {
+    const raw = window.localStorage.getItem(storageKey)
+    return raw ? (JSON.parse(raw) as TransactionRecord[]) : []
+  } catch {
+    return []
+  }
+}
+
+function saveHistory(storageKey: string | undefined, history: TransactionRecord[]): void {
+  if (!storageKey || typeof window === 'undefined' || !window.localStorage) return
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify(history))
+  } catch {
+    // Ignore storage failures (quota exceeded, private browsing, etc.)
+  }
+}
 
 function parseSource(txXDR: string, networkPassphrase: string): string {
   try {
@@ -60,7 +98,9 @@ async function hashTxXDR(txXDR: string): Promise<string> {
   return (hash >>> 0).toString(16).padStart(8, '0')
 }
 
-export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSorobanResurrectReturn {
+export function useSorobanResurrect<TSigner extends SigningStrategy = SigningStrategy>(
+  options: UseSorobanResurrectOptions<TSigner>,
+): UseSorobanResurrectReturn<TSigner> {
   const clientRef = useRef<SorobanResurrect | null>(null)
   const simulationCacheRef = useRef<Map<string, SimulationCacheEntry>>(new Map())
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -73,6 +113,24 @@ export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSor
   const [archivedKeys, setArchivedKeys] = useState<ArchivedKey[]>([])
   const [isOptimistic, setIsOptimistic] = useState(false)
   const [progress, setProgress] = useState<RestoreProgress>(IDLE_PROGRESS)
+
+  const historyStorageKey = options.persistHistory
+    ? (typeof options.persistHistory === 'string' ? options.persistHistory : DEFAULT_HISTORY_STORAGE_KEY)
+    : undefined
+  const [history, setHistory] = useState<TransactionRecord[]>(() => loadHistory(historyStorageKey))
+
+  const addHistoryRecord = useCallback((record: TransactionRecord) => {
+    setHistory((prev) => {
+      const next = [...prev, record]
+      saveHistory(historyStorageKey, next)
+      return next
+    })
+  }, [historyStorageKey])
+
+  const clearHistory = useCallback(() => {
+    setHistory([])
+    saveHistory(historyStorageKey, [])
+  }, [historyStorageKey])
 
   // Stabilize onLog so it doesn't trigger config re-memoization when options change
   const preFlightEnabled = options.preFlight?.enabled ?? true
@@ -176,26 +234,17 @@ export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSor
 
   const executeWithRestore = useCallback(async (
     txXDR: string,
-    signTransaction: (xdr: string) => Promise<string>,
-    { forceRefresh = false, signal }: { forceRefresh?: boolean; signal?: AbortSignal } = {},
+    signTransaction?: (xdr: string) => Promise<string>,
+    { forceRefresh = false }: { forceRefresh?: boolean } = {},
   ): Promise<ExecutionResult> => {
-    const controller = new AbortController()
-    abortControllerRef.current = controller
-    if (signal) {
-      if (signal.aborted) controller.abort()
-      else signal.addEventListener('abort', () => controller.abort(), { once: true })
-    }
-    const throwIfAborted = () => {
-      if (controller.signal.aborted) {
-        throw new SorobanResurrectError('Restoration aborted', 'ABORTED')
-      }
+    const sign = signTransaction ?? resolveSigner(options.signingStrategy)
+    if (!sign) {
+      throw new Error(
+        'executeWithRestore requires a signTransaction argument or a signingStrategy option',
+      )
     }
 
-    const optimisticEnabled = options.optimisticUpdate ?? false
-    const prevLastResult = lastResult
-    const prevNeedsRestore = needsRestore
-    const prevArchivedKeys = archivedKeys
-
+    const startedAt = Date.now()
     setIsExecuting(true)
     setError(null)
     setProgress({ ...IDLE_PROGRESS, status: 'checking' })
@@ -216,9 +265,7 @@ export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSor
       throwIfAborted()
 
       if (!simulation.needsRestoration) {
-        setProgress(p => ({ ...p, status: 'submitting' }))
-        const signedXDR = await signTransaction(txXDR)
-        throwIfAborted()
+        const signedXDR = await sign(txXDR)
         const hash = computeHash(signedXDR, options.networkPassphrase)
         const result: ExecutionResult = {
           success: true,
@@ -228,6 +275,14 @@ export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSor
         setLastResult(result)
         setProgress(p => ({ ...p, status: 'done' }))
         options.preFlight?.onRestoreComplete?.(result)
+        addHistoryRecord({
+          id: generateId(),
+          originalTxHash: result.originalTxHash,
+          archivedKeys: [],
+          status: 'success',
+          timestamp: startedAt,
+          durationMs: Date.now() - startedAt,
+        })
         return result
       }
 
@@ -282,8 +337,8 @@ export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSor
         restoreTx.transactionXDR,
         txXDR,
         async (xdr: string) => {
-          throwIfAborted()
-          return signTransaction(xdr)
+          const signed = await sign(xdr)
+          return signed
         },
       )
       throwIfAborted()
@@ -292,6 +347,16 @@ export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSor
       setIsOptimistic(false)
       setProgress(p => ({ ...p, status: 'done', keysRestored: restoreTx.keysRestored }))
       options.preFlight?.onRestoreComplete?.(result)
+      addHistoryRecord({
+        id: generateId(),
+        originalTxHash: result.originalTxHash,
+        restoreTxHash: result.restoreTxHash,
+        archivedKeys: simulation.archivedKeys,
+        status: result.success ? 'success' : 'failed',
+        error: result.error,
+        timestamp: startedAt,
+        durationMs: Date.now() - startedAt,
+      })
       return result
     } catch (err) {
       const aborted = err instanceof SorobanResurrectError && err.code === 'ABORTED'
@@ -311,6 +376,14 @@ export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSor
       const error = err instanceof Error ? err : new Error(message)
       options.onError?.(error)
       options.preFlight?.onError?.(error)
+      addHistoryRecord({
+        id: generateId(),
+        archivedKeys,
+        status: 'failed',
+        error: message,
+        timestamp: startedAt,
+        durationMs: Date.now() - startedAt,
+      })
       if (err instanceof SorobanResurrectError) throw err
       throw new SorobanResurrectError(message, 'ORIGINAL_TX_FAILED', err)
     } finally {
@@ -318,7 +391,7 @@ export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSor
       if (abortControllerRef.current === controller) abortControllerRef.current = null
       setIsExecuting(false)
     }
-  }, [getClient, options, lastResult, needsRestore, archivedKeys])
+  }, [getClient, options, addHistoryRecord, archivedKeys])
 
   const reset = useCallback(() => {
     setIsChecking(false)
@@ -341,8 +414,8 @@ export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSor
     needsRestore,
     archivedKeys,
     reset,
-    isOptimistic,
-    progress,
-    abort,
+    signer: options.signingStrategy,
+    history,
+    clearHistory,
   }
 }
