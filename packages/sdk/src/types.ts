@@ -139,6 +139,12 @@ export interface ContractKeyGroup {
 
 export interface SimulationCheckResult {
   needsRestoration: boolean
+  /**
+   * Keys detected as archived.  Classification (keyType, sacKeyType,
+   * restorePriority) is deferred — call `classifyDeferredKeys()` from
+   * `footprint-parser` to resolve them into full `ArchivedKey` objects
+   * before batch building.
+   */
   archivedKeys: ArchivedKey[]
   totalKeysInFootprint: number
 }
@@ -146,6 +152,40 @@ export interface SimulationCheckResult {
 export interface RestoreTransactionResult {
   transactionXDR: string
   keysRestored: number
+}
+
+export interface RestoreBatchResult {
+  batchIndex: number
+  transactionXDR: string
+  keysRestored: number
+  status: 'pending' | 'success' | 'failed'
+  txHash?: string
+  error?: string
+}
+
+export interface RestoreAllBatchesResult {
+  success: boolean
+  batches: RestoreBatchResult[]
+  totalKeysRestored: number
+  failedAtBatchIndex?: number
+  error?: string
+}
+
+export interface ConcurrentRestoreResult {
+  success: boolean
+  batches: RestoreBatchResult[]
+  totalKeysRestored: number
+  failedBatchCount?: number
+  failedBatchIndices?: number[]
+  error?: string
+  concurrencyUsed?: number
+}
+
+export interface RpcEndpointHealth {
+  url: string
+  healthy: boolean
+  lastCheck: number
+  latencyMs: number
 }
 
 export interface FeeBumpMetadata {
