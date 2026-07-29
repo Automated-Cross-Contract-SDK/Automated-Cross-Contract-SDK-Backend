@@ -47,6 +47,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:integration": "vitest run --config vitest.integration.ts",
+    "test:load": "vitest run tests/benchmarks/load-test.suite.ts",
+    "test:load:benchmark": "vitest bench tests/benchmarks/load-test.suite.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
