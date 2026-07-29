@@ -1,6 +1,7 @@
 import { xdr } from '@stellar/stellar-sdk'
 import type { RetryPolicy } from './retry-policy.js'
 import type { SimulationCacheConfig } from './simulation-cache.js'
+import type { FootprintCacheConfig } from './footprint-cache.js'
 
 /**
  * SAC (Stellar Asset Contract) specific key types.
@@ -98,6 +99,16 @@ export interface SorobanResurrectConfig {
    * Defaults to `30`.
    */
   maxPollAttempts?: number
+  /**
+   * When set, caches `extractFootprintFromTransaction` results keyed by the
+   * SHA-256 hash of the transaction XDR.  This avoids redundant XDR parsing
+   * when the same transaction is passed to multiple SDK methods (e.g.
+   * `simulate` and `checkTransaction`).
+   *
+   * Call `invalidateFootprintCache()` / `onLedgerClose()` to flush stale
+   * entries when a new ledger closes.
+   */
+  footprintCache?: FootprintCacheConfig
 }
 
 /**
