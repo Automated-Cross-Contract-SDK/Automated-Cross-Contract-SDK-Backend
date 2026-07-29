@@ -32,9 +32,16 @@ vi.mock('@stellar/stellar-sdk', () => {
         isSimulationRestore: vi.fn(),
       },
     },
-    TransactionBuilder: {
-      fromXDR: vi.fn(),
-    },
+    TransactionBuilder: Object.assign(
+      vi.fn().mockImplementation(() => ({
+        addOperation: vi.fn().mockReturnThis(),
+        setTimeout: vi.fn().mockReturnThis(),
+        build: vi.fn().mockReturnValue({
+          toXDR: vi.fn().mockReturnValue('mock-tx-xdr'),
+        }),
+      })),
+      { fromXDR: vi.fn() },
+    ),
     Transaction: vi.fn(),
     Operation: {
       restoreFootprint: vi.fn().mockReturnValue({ type: 'restoreFootprint' }),
