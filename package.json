@@ -6,6 +6,7 @@
   "workspaces": [
     "packages/sdk",
     "packages/react",
+    "packages/mock-rpc",
     "packages/example"
   ],
   "scripts": {
