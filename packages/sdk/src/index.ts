@@ -5,8 +5,12 @@ export {
   classifySacKey,
   encodeLedgerKey,
   extractFootprintFromTransaction,
+  extractFootprintFromTransactionStreaming,
+  classifyDeferredKeys,
+  STREAMING_PARSER_MEMORY_TARGET,
+  STREAMING_THRESHOLD_BYTES,
 } from './footprint-parser.js'
-export type { FootprintKeys } from './footprint-parser.js'
+export type { FootprintKeys, DeferredArchivedKey } from './footprint-parser.js'
 export {
   SorobanResurrectError,
 } from './types.js'
