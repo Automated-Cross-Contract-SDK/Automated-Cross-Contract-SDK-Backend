@@ -3,16 +3,17 @@
 import { type ReactNode, useMemo } from 'react'
 import { SorobanResurrectContext } from './SorobanResurrectContext.js'
 import { useSorobanResurrect } from './useSorobanResurrect.js'
-import type { UseSorobanResurrectOptions } from './types.js'
+import type { UseSorobanResurrectOptions, SigningStrategy } from './types.js'
 
-export interface SorobanResurrectProviderProps extends UseSorobanResurrectOptions {
+export interface SorobanResurrectProviderProps<TSigner extends SigningStrategy = SigningStrategy>
+  extends UseSorobanResurrectOptions<TSigner> {
   children: ReactNode
 }
 
-export function SorobanResurrectProvider({
+export function SorobanResurrectProvider<TSigner extends SigningStrategy = SigningStrategy>({
   children,
   ...options
-}: SorobanResurrectProviderProps) {
+}: SorobanResurrectProviderProps<TSigner>) {
   const resurrect = useSorobanResurrect(options)
 
   const config = useMemo(
