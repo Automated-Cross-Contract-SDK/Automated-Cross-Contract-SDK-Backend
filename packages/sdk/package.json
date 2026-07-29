@@ -47,6 +47,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:integration": "vitest run --config vitest.integration.ts",
+    "test:version-matrix": "vitest run --config vitest.version-matrix.ts",
+    "test:mutation": "stryker run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -73,6 +75,8 @@
     "@ledgerhq/hw-transport-webusb": { "optional": true }
   },
   "devDependencies": {
+    "@stryker-mutator/core": "^8.6.0",
+    "@stryker-mutator/vitest-runner": "^8.6.0",
     "@vitest/coverage-v8": "^2.0.0",
     "tsup": "^8.3.0",
     "vitest": "^2.0.0"
