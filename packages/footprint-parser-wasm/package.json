@@ -1,0 +1,49 @@
+{
+  "name": "@soroban-resurrect/footprint-parser-wasm",
+  "version": "0.1.0",
+  "description": "WebAssembly-accelerated Soroban XDR footprint parser — 10-50x faster than TypeScript",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend",
+    "directory": "packages/footprint-parser-wasm"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "pkg",
+    "README.md"
+  ],
+  "scripts": {
+    "build:wasm": "wasm-pack build --target bundler --out-dir pkg --out-name footprint_parser_wasm",
+    "build:ts": "tsup src/index.ts --format esm,cjs --dts",
+    "build": "npm run build:wasm && npm run build:ts",
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "peerDependencies": {
+    "@soroban-resurrect/sdk": "^0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "@soroban-resurrect/sdk": { "optional": true }
+  },
+  "devDependencies": {
+    "tsup": "^8.3.0",
+    "typescript": "^5.5.0",
+    "wasm-pack": "^0.13.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

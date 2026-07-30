@@ -5,8 +5,12 @@ export {
   classifySacKey,
   encodeLedgerKey,
   extractFootprintFromTransaction,
+  extractFootprintFromTransactionStreaming,
+  classifyDeferredKeys,
+  STREAMING_PARSER_MEMORY_TARGET,
+  STREAMING_THRESHOLD_BYTES,
 } from './footprint-parser.js'
-export type { FootprintKeys } from './footprint-parser.js'
+export type { FootprintKeys, DeferredArchivedKey } from './footprint-parser.js'
 export {
   SorobanResurrectError,
 } from './types.js'
@@ -37,6 +41,11 @@ export {
   SimulationCache,
 } from './simulation-cache.js'
 export type { SimulationCacheConfig, CacheStatistics } from './simulation-cache.js'
+
+export {
+  FootprintCache,
+} from './footprint-cache.js'
+export type { FootprintCacheConfig, FootprintCacheStatistics } from './footprint-cache.js'
 
 export { VersionNegotiator, PROTOCOL_COMPATIBILITY_MATRIX, MIN_SUPPORTED_PROTOCOL, MAX_SUPPORTED_PROTOCOL } from './version-negotiator.js'
 export type { ProtocolSupport, ServerVersionInfo, XdrEncodingOptions } from './version-negotiator.js'

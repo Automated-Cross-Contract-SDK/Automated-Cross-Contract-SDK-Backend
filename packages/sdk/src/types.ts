@@ -1,6 +1,7 @@
 import { xdr } from '@stellar/stellar-sdk'
 import type { RetryPolicy } from './retry-policy.js'
 import type { SimulationCacheConfig } from './simulation-cache.js'
+import type { FootprintCacheConfig } from './footprint-cache.js'
 
 /**
  * SAC (Stellar Asset Contract) specific key types.
@@ -98,6 +99,16 @@ export interface SorobanResurrectConfig {
    * Defaults to `30`.
    */
   maxPollAttempts?: number
+  /**
+   * When set, caches `extractFootprintFromTransaction` results keyed by the
+   * SHA-256 hash of the transaction XDR.  This avoids redundant XDR parsing
+   * when the same transaction is passed to multiple SDK methods (e.g.
+   * `simulate` and `checkTransaction`).
+   *
+   * Call `invalidateFootprintCache()` / `onLedgerClose()` to flush stale
+   * entries when a new ledger closes.
+   */
+  footprintCache?: FootprintCacheConfig
 }
 
 /**
@@ -139,6 +150,12 @@ export interface ContractKeyGroup {
 
 export interface SimulationCheckResult {
   needsRestoration: boolean
+  /**
+   * Keys detected as archived.  Classification (keyType, sacKeyType,
+   * restorePriority) is deferred — call `classifyDeferredKeys()` from
+   * `footprint-parser` to resolve them into full `ArchivedKey` objects
+   * before batch building.
+   */
   archivedKeys: ArchivedKey[]
   totalKeysInFootprint: number
 }
@@ -146,6 +163,40 @@ export interface SimulationCheckResult {
 export interface RestoreTransactionResult {
   transactionXDR: string
   keysRestored: number
+}
+
+export interface RestoreBatchResult {
+  batchIndex: number
+  transactionXDR: string
+  keysRestored: number
+  status: 'pending' | 'success' | 'failed'
+  txHash?: string
+  error?: string
+}
+
+export interface RestoreAllBatchesResult {
+  success: boolean
+  batches: RestoreBatchResult[]
+  totalKeysRestored: number
+  failedAtBatchIndex?: number
+  error?: string
+}
+
+export interface ConcurrentRestoreResult {
+  success: boolean
+  batches: RestoreBatchResult[]
+  totalKeysRestored: number
+  failedBatchCount?: number
+  failedBatchIndices?: number[]
+  error?: string
+  concurrencyUsed?: number
+}
+
+export interface RpcEndpointHealth {
+  url: string
+  healthy: boolean
+  lastCheck: number
+  latencyMs: number
 }
 
 export interface FeeBumpMetadata {

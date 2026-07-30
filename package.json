@@ -7,6 +7,7 @@
     "packages/sdk",
     "packages/react",
     "packages/wallet-adapters",
+    "packages/mock-rpc",
     "packages/example"
   ],
   "scripts": {
