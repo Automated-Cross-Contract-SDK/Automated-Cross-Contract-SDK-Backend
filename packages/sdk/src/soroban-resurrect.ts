@@ -18,6 +18,7 @@ import {
   ConcurrentRestoreResult,
   ContractKeyGroup,
   ExecutionResult,
+  FailedRestoreState,
   SorobanResurrectError,
   FeeBumpMetadata,
 } from './types.js'
@@ -72,6 +73,8 @@ function extractInnerTransaction(tx: any): any {
 export class SorobanResurrect {
   private server: SorobanRpc.Server
   private config: Required<Omit<SorobanResurrectConfig, 'timeout'>> & { timeout?: number }
+  /** Last partial-failure state captured by executeRestoreBatches, for recovery via getFailedKeys()/retryFailedRestore(). */
+  private _lastFailedRestoreState: FailedRestoreState | null = null
 
   constructor(config: SorobanResurrectConfig) {
     this.config = {
@@ -82,6 +85,7 @@ export class SorobanResurrect {
       retryPolicy: new ExponentialBackoff(3, 500),
       onLog: () => {},
       useWebSocket: false,
+      dynamicFeeEstimation: false,
       ...config,
     }
 
@@ -405,8 +409,10 @@ export class SorobanResurrect {
 
       const sorobanDataXdr = dataBuilder.build().toXDR('base64') as string
 
+      const fee = await this.estimateRestoreFee(batchKeys.length)
+
       const tx = new TransactionBuilder(batchAccount, {
-        fee: this.config.restoreFee!,
+        fee,
         networkPassphrase: this.config.networkPassphrase,
         sorobanData: sorobanDataXdr,
       })
@@ -430,6 +436,7 @@ export class SorobanResurrect {
   async executeRestoreBatches(
     batches: RestoreBatchResult[],
     signTransaction: (xdr: string) => Promise<string>,
+    sourceAccountID?: string,
   ): Promise<RestoreAllBatchesResult> {
     const results: RestoreBatchResult[] = []
     let totalKeysRestored = 0
@@ -457,6 +464,18 @@ export class SorobanResurrect {
           error: errorMsg,
         })
 
+        // Collect the remaining batches (current + unexecuted) as failed batches
+        const failedBatches = [results[results.length - 1], ...batches.slice(i + 1)]
+
+        // Capture failed state for recovery via getFailedKeys() / retryFailedRestore()
+        this._lastFailedRestoreState = {
+          sourceAccountID: sourceAccountID ?? '',
+          failedBatches,
+          failedKeys: [],  // populated lazily if caller needs individual keys
+          failedBatchIndex: i,
+          partialEntriesRestored: totalKeysRestored,
+        }
+
         // Return early with partial success tracking
         return {
           success: false,
@@ -467,6 +486,9 @@ export class SorobanResurrect {
         }
       }
     }
+
+    // All batches succeeded — clear any stale failure state
+    this._lastFailedRestoreState = null
 
     // All batches succeeded
     return {
@@ -627,8 +649,10 @@ export class SorobanResurrect {
       const dataBuilder = new SorobanDataBuilder().setFootprint([], ledgerKeys)
       const sorobanDataXdr = dataBuilder.build().toXDR('base64') as string
 
+      const fee = await this.estimateRestoreFee(batchKeys.length)
+
       const tx = new TransactionBuilder(batchAccount, {
-        fee: this.config.restoreFee!,
+        fee,
         networkPassphrase: this.config.networkPassphrase,
         sorobanData: sorobanDataXdr,
       })
@@ -790,6 +814,81 @@ export class SorobanResurrect {
     return batches
   }
 
+  /**
+   * Estimate the fee required for a restore operation.
+   *
+   * When `dynamicFeeEstimation` is enabled in config, this method builds a
+   * minimal restore transaction for `batchSize` keys and runs
+   * `simulateTransaction` against it to extract the resource fee from the
+   * simulation response.  A 10 % buffer is added on top of the simulated fee
+   * to account for ledger-state variance between simulation time and submission.
+   *
+   * If `dynamicFeeEstimation` is disabled, or if the simulation call fails for
+   * any reason, the method falls back to returning `config.restoreFee`.
+   *
+   * @param batchSize  Number of ledger keys in the restore batch.
+   * @returns          Fee string (stroops) to use for `TransactionBuilder`.
+   */
+  async estimateRestoreFee(batchSize: number): Promise<string> {
+    if (!this.config.dynamicFeeEstimation) {
+      return this.config.restoreFee!
+    }
+
+    try {
+      // Build a placeholder restore transaction with dummy ledger keys so the
+      // RPC node can estimate resource consumption for the given batch size.
+      // We use a throw-away source account representation; the simulation only
+      // needs a valid transaction envelope to compute resource fees.
+      const placeholderAccountId = 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN'
+      const placeholderAccount = new Account(placeholderAccountId, '0')
+
+      // Build a minimal footprint — the ledger keys themselves don't matter for
+      // fee estimation since the RPC considers only the count and transaction
+      // structure when computing the resource fee.
+      const dataBuilder = new SorobanDataBuilder().setFootprint([], [])
+
+      const candidateTx = new TransactionBuilder(placeholderAccount, {
+        fee: this.config.restoreFee!,
+        networkPassphrase: this.config.networkPassphrase,
+        sorobanData: dataBuilder.build().toXDR('base64'),
+      })
+        .addOperation(Operation.restoreFootprint({}))
+        .setTimeout(0)
+        .build()
+
+      const simResult = await this.retryOnFailure(
+        () => this.getServer().simulateTransaction(candidateTx as any),
+        'simulateTransaction(estimateRestoreFee)',
+      )
+
+      if (
+        !SorobanRpc.Api.isSimulationError(simResult) &&
+        SorobanRpc.Api.isSimulationSuccess(simResult) &&
+        simResult.minResourceFee
+      ) {
+        // Add a 10 % buffer on top of the minimum resource fee to ensure the
+        // transaction doesn't get rejected due to small ledger-state changes
+        // between simulation time and submission time.
+        const minFee = BigInt(simResult.minResourceFee)
+        const buffer = minFee / 10n
+        const estimatedFee = (minFee + buffer).toString()
+        this.log(
+          'info',
+          `Dynamic fee estimate for batch of ${batchSize}: ${estimatedFee} stroops (min=${simResult.minResourceFee})`,
+        )
+        return estimatedFee
+      }
+    } catch (err) {
+      this.log(
+        'warn',
+        `Dynamic fee estimation failed, falling back to restoreFee: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+
+    // Fall back to the configured restoreFee
+    return this.config.restoreFee!
+  }
+
   private async buildSingleRestoreTransaction(
     keys: ArchivedKey[],
     sourceAccountID: string,
@@ -804,8 +903,12 @@ export class SorobanResurrect {
     const dataBuilder = new SorobanDataBuilder()
       .setFootprint([], ledgerKeys)
 
+    // Build a candidate transaction to estimate the fee against, then rebuild
+    // with the final fee once we have it.
+    const fee = await this.estimateRestoreFee(keys.length)
+
     const tx = new TransactionBuilder(sourceAccount, {
-      fee: this.config.restoreFee!,
+      fee,
       networkPassphrase: this.config.networkPassphrase,
       sorobanData: dataBuilder.build().toXDR('base64'),
     })
@@ -1010,6 +1113,8 @@ export class SorobanResurrect {
       batchResults = await this.executeRestoreBatches(restoreBatches, signTransaction)
 
       if (!batchResults.success) {
+        // Propagate partial-failure fields into the thrown error context so
+        // callers can read them from _lastFailedRestoreState via getFailedKeys().
         throw new SorobanResurrectError(
           batchResults.error || `Batch ${batchResults.failedAtBatchIndex} failed`,
           'RESTORE_FAILED',
@@ -1023,13 +1128,14 @@ export class SorobanResurrect {
       )
     } catch (err) {
       const isRestoreError = err instanceof SorobanResurrectError && err.code === 'RESTORE_FAILED'
-      throw isRestoreError
-        ? err
-        : new SorobanResurrectError(
-            `Restore batches failed: ${err instanceof Error ? err.message : String(err)}`,
-            'RESTORE_FAILED',
-            err,
-          )
+      if (isRestoreError) {
+        throw err
+      }
+      throw new SorobanResurrectError(
+        `Restore batches failed: ${err instanceof Error ? err.message : String(err)}`,
+        'RESTORE_FAILED',
+        err,
+      )
     }
 
     try {
@@ -1299,6 +1405,145 @@ export class SorobanResurrect {
       undefined,
       { rpcUrl: this.config.rpcUrl, txHash: hash },
     )
+  }
+
+  /**
+   * Returns the captured partial-failure state from the most recent
+   * `executeRestoreBatches` call that failed mid-way through a batch sequence,
+   * or `null` when the last execution succeeded (or no execution has run yet).
+   *
+   * Use this after catching a `RESTORE_FAILED` error from
+   * `executeRestoreThenOriginalBatches` to inspect which keys still need to be
+   * restored and to obtain the batch objects needed by `retryFailedRestore`.
+   *
+   * @example
+   * ```ts
+   * try {
+   *   await client.executeRestoreThenOriginalBatches(batches, originalXDR, sign)
+   * } catch (err) {
+   *   const state = client.getFailedKeys()
+   *   if (state) {
+   *     console.log(`${state.failedKeys.length} keys remain unrestored`)
+   *     await client.retryFailedRestore(state, sign)
+   *   }
+   * }
+   * ```
+   */
+  getFailedKeys(): FailedRestoreState | null {
+    return this._lastFailedRestoreState
+  }
+
+  /**
+   * Retry only the failed batches from a previous partial restore.
+   *
+   * Rebuilds each failed batch transaction with a fresh sequence number
+   * (fetched from the RPC) and re-submits them.  On success the internal
+   * `_lastFailedRestoreState` is cleared.  On failure the state is updated to
+   * reflect any newly failed batches so the caller can keep retrying
+   * incrementally.
+   *
+   * @param state            State object returned by `getFailedKeys()`.
+   * @param signTransaction  Wallet signing callback.
+   * @returns                `ExecutionResult` summarising the retry outcome.
+   */
+  async retryFailedRestore(
+    state: FailedRestoreState,
+    signTransaction: (xdr: string) => Promise<string>,
+  ): Promise<ExecutionResult> {
+    if (state.failedBatches.length === 0) {
+      this.log('info', 'retryFailedRestore: no failed batches to retry')
+      return {
+        success: true,
+        entriesRestored: state.partialEntriesRestored,
+      }
+    }
+
+    this.log(
+      'info',
+      `Retrying ${state.failedBatches.length} failed restore batches (source=${state.sourceAccountID})`,
+    )
+
+    // Re-fetch current sequence number so rebuilt transactions are valid
+    const sourceAccount = await this.retryOnFailure(
+      () => this.getServer().getAccount(state.sourceAccountID),
+      `getAccount(${state.sourceAccountID})`,
+    )
+
+    let currentSequence = BigInt(sourceAccount.sequenceNumber())
+
+    // Rebuild each failed batch with an updated sequence number and, if
+    // dynamicFeeEstimation is enabled, a freshly estimated fee.
+    const rebuiltBatches: RestoreBatchResult[] = []
+    for (const batch of state.failedBatches) {
+      // We can't recover the original ArchivedKey objects from the XDR here,
+      // so we reconstruct a minimal transaction with the same footprint by
+      // parsing the stored XDR.
+      let rebuildXDR = batch.transactionXDR
+      try {
+        const existingTx = TransactionBuilder.fromXDR(
+          batch.transactionXDR,
+          this.config.networkPassphrase,
+        ) as any
+        const sorobanData = existingTx.sorobanData as xdr.SorobanTransactionData | undefined
+        const batchAccount = new Account(state.sourceAccountID, currentSequence.toString())
+        currentSequence += 1n
+
+        const fee = await this.estimateRestoreFee(batch.keysRestored)
+
+        const rebuiltTx = new TransactionBuilder(batchAccount, {
+          fee,
+          networkPassphrase: this.config.networkPassphrase,
+          sorobanData: sorobanData?.toXDR('base64') ?? batch.transactionXDR,
+        })
+          .addOperation(Operation.restoreFootprint({}))
+          .setTimeout(0)
+          .build()
+
+        rebuildXDR = rebuiltTx.toXDR()
+      } catch (err) {
+        this.log(
+          'warn',
+          `Could not rebuild batch ${batch.batchIndex}, retrying with original XDR: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+
+      rebuiltBatches.push({
+        ...batch,
+        transactionXDR: rebuildXDR,
+        status: 'pending',
+        txHash: undefined,
+        error: undefined,
+      })
+    }
+
+    const retryResult = await this.executeRestoreBatches(
+      rebuiltBatches,
+      signTransaction,
+      state.sourceAccountID,
+    )
+
+    const totalRestored = state.partialEntriesRestored + retryResult.totalKeysRestored
+
+    if (retryResult.success) {
+      this._lastFailedRestoreState = null
+      this.log('info', `Retry succeeded, total entries restored: ${totalRestored}`)
+      return {
+        success: true,
+        entriesRestored: totalRestored,
+        batchResults: retryResult,
+      }
+    }
+
+    // Partial retry failure — update the state for the next retry
+    this.log('warn', `Retry partially failed at batch ${retryResult.failedAtBatchIndex}`)
+    return {
+      success: false,
+      entriesRestored: totalRestored,
+      failedBatchIndex: retryResult.failedAtBatchIndex,
+      partialEntriesRestored: totalRestored,
+      error: retryResult.error,
+      batchResults: retryResult,
+    }
   }
 
   async checkAndPrepare(

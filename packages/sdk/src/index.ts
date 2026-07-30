@@ -22,6 +22,7 @@ export type {
   ConcurrentRestoreResult,
   ContractKeyGroup,
   ExecutionResult,
+  FailedRestoreState,
   PreFlightConfig,
   FeeBumpMetadata,
 } from './types.js'
