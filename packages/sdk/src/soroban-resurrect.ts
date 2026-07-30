@@ -20,6 +20,9 @@ import {
   ExecutionResult,
   SorobanResurrectError,
   FeeBumpMetadata,
+  SorobanResurrectEvents,
+  WsTransactionStatusEvent,
+  TransactionWaitResult,
 } from './types.js'
 import {
   FootprintKeys,
@@ -30,7 +33,8 @@ import {
 } from './footprint-parser.js'
 import { ExponentialBackoff, type RetryPolicy } from './retry-policy.js'
 import { SimulationCache, type SimulationCacheConfig } from './simulation-cache.js'
-import { FootprintCache, type FootprintCacheStatistics } from './footprint-cache.js'
+import { RpcFailoverManager, type RpcEndpointHealth } from './rpc-failover.js'
+import { DEFAULT_MAX_CONCURRENCY, MAX_RETRIES } from './constants.js'
 
 const MAX_XDR_SIZE_BYTES = 100_000
 const DEFAULT_RESTORE_FEE = '100000'
@@ -74,7 +78,10 @@ function extractInnerTransaction(tx: any): any {
 export class SorobanResurrect {
   private server: SorobanRpc.Server
   private config: Required<Omit<SorobanResurrectConfig, 'timeout'>> & { timeout?: number }
-  private footprintCache: FootprintCache | null = null
+  private listeners: Record<string, Set<any>> = {}
+  private failoverManager!: RpcFailoverManager
+  private serverCache: Map<string, SorobanRpc.Server> = new Map()
+  private simulationCache?: SimulationCache
 
   constructor(config: SorobanResurrectConfig) {
     this.config = {
@@ -97,7 +104,14 @@ export class SorobanResurrect {
       serverOptions.timeout = this.config.timeout
     }
 
-    this.server = new SorobanRpc.Server(this.config.rpcUrl, serverOptions)
+    this.server = new SorobanRpc.Server(
+      Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl,
+      serverOptions,
+    )
+
+    this.failoverManager = new RpcFailoverManager(
+      Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl : [this.config.rpcUrl],
+    )
 
     // Initialize footprint cache when configured
     if (this.config.footprintCache) {
