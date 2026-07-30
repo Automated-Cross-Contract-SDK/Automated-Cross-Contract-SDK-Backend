@@ -1,0 +1,72 @@
+{
+  "name": "@soroban-resurrect/wallet-adapters",
+  "version": "0.1.0",
+  "description": "Framework-agnostic Soroban wallet adapters (Freighter, Albedo, Rabet, xBull, Lobstr, Ledger) with auto-detection, prioritization, and connection/network change events",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend",
+    "directory": "packages/wallet-adapters"
+  },
+  "homepage": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend#readme",
+  "bugs": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend/issues",
+  "keywords": [
+    "stellar",
+    "soroban",
+    "wallet",
+    "freighter",
+    "albedo",
+    "rabet",
+    "xbull",
+    "lobstr",
+    "ledger",
+    "blockchain"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "build:watch": "tsup --watch",
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^12.0.0"
+  },
+  "peerDependencies": {
+    "albedo-wallet-sdk": "^0.13.0",
+    "@ledgerhq/hw-app-str": "^6.29.0",
+    "@ledgerhq/hw-transport-webhid": "^6.29.0",
+    "@ledgerhq/hw-transport-webusb": "^6.29.0"
+  },
+  "peerDependenciesMeta": {
+    "albedo-wallet-sdk": { "optional": true },
+    "@ledgerhq/hw-app-str": { "optional": true },
+    "@ledgerhq/hw-transport-webhid": { "optional": true },
+    "@ledgerhq/hw-transport-webusb": { "optional": true }
+  },
+  "devDependencies": {
+    "tsup": "^8.3.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
