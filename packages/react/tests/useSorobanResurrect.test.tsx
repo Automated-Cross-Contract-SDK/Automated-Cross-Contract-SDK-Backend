@@ -201,6 +201,52 @@ describe('useSorobanResurrect', () => {
         expect.objectContaining({ success: true, entriesRestored: 0 }),
       )
     })
+
+    it('reuses cached simulation between checkTransaction and executeWithRestore', async () => {
+      mockSimulate.mockResolvedValue(simResult(true))
+      mockBuildRestoreTransaction.mockResolvedValue({
+        transactionXDR: 'restore-xdr',
+        keysRestored: 2,
+      })
+      mockExecuteRestoreThenOriginal.mockResolvedValue({
+        success: true,
+        restoreTxHash: '0xrestore',
+        originalTxHash: '0xoriginal',
+        entriesRestored: 2,
+      })
+      const signTx = vi.fn().mockResolvedValue('signed')
+
+      const { result } = renderHook(() => useSorobanResurrect(defaultOptions))
+
+      await act(async () => {
+        await result.current.checkTransaction('tx-xdr')
+      })
+
+      await act(async () => {
+        await result.current.executeWithRestore('tx-xdr', signTx)
+      })
+
+      expect(mockSimulate).toHaveBeenCalledTimes(1)
+      expect(mockBuildRestoreTransaction).toHaveBeenCalled()
+      expect(mockExecuteRestoreThenOriginal).toHaveBeenCalled()
+    })
+
+    it('skips cached simulation when forceRefresh is true', async () => {
+      mockSimulate.mockResolvedValue(simResult(false))
+      const signTx = vi.fn().mockResolvedValue('signed')
+
+      const { result } = renderHook(() => useSorobanResurrect(defaultOptions))
+
+      await act(async () => {
+        await result.current.checkTransaction('tx-xdr')
+      })
+
+      await act(async () => {
+        await result.current.executeWithRestore('tx-xdr', signTx, { forceRefresh: true })
+      })
+
+      expect(mockSimulate).toHaveBeenCalledTimes(2)
+    })
   })
 
   describe('executeWithRestore — restoration needed', () => {

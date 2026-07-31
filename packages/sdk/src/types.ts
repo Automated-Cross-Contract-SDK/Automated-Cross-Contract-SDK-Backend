@@ -1,6 +1,7 @@
 import { xdr } from '@stellar/stellar-sdk'
 import type { RetryPolicy } from './retry-policy.js'
 import type { SimulationCacheConfig } from './simulation-cache.js'
+import type { FootprintCacheConfig } from './footprint-cache.js'
 
 /**
  * SAC (Stellar Asset Contract) specific key types.
@@ -83,12 +84,31 @@ export interface SorobanResurrectConfig {
    */
   useWebSocket?: boolean
   /**
-   * When `true`, the SDK uses `simulateTransaction` on the restore XDR to
-   * dynamically estimate the fee required for each restore operation instead
-   * of relying on the static `restoreFee` value. If simulation fails, the SDK
-   * falls back to `restoreFee`. Defaults to `false`.
+   * When `true`, a mismatch between `networkPassphrase` and the passphrase
+   * reported by the RPC server's `getNetwork()` throws a `SorobanResurrectError`
+   * with code `NETWORK_ERROR` instead of only logging a warning.
    */
-  dynamicFeeEstimation?: boolean
+  strictNetworkValidation?: boolean
+  /**
+   * Delay in milliseconds between polling attempts when waiting for a
+   * transaction to reach a terminal status. Defaults to `1000`.
+   */
+  pollIntervalMs?: number
+  /**
+   * Maximum number of polling attempts before giving up on a transaction.
+   * Defaults to `30`.
+   */
+  maxPollAttempts?: number
+  /**
+   * When set, caches `extractFootprintFromTransaction` results keyed by the
+   * SHA-256 hash of the transaction XDR.  This avoids redundant XDR parsing
+   * when the same transaction is passed to multiple SDK methods (e.g.
+   * `simulate` and `checkTransaction`).
+   *
+   * Call `invalidateFootprintCache()` / `onLedgerClose()` to flush stale
+   * entries when a new ledger closes.
+   */
+  footprintCache?: FootprintCacheConfig
 }
 
 /**
@@ -130,6 +150,12 @@ export interface ContractKeyGroup {
 
 export interface SimulationCheckResult {
   needsRestoration: boolean
+  /**
+   * Keys detected as archived.  Classification (keyType, sacKeyType,
+   * restorePriority) is deferred — call `classifyDeferredKeys()` from
+   * `footprint-parser` to resolve them into full `ArchivedKey` objects
+   * before batch building.
+   */
   archivedKeys: ArchivedKey[]
   totalKeysInFootprint: number
 }
@@ -160,10 +186,17 @@ export interface ConcurrentRestoreResult {
   success: boolean
   batches: RestoreBatchResult[]
   totalKeysRestored: number
-  failedBatchCount: number
-  failedBatchIndices: number[]
+  failedBatchCount?: number
+  failedBatchIndices?: number[]
   error?: string
-  concurrencyUsed: number
+  concurrencyUsed?: number
+}
+
+export interface RpcEndpointHealth {
+  url: string
+  healthy: boolean
+  lastCheck: number
+  latencyMs: number
 }
 
 export interface FeeBumpMetadata {
@@ -246,7 +279,7 @@ export class SorobanResurrectError extends Error {
 
   constructor(
     message: string,
-    public code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR',
+    public code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR' | 'ABORTED',
     public cause?: unknown,
     context?: SorobanResurrectErrorContext,
   ) {
