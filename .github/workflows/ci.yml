@@ -130,7 +130,7 @@ jobs:
           echo "{\"testnet\": {\"contract_id\": \"${{ steps.deploy.outputs.contract_id }}\", \"deployed_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}" > /tmp/test-contracts/deployed.json
         
       - name: Upload contract IDs as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-contracts
           path: /tmp/test-contracts/deployed.json
