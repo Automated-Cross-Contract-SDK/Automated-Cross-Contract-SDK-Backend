@@ -92,7 +92,7 @@
     }
   },
   "devDependencies": {
-    "@jazzer.js/core": "^2.1.0",
+    "@jazzer.js/core": "^4.0.0",
     "@vitest/coverage-v8": "^2.0.0",
     "fast-check": "^3.19.0",
     "tsup": "^8.3.0",
