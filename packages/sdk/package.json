@@ -97,7 +97,7 @@
     "fast-check": "^3.19.0",
     "tsup": "^8.3.0",
     "tsx": "^4.19.0",
-    "vitest": "^2.0.0"
+    "vitest": "^4.1.10"
   },
   "publishConfig": {
     "access": "public",
