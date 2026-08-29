@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback } from 'react'
 import { SorobanResurrect } from '@soroban-resurrect/sdk'
 import type { ExecutionResult } from '@soroban-resurrect/sdk'
 import { SorobanResurrectProvider, useSorobanResurrect } from '@soroban-resurrect/react'
+import { ThemeProvider, ThemeToggle, ToastProvider } from './components'
+import { TransactionBuilder } from './TransactionBuilder'
+import { Scenarios } from './Scenarios'
 
 const RPC_URL = 'https://soroban-testnet.stellar.org'
 const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015'
@@ -149,10 +152,15 @@ function WithdrawButton() {
 
   return (
     <div style={{ maxWidth: 720, margin: '0 auto', padding: '2rem', fontFamily: 'system-ui, sans-serif' }}>
-      <h1 style={{ margin: 0 }}>Soroban-Resurrect</h1>
-      <p style={{ color: '#666', marginTop: '0.25rem' }}>
-        Automated Cross-Contract State Restoration
-      </p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <h1 style={{ margin: 0 }}>Soroban-Resurrect</h1>
+          <p style={{ color: '#666', marginTop: '0.25rem' }}>
+            Automated Cross-Contract State Restoration
+          </p>
+        </div>
+        <ThemeToggle />
+      </div>
 
       <FreighterStatus publicKey={publicKey} onConnect={connectFreighter} />
 
@@ -258,6 +266,9 @@ function WithdrawButton() {
           {JSON.stringify({ isChecking, isExecuting, needsRestore, archivedKeys: archivedKeys.length, connected: !!publicKey }, null, 2)}
         </pre>
       </div>
+
+      <TransactionBuilder sourceAccount={publicKey} />
+      <Scenarios />
     </div>
   )
 }
@@ -277,14 +288,24 @@ function btnStyle(bg: string, disabled: boolean, outline?: boolean): React.CSSPr
   return { ...base, background: bg, color: 'white' }
 }
 
+const GLOBAL_STYLES = `
+  body { background: var(--bg, #fff); color: var(--text, #1f2328); margin: 0; }
+  @keyframes sr-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+`
+
 function App() {
   return (
-    <SorobanResurrectProvider
-      rpcUrl={RPC_URL}
-      networkPassphrase={NETWORK_PASSPHRASE}
-    >
-      <WithdrawButton />
-    </SorobanResurrectProvider>
+    <ThemeProvider>
+      <ToastProvider>
+        <style>{GLOBAL_STYLES}</style>
+        <SorobanResurrectProvider
+          rpcUrl={RPC_URL}
+          networkPassphrase={NETWORK_PASSPHRASE}
+        >
+          <WithdrawButton />
+        </SorobanResurrectProvider>
+      </ToastProvider>
+    </ThemeProvider>
   )
 }
 
