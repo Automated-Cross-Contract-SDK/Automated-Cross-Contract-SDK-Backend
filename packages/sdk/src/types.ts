@@ -2,6 +2,7 @@ import { xdr } from '@stellar/stellar-sdk'
 import type { RetryPolicy } from './retry-policy.js'
 import type { SimulationCacheConfig } from './simulation-cache.js'
 import type { FootprintCacheConfig } from './footprint-cache.js'
+import type { AlertingConfig, TelemetryConfig } from './monitoring.js'
 
 /**
  * SAC (Stellar Asset Contract) specific key types.
@@ -75,7 +76,24 @@ export interface SorobanResurrectConfig {
    * Defaults to the Stellar SDK default when not set.
    */
   timeout?: number
-  onLog?: (level: 'info' | 'warn' | 'error', message: string, data?: unknown) => void
+  onLog?: (level: 'debug' | 'info' | 'warn' | 'error', message: string, data?: unknown) => void
+  /**
+   * When `true`, emits verbose `debug`-level logs of internal operations
+   * (RPC calls, XDR parsing, batch sizing, sequence numbers, step timings)
+   * through `onLog`. Defaults to `false`.
+   */
+  debug?: boolean
+  /**
+   * Opt-in, anonymized telemetry for understanding restoration patterns.
+   * Contract IDs are one-way hashed; no private keys, transaction content or
+   * user identities are collected. Disabled unless explicitly configured.
+   */
+  telemetry?: TelemetryConfig
+  /**
+   * Configurable alerting thresholds with a callback hook, for integrating
+   * failure-rate / latency monitoring with external systems.
+   */
+  alerting?: AlertingConfig
   /**
    * When `true`, the SDK attempts to subscribe to transaction status updates
    * via WebSocket instead of polling with `getTransaction`. If the server does

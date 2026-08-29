@@ -53,6 +53,19 @@ export type { ProtocolSupport, ServerVersionInfo, XdrEncodingOptions } from './v
 
 export { VERSION } from './version.js'
 
+export {
+  AlertManager,
+  TelemetryReporter,
+  hashContractId,
+} from './monitoring.js'
+export type {
+  HealthCheckResult,
+  TelemetryConfig,
+  TelemetryEvent,
+  AlertingConfig,
+  Alert,
+} from './monitoring.js'
+
 export { RpcFailoverManager } from './rpc-failover.js'
 export type { RpcEndpointHealth, RpcFailoverConfig } from './rpc-failover.js'
 

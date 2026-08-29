@@ -36,6 +36,13 @@ import { ExponentialBackoff, type RetryPolicy } from './retry-policy.js'
 import { SimulationCache, type SimulationCacheConfig } from './simulation-cache.js'
 import { RpcFailoverManager, type RpcEndpointHealth } from './rpc-failover.js'
 import { DEFAULT_MAX_CONCURRENCY, MAX_RETRIES } from './constants.js'
+import {
+  AlertManager,
+  TelemetryReporter,
+  hashContractId,
+  type HealthCheckResult,
+} from './monitoring.js'
+import { VERSION } from './version.js'
 
 const MAX_XDR_SIZE_BYTES = 100_000
 const DEFAULT_RESTORE_FEE = '100000'
@@ -84,6 +91,13 @@ export class SorobanResurrect {
   private serverCache: Map<string, SorobanRpc.Server> = new Map()
   private simulationCache?: SimulationCache
 
+  private readonly startedAt = Date.now()
+  private networkPassphraseValid = true
+  private lastRestoreSuccess = false
+  private lastRestoreTimestamp?: number
+  private telemetry?: TelemetryReporter
+  private alertManager?: AlertManager
+
   constructor(config: SorobanResurrectConfig) {
     this.config = {
       allowHttp: false,
@@ -95,7 +109,15 @@ export class SorobanResurrect {
       useWebSocket: false,
       pollIntervalMs: 1000,
       maxPollAttempts: 30,
+      debug: false,
       ...config,
+    }
+
+    if (this.config.telemetry) {
+      this.telemetry = new TelemetryReporter(this.config.telemetry, msg => this.log('warn', msg))
+    }
+    if (this.config.alerting) {
+      this.alertManager = new AlertManager(this.config.alerting)
     }
 
     const serverOptions: SorobanRpc.Server.Options = {
@@ -132,6 +154,7 @@ export class SorobanResurrect {
     try {
       const network = await this.server.getNetwork()
       if (network.passphrase !== this.config.networkPassphrase) {
+        this.networkPassphraseValid = false
         const rpcUrl = Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl
         const message = `Network passphrase mismatch: configured "${this.config.networkPassphrase}" but RPC server reports "${network.passphrase}"`
         if (this.config.strictNetworkValidation) {
@@ -180,8 +203,44 @@ export class SorobanResurrect {
     }
   }
 
-  private log(level: 'info' | 'warn' | 'error', message: string, data?: unknown): void {
+  private log(level: 'debug' | 'info' | 'warn' | 'error', message: string, data?: unknown): void {
     this.config.onLog(level, message, data)
+  }
+
+  /**
+   * Emits a verbose `debug`-level log through `onLog`, but only when the
+   * `debug` config option is enabled. Callers may pass a lazy `data` factory
+   * to avoid building expensive payloads when debugging is off.
+   */
+  private debug(message: string, data?: unknown | (() => unknown)): void {
+    if (!this.config.debug) return
+    this.log('debug', message, typeof data === 'function' ? (data as () => unknown)() : data)
+  }
+
+  /**
+   * Records the outcome of a restoration attempt for {@link getHealth} and
+   * feeds the configured telemetry reporter and alert manager.
+   */
+  private recordRestoreOutcome(
+    success: boolean,
+    latencyMs: number,
+    keys: ArchivedKey[],
+    batchSizes: number[],
+  ): void {
+    this.lastRestoreSuccess = success
+    this.lastRestoreTimestamp = Date.now()
+
+    this.alertManager?.recordRestore(success, latencyMs)
+
+    if (this.telemetry) {
+      const contractIds = [...new Set(keys.map(k => k.contractId).filter((id): id is string => !!id))]
+      void this.telemetry.report({
+        contractIdHashes: contractIds.map(hashContractId),
+        keyCount: keys.length,
+        batchSizes,
+        outcome: success ? 'success' : 'failure',
+      })
+    }
   }
 
   /**
@@ -203,12 +262,15 @@ export class SorobanResurrect {
     const policy = this.config.retryPolicy
 
     for (let attempt = 1; attempt <= policy.maxRetries + 1; attempt++) {
+      const startedAt = Date.now()
       try {
         const result = await fn()
         // Reset circuit breaker on success
         if (policy.reset) {
           policy.reset()
         }
+        this.debug(`RPC ${context} succeeded in ${Date.now() - startedAt}ms (attempt ${attempt})`)
+        this.alertManager?.recordRpcCall(true)
         return result
       } catch (err) {
         const sorobanErr = err instanceof SorobanResurrectError
@@ -216,6 +278,8 @@ export class SorobanResurrect {
           : new SorobanResurrectError(String(err), 'NETWORK_ERROR', err)
 
         lastError = sorobanErr
+        this.debug(`RPC ${context} failed in ${Date.now() - startedAt}ms (attempt ${attempt}): ${sorobanErr.message}`, () => sorobanErr.stack)
+        this.alertManager?.recordRpcCall(false)
 
         if (attempt <= policy.maxRetries && policy.shouldRetry(sorobanErr, attempt)) {
           const delayMs = policy.getDelay(attempt)
@@ -404,6 +468,13 @@ export class SorobanResurrect {
     )
 
     const batches = this.batchKeys(classified)
+    const batchSizes = batches.map(b => b.length)
+    this.debug('Restore batch sizing decided', {
+      totalKeys: classified.length,
+      batchCount: batches.length,
+      batchSizes,
+      maxRestoreBatchSize: this.config.maxRestoreBatchSize,
+    })
 
     if (batches.length > 1) {
       this.log('info', `Splitting restore into ${batches.length} batches (${archivedKeys.length} total keys)`)
@@ -411,12 +482,19 @@ export class SorobanResurrect {
 
     this.emit('restore:start', classified)
 
-    const result = await this.buildSingleRestoreTransaction(batches[0], sourceAccountID)
+    const startedAt = Date.now()
+    try {
+      const result = await this.buildSingleRestoreTransaction(batches[0], sourceAccountID)
 
-    this.emit('restore:batch:complete', 0, batches.length)
-    this.emit('restore:complete', result)
+      this.emit('restore:batch:complete', 0, batches.length)
+      this.emit('restore:complete', result)
+      this.recordRestoreOutcome(true, Date.now() - startedAt, classified, batchSizes)
 
-    return result
+      return result
+    } catch (err) {
+      this.recordRestoreOutcome(false, Date.now() - startedAt, classified, batchSizes)
+      throw err
+    }
   }
 
   async buildRestoreTransactionBatches(
@@ -1754,6 +1832,57 @@ export class SorobanResurrect {
    */
   getFailoverStatus(): RpcEndpointHealth[] {
     return this.failoverManager.getHealthStatus()
+  }
+
+  /**
+   * Runs a self-diagnostic probe verifying the SDK can reach its RPC endpoint
+   * and is configured correctly. Suitable for monitoring endpoints and
+   * container readiness probes.
+   *
+   * @param accountId Optional account to verify is accessible via the RPC
+   *   server. When omitted, `accountAccessible` mirrors `rpcConnected`.
+   */
+  async getHealth(accountId?: string): Promise<HealthCheckResult> {
+    const startedAt = Date.now()
+    let rpcConnected = false
+    try {
+      await this.server.getHealth()
+      rpcConnected = true
+    } catch (err) {
+      this.debug(`Health check: RPC probe failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    const rpcLatencyMs = Date.now() - startedAt
+
+    let accountAccessible = rpcConnected
+    if (rpcConnected && accountId) {
+      try {
+        await this.server.getAccount(accountId)
+        accountAccessible = true
+      } catch {
+        accountAccessible = false
+      }
+    }
+
+    let status: HealthCheckResult['status']
+    if (!rpcConnected) {
+      status = 'unhealthy'
+    } else if (!this.networkPassphraseValid || !accountAccessible) {
+      status = 'degraded'
+    } else {
+      status = 'healthy'
+    }
+
+    return {
+      status,
+      rpcConnected,
+      rpcLatencyMs,
+      networkPassphraseValid: this.networkPassphraseValid,
+      accountAccessible,
+      sdkVersion: VERSION,
+      uptimeMs: Date.now() - this.startedAt,
+      lastRestoreSuccess: this.lastRestoreSuccess,
+      lastRestoreTimestamp: this.lastRestoreTimestamp,
+    }
   }
 
   /**
