@@ -95,6 +95,15 @@ User Action → dApp → SorobanResurrect SDK
                          execute original tx
 ```
 
+## Observability & tooling
+
+| Topic | Docs |
+|-------|------|
+| Before/after ledger-entry diff for a simulation (`client.simulateDiff(txXDR)`) | [docs/simulation_diff.md](docs/simulation_diff.md) |
+| W3C Trace Context (`traceparent`) propagation to Soroban RPC calls | [docs/distributed_tracing.md](docs/distributed_tracing.md) |
+| Grafana & Datadog dashboard templates for SDK metrics | [dashboards/](dashboards/) |
+| Automated versioning & npm publishing (semantic-release) | [docs/semantic_release.md](docs/semantic_release.md) |
+
 ## Development
 
 ```bash
