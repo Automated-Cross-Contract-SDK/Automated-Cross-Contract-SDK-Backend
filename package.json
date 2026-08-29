@@ -19,9 +19,20 @@
     "test:coverage": "npm run test:coverage -w packages/sdk && npm run test:coverage -w packages/react",
     "lint": "tsc --noEmit -p tsconfig.base.json",
     "clean": "rm -rf packages/*/dist",
-    "example": "npm run dev -w packages/example"
+    "example": "npm run dev -w packages/example",
+    "release": "semantic-release",
+    "release:dry-run": "semantic-release --dry-run"
   },
   "devDependencies": {
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/commit-analyzer": "^13.0.0",
+    "@semantic-release/exec": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^10.3.5",
+    "@semantic-release/npm": "^12.0.1",
+    "@semantic-release/release-notes-generator": "^14.0.1",
+    "conventional-changelog-conventionalcommits": "^8.0.0",
+    "semantic-release": "^24.1.0",
     "typescript": "^5.5.0"
   }
 }
