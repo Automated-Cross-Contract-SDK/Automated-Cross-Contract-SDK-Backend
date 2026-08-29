@@ -24,6 +24,9 @@ import {
   SorobanResurrectEvents,
   WsTransactionStatusEvent,
   TransactionWaitResult,
+  SimulationDiff,
+  LedgerEntryDiff,
+  TtlChange,
 } from './types.js'
 import {
   FootprintKeys,
@@ -35,7 +38,9 @@ import {
 import { ExponentialBackoff, type RetryPolicy } from './retry-policy.js'
 import { SimulationCache, type SimulationCacheConfig } from './simulation-cache.js'
 import { RpcFailoverManager, type RpcEndpointHealth } from './rpc-failover.js'
-import { DEFAULT_MAX_CONCURRENCY, MAX_RETRIES } from './constants.js'
+import { FootprintCache, type FootprintCacheStatistics } from './footprint-cache.js'
+import { Tracer } from './tracing.js'
+import { DEFAULT_MAX_CONCURRENCY, MAX_RETRIES, RESTORED_ENTRY_TTL_LEDGERS } from './constants.js'
 
 const MAX_XDR_SIZE_BYTES = 100_000
 const DEFAULT_RESTORE_FEE = '100000'
@@ -83,6 +88,10 @@ export class SorobanResurrect {
   private failoverManager!: RpcFailoverManager
   private serverCache: Map<string, SorobanRpc.Server> = new Map()
   private simulationCache?: SimulationCache
+  private tracer?: Tracer
+  private footprintCache?: FootprintCache
+  /** Trace-propagation headers for the RPC call currently in flight. */
+  private activeTraceHeaders: Record<string, string> = {}
 
   constructor(config: SorobanResurrectConfig) {
     this.config = {
@@ -117,6 +126,11 @@ export class SorobanResurrect {
     // Initialize footprint cache when configured
     if (this.config.footprintCache) {
       this.footprintCache = new FootprintCache(this.config.footprintCache)
+    }
+
+    // Initialize distributed tracing when configured
+    if (this.config.tracing) {
+      this.tracer = new Tracer(this.config.tracing)
     }
 
     void this.validateNetworkPassphrase()
@@ -190,6 +204,18 @@ export class SorobanResurrect {
    */
   private getServer(url?: string): SorobanRpc.Server {
     const targetUrl = url ?? this.failoverManager.getCurrentUrl()
+
+    // When a trace span is in flight, build an un-cached server that carries the
+    // current `traceparent` / `tracestate` headers so the RPC call is linked to
+    // the active span end-to-end.
+    const traceHeaders = this.activeTraceHeaders
+    if (this.tracer?.enabled && Object.keys(traceHeaders).length > 0) {
+      return new SorobanRpc.Server(targetUrl, {
+        allowHttp: this.config.allowHttp,
+        headers: traceHeaders,
+      } as SorobanRpc.Server.Options)
+    }
+
     let server = this.serverCache.get(targetUrl)
     if (!server) {
       server = new SorobanRpc.Server(targetUrl, { allowHttp: this.config.allowHttp })
@@ -199,11 +225,39 @@ export class SorobanResurrect {
   }
 
   private async retryOnFailure<T>(fn: () => Promise<T>, context: string): Promise<T> {
+    if (this.tracer?.enabled) {
+      const span = this.tracer.startSpan(`soroban.rpc ${context}`, {
+        'rpc.system': 'soroban',
+        'rpc.method': context,
+        'server.address': this.failoverManager.getCurrentUrl(),
+      })
+      const previousHeaders = this.activeTraceHeaders
+      this.activeTraceHeaders = span.headers()
+      try {
+        const result = await this.retryLoop(fn, context, span)
+        span.end('ok')
+        return result
+      } catch (err) {
+        span.end('error', err)
+        throw err
+      } finally {
+        this.activeTraceHeaders = previousHeaders
+      }
+    }
+    return this.retryLoop(fn, context)
+  }
+
+  private async retryLoop<T>(
+    fn: () => Promise<T>,
+    context: string,
+    span?: { setAttribute: (k: string, v: string | number | boolean) => void },
+  ): Promise<T> {
     let lastError: SorobanResurrectError | undefined
     const policy = this.config.retryPolicy
 
     for (let attempt = 1; attempt <= policy.maxRetries + 1; attempt++) {
       try {
+        span?.setAttribute('rpc.attempts', attempt)
         const result = await fn()
         // Reset circuit breaker on success
         if (policy.reset) {
@@ -275,7 +329,7 @@ export class SorobanResurrect {
     let simResult: SorobanRpc.Api.SimulateTransactionResponse
     try {
       simResult = await this.retryOnFailure(
-        () => this.server.simulateTransaction(innerTx as any),
+        () => this.getServer().simulateTransaction(innerTx as any),
         'simulateTransaction',
       )
     } catch (err) {
@@ -385,6 +439,162 @@ export class SorobanResurrect {
     return this.simulate(txXDR, source)
   }
 
+  /**
+   * Produce a before/after diff of every ledger entry in a transaction's
+   * footprint: which entries are live, which are archived, the on-chain data
+   * that would be restored, the total bytes involved and the projected TTL
+   * change for each restored entry.
+   *
+   * This is a read-only debugging aid — it never submits a transaction.
+   *
+   * @param txXDR   Base64 transaction envelope XDR.
+   * @param source  Optional source account override.
+   * @param options `restoredTtlLedgers` overrides the network's assumed
+   *   `minimumPersistentEntryLifetime` used to project restored TTLs.
+   */
+  async simulateDiff(
+    txXDR: string,
+    source?: string,
+    options?: { restoredTtlLedgers?: number },
+  ): Promise<SimulationDiff> {
+    let tx: ReturnType<typeof TransactionBuilder.fromXDR>
+    try {
+      tx = TransactionBuilder.fromXDR(txXDR, this.config.networkPassphrase)
+    } catch (err) {
+      throw new SorobanResurrectError('Invalid transaction XDR', 'INVALID_XDR', err, {
+        rpcUrl: this.config.rpcUrl,
+      })
+    }
+    if (isFeeBumpTx(tx)) {
+      throw new SorobanResurrectError(
+        'Fee bump transactions are not supported',
+        'INVALID_XDR',
+        undefined,
+        { rpcUrl: this.config.rpcUrl },
+      )
+    }
+
+    // Resolve the footprint — prefer the transaction's own Soroban data, fall
+    // back to an RPC simulation when it is not pre-populated.
+    let footprint: xdr.LedgerFootprint | null = null
+    const sorobanData = (tx as any).sorobanData as xdr.SorobanTransactionData | undefined
+    if (sorobanData) {
+      footprint = sorobanData.resources().footprint()
+    }
+    if (!footprint) {
+      const simResult = await this.retryOnFailure(
+        () => this.getServer().simulateTransaction(tx as any),
+        'simulateTransaction(diff)',
+      )
+      if (
+        !SorobanRpc.Api.isSimulationError(simResult) &&
+        SorobanRpc.Api.isSimulationSuccess(simResult)
+      ) {
+        footprint = simResult.transactionData.getFootprint()
+      }
+    }
+
+    if (!footprint) {
+      return {
+        entries: [],
+        totalBytesRestored: 0,
+        ttlChanges: [],
+        needsRestoration: false,
+      }
+    }
+
+    const keys = extractKeysFromFootprint(footprint)
+    if (keys.all.length === 0) {
+      return {
+        entries: [],
+        totalBytesRestored: 0,
+        ttlChanges: [],
+        needsRestoration: false,
+      }
+    }
+
+    const ledgerResponse = await this.retryOnFailure(
+      () => this.getServer().getLedgerEntries(...keys.all),
+      'getLedgerEntries(diff)',
+    )
+    const latestLedger = (ledgerResponse as { latestLedger?: number }).latestLedger
+
+    // Index the returned entries by their base64 key.
+    const onChain = new Map<
+      string,
+      { data?: xdr.LedgerEntryData; liveUntilLedgerSeq?: number }
+    >()
+    for (const entry of ledgerResponse.entries) {
+      onChain.set(encodeLedgerKey(entry.key), {
+        data: (entry as any).val as xdr.LedgerEntryData | undefined,
+        liveUntilLedgerSeq: (entry as any).liveUntilLedgerSeq as number | undefined,
+      })
+    }
+
+    const classified = classifyDeferredKeys(
+      keys.all.map(k => ({ key: k, keyBase64: encodeLedgerKey(k) })),
+    )
+
+    const restoredTtl = options?.restoredTtlLedgers ?? RESTORED_ENTRY_TTL_LEDGERS
+    const projectedTtl =
+      latestLedger !== undefined ? latestLedger + restoredTtl : restoredTtl
+
+    const entries: LedgerEntryDiff[] = []
+    const ttlChanges: TtlChange[] = []
+    let totalBytesRestored = 0
+
+    for (const key of classified) {
+      const record = onChain.get(key.keyBase64)
+      const isLive =
+        record !== undefined &&
+        (record.liveUntilLedgerSeq === undefined ||
+          latestLedger === undefined ||
+          record.liveUntilLedgerSeq >= latestLedger)
+
+      const beforeXdr = record?.data
+        ? Buffer.from(record.data.toXDR()).toString('base64')
+        : undefined
+
+      if (isLive) {
+        entries.push({
+          key,
+          keyBase64: key.keyBase64,
+          before: beforeXdr,
+          after: beforeXdr,
+          status: 'live',
+        })
+        continue
+      }
+
+      // Archived — this entry is part of the restore plan.
+      const entryBytes = record?.data ? record.data.toXDR().length : key.key.toXDR().length
+      totalBytesRestored += entryBytes
+
+      entries.push({
+        key,
+        keyBase64: key.keyBase64,
+        before: beforeXdr,
+        // Restoration does not mutate entry data, only its TTL.
+        after: beforeXdr,
+        status: 'restored',
+      })
+
+      ttlChanges.push({
+        key: key.keyBase64,
+        oldTTL: record?.liveUntilLedgerSeq ?? 0,
+        newTTL: projectedTtl,
+      })
+    }
+
+    return {
+      entries,
+      totalBytesRestored,
+      ttlChanges,
+      latestLedger,
+      needsRestoration: ttlChanges.length > 0,
+    }
+  }
+
   async buildRestoreTransaction(
     archivedKeys: ArchivedKey[],
     sourceAccountID: string,
@@ -443,7 +653,7 @@ export class SorobanResurrect {
 
     // Fetch account once to get initial sequence number
     const sourceAccount = await this.retryOnFailure(
-      () => this.server.getAccount(sourceAccountID),
+      () => this.getServer().getAccount(sourceAccountID),
       `getAccount(${sourceAccountID})`,
     )
 
@@ -692,7 +902,7 @@ export class SorobanResurrect {
 
     // Fetch account once for the initial sequence number
     const sourceAccount = await this.retryOnFailure(
-      () => this.server.getAccount(sourceAccountID),
+      () => this.getServer().getAccount(sourceAccountID),
       `getAccount(${sourceAccountID})`,
     )
 

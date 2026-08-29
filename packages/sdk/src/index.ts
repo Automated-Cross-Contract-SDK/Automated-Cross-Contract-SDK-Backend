@@ -29,7 +29,24 @@ export type {
   FailedRestoreState,
   PreFlightConfig,
   FeeBumpMetadata,
+  SimulationDiff,
+  LedgerEntryDiff,
+  TtlChange,
 } from './types.js'
+
+export {
+  Tracer,
+  Span,
+  parseTraceparent,
+  formatTraceparent,
+  resolveParentContext,
+} from './tracing.js'
+export type {
+  TraceContext,
+  TracingConfig,
+  SpanData,
+  SpanExporter,
+} from './tracing.js'
 export {
   ExponentialBackoff,
   FixedDelay,
