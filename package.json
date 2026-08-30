@@ -4,6 +4,12 @@
   "private": true,
   "type": "module",
   "workspaces": [
+    "packages/types",
+    "packages/errors",
+    "packages/footprint-parser",
+    "packages/rpc",
+    "packages/utils",
+    "packages/core",
     "packages/sdk",
     "packages/react",
     "packages/wallet-adapters",
