@@ -45,6 +45,7 @@
     "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
+    "dev:test": "vitest --watch --reporter=verbose",
     "test:coverage": "vitest run --coverage",
     "test:integration": "vitest run --config vitest.integration.ts",
     "test:property": "vitest run tests/property",
