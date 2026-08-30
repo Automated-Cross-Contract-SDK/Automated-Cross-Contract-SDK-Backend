@@ -50,7 +50,8 @@
     "test:integration": "vitest run --config vitest.integration.ts",
     "test:property": "vitest run tests/property",
     "test:fuzz": "jazzer tests/fuzz/xdr-parsing.fuzz.ts --fuzz_function=fuzz -- -max_total_time=60",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "repl": "node --experimental-repl-await --require tsx/cjs ./src/repl.ts"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^12.0.0",
