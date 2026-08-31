@@ -86,11 +86,12 @@ export interface SorobanResurrectConfig {
    */
   useWebSocket?: boolean
   /**
-   * When `true`, a mismatch between `networkPassphrase` and the passphrase
-   * reported by the RPC server's `getNetwork()` throws a `SorobanResurrectError`
-   * with code `NETWORK_ERROR` instead of only logging a warning.
+   * Network passphrase validation mode:
+   * - `false` or `undefined`: Log warning on mismatch, continue execution
+   * - `'warn'`: Log error-level warning on mismatch, continue execution
+   * - `true`: Throw `NETWORK_ERROR` on mismatch, halt execution
    */
-  strictNetworkValidation?: boolean
+  strictNetworkValidation?: boolean | 'warn'
   /**
    * Delay in milliseconds between polling attempts when waiting for a
    * transaction to reach a terminal status. Defaults to `1000`.
