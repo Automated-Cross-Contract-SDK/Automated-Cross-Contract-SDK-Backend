@@ -9,15 +9,17 @@ npm install
 npm run dev
 ```
 
-## Features
+## Panels
 
-- **Pre-flight check & execute** — paste raw XDR, detect archived entries, restore & submit.
-- **Transaction Builder** — step-by-step wizard to construct Soroban invoke-contract
-  transactions (contract dropdown, method, type-aware args, network selector, fee
-  override, XDR output, check & execute) without hand-editing XDR.
-- **Multi-contract scenarios** — reference gallery of cross-contract restoration cases
-  (`src/scenarios.ts`): call graph, explanation, example XDR, expected archived keys,
-  and restoration outcome.
-- **Theming** — design tokens (`src/theme.ts`), light/dark toggle, toast notifications,
-  and accessible components (`src/components.tsx`).
+- **Restoration Lifecycle** (`src/RestorationFlowVisualizer.tsx`) — animated,
+  framer-motion-driven flow diagram of the six restoration phases (input →
+  simulate → detect archived → build restore → execute restore → execute
+  original), with per-step timing, pulsing archived/queued entries, per-batch
+  checkmarks, and a confetti burst on success.
+- **Restoration History** (`src/RestorationHistoryViewer.tsx`) — table of past
+  restoration operations (timestamp, status, entries restored, duration, tx
+  hash), expandable rows with the archived-key breakdown, StellarExpert links,
+  status filtering, CSV/JSON export, and a clear-history action. Backed by
+  `useSorobanResurrect({ persistHistory: true })`, which persists to
+  `localStorage`.
 

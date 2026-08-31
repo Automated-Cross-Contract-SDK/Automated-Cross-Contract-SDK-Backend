@@ -29,7 +29,24 @@ export type {
   FailedRestoreState,
   PreFlightConfig,
   FeeBumpMetadata,
+  SimulationDiff,
+  LedgerEntryDiff,
+  TtlChange,
 } from './types.js'
+
+export {
+  Tracer,
+  Span,
+  parseTraceparent,
+  formatTraceparent,
+  resolveParentContext,
+} from './tracing.js'
+export type {
+  TraceContext,
+  TracingConfig,
+  SpanData,
+  SpanExporter,
+} from './tracing.js'
 export {
   ExponentialBackoff,
   FixedDelay,
@@ -72,3 +89,6 @@ export {
 export type { WalletConnectAdapterConfig, WalletMetadata } from './walletconnect-adapter.js'
 export { LedgerAdapter } from './ledger-adapter.js'
 export type { LedgerAdapterConfig } from './ledger-adapter.js'
+
+/** Lightweight dependency injection container */
+export { Container, Token, BindingBuilder, ContainerError } from './container.js'
