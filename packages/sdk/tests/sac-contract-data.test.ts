@@ -174,9 +174,20 @@ describe('classifySacKey', () => {
     expect(classifySacKey(unknownVec as unknown as xdr.ScVal)).toBeUndefined()
   })
 
-  it('returns undefined for non-SAC symbol keys', () => {
-    const randomSym = (xdr as any)._scvSymbol('RandomKey')
-    expect(classifySacKey(randomSym as unknown as xdr.ScVal)).toBeUndefined()
+  it('identifies Capped extension key (custom token metadata key)', () => {
+    const cappedScVal = (xdr as any)._scvSymbol('Capped')
+    expect(classifySacKey(cappedScVal as unknown as xdr.ScVal)).toBe('sacMetadata')
+  })
+
+  it('identifies Blocklist extension key (custom token metadata key)', () => {
+    const blocklistScVal = (xdr as any)._scvSymbol('Blocklist')
+    expect(classifySacKey(blocklistScVal as unknown as xdr.ScVal)).toBe('sacMetadata')
+  })
+
+  it('gracefully falls back to sacMetadata for unknown symbol keys', () => {
+    const unknownSym = (xdr as any)._scvSymbol('SomeCustomStorageKey')
+    // Unknown symbol keys should fall back to sacMetadata gracefully
+    expect(classifySacKey(unknownSym as unknown as xdr.ScVal)).toBe('sacMetadata')
   })
 })
 
@@ -246,7 +257,22 @@ describe('classifyLedgerKey — SAC ContractData entries (issue #47)', () => {
     const customKey = makeContractDataKey((xdr as any)._scvSymbol('CustomStorage'))
     const result = classifyLedgerKey(customKey)
     expect(result.keyType).toBe('contractData')
-    expect(result.sacKeyType).toBeUndefined()
+    // CustomStorage is not a standard SAC key, but gracefully falls back to sacMetadata
+    expect(result.sacKeyType).toBe('sacMetadata')
+  })
+
+  it('classifies Capped extension entry with sacKeyType=sacMetadata', () => {
+    const cappedKey = makeContractDataKey((xdr as any)._scvSymbol('Capped'))
+    const result = classifyLedgerKey(cappedKey)
+    expect(result.keyType).toBe('contractData')
+    expect(result.sacKeyType).toBe('sacMetadata')
+  })
+
+  it('classifies Blocklist extension entry with sacKeyType=sacMetadata', () => {
+    const blocklistKey = makeContractDataKey((xdr as any)._scvSymbol('Blocklist'))
+    const result = classifyLedgerKey(blocklistKey)
+    expect(result.keyType).toBe('contractData')
+    expect(result.sacKeyType).toBe('sacMetadata')
   })
 
   it('assigns restorePriority 2 to all contractData entries', () => {
