@@ -1,0 +1,44 @@
+name: Nightly Fuzz Testing
+
+on:
+  schedule:
+    # Run every night at 2:00 UTC for 15 minutes of fuzzing
+    - cron: '0 2 * * *'
+  # Allow manual triggering via workflow_dispatch
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz-xdr-parsing:
+    runs-on: ubuntu-latest
+    name: XDR parsing malformation fuzz (15 min)
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run XDR parsing fuzz harness (900 seconds / 15 minutes)
+        working-directory: packages/sdk
+        run: npm run test:fuzz -- -max_total_time=900
+        continue-on-error: false
+
+      - name: Report fuzz test results
+        if: failure()
+        run: |
+          echo "❌ Fuzz harness detected uncaught exceptions in XDR parsing"
+          echo "See workflow logs above for crash details."
+          exit 1
+
+      - name: Fuzz test passed
+        if: success()
+        run: |
+          echo "✅ XDR parsing fuzz harness: no uncaught exceptions detected (15-min run)"
