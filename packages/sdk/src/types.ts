@@ -109,6 +109,11 @@ export interface SorobanResurrectConfig {
    * entries when a new ledger closes.
    */
   footprintCache?: FootprintCacheConfig
+  /**
+   * Optional account ID of a sponsor to wrap restore transactions in a fee-bump transaction.
+   * When set, restore transactions will be wrapped with this sponsor account paying the fees.
+   */
+  feeBumpSponsor?: string
 }
 
 /**

@@ -7,6 +7,7 @@ import {
   xdr,
   SorobanDataBuilder,
   BASE_FEE,
+  Keypair,
 } from '@stellar/stellar-sdk'
 import {
   ArchivedKey,
@@ -475,9 +476,15 @@ export class SorobanResurrect {
         .setTimeout(0)
         .build()
 
+      let transactionXDR = tx.toXDR()
+
+      if (this.config.feeBumpSponsor) {
+        transactionXDR = this.wrapRestoreTransactionInFeeBump(tx, this.config.feeBumpSponsor, fee)
+      }
+
       batchResults.push({
         batchIndex: i,
-        transactionXDR: tx.toXDR(),
+        transactionXDR,
         keysRestored: batchKeys.length,
         status: 'pending',
       })
@@ -1020,6 +1027,38 @@ export class SorobanResurrect {
     } catch (err) {
       throw new SorobanResurrectError(
         `Failed to re-wrap fee-bump transaction: ${err instanceof Error ? err.message : String(err)}`,
+        'INVALID_XDR',
+        err,
+      )
+    }
+  }
+
+  private wrapRestoreTransactionInFeeBump(
+    innerTx: any,
+    sponsorAccountID: string,
+    innerFee: string,
+  ): string {
+    try {
+      // Create a dummy account for the sponsor to construct the fee-bump transaction
+      // The sequence number doesn't matter here as it's not signed yet
+      const sponsorAccount = new Account(sponsorAccountID, '0')
+
+      // Build the fee-bump transaction wrapping the inner restore transaction
+      // The fee bump fee should be higher than the inner transaction fee
+      const feeBumpFee = (BigInt(innerFee) * 2n).toString()
+
+      const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
+        sponsorAccount,
+        feeBumpFee,
+        innerTx,
+        this.config.networkPassphrase,
+      )
+
+      this.log('info', `Wrapped restore transaction in fee-bump with sponsor ${sponsorAccountID}`)
+      return feeBumpTx.toXDR()
+    } catch (err) {
+      throw new SorobanResurrectError(
+        `Failed to wrap restore transaction in fee-bump: ${err instanceof Error ? err.message : String(err)}`,
         'INVALID_XDR',
         err,
       )
