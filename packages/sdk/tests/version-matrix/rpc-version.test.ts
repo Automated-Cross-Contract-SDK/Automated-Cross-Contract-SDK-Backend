@@ -137,6 +137,76 @@ describe('VersionNegotiator', () => {
     expect(opts.useBase64).toBe(true)
     expect(opts.strictMode).toBe(false)
   })
+
+  it('applies per-network minimum protocol override when configured', async () => {
+    const perNetworkOverrides = {
+      'testnet': 21,
+      'mainnet': 22,
+    }
+    const negotiator = new VersionNegotiator(() => {}, 'testnet', perNetworkOverrides)
+    const mockServer = {
+      getVersionInfo: () => Promise.resolve({ protocolVersion: 20 }),
+      getHealth: () => Promise.resolve({}),
+    } as unknown as SorobanRpc.Server
+
+    // Should reject protocol 20 when testnet requires 21
+    await expect(negotiator.negotiate(mockServer)).rejects.toThrow(
+      'Unsupported Soroban protocol version 20',
+    )
+  })
+
+  it('applies different per-network minimums for different networks', async () => {
+    const perNetworkOverrides = {
+      'testnet': 21,
+      'mainnet': 22,
+    }
+
+    // Testnet negotiator rejects v20
+    const testnetNegotiator = new VersionNegotiator(() => {}, 'testnet', perNetworkOverrides)
+    const mockServer20 = {
+      getVersionInfo: () => Promise.resolve({ protocolVersion: 20 }),
+      getHealth: () => Promise.resolve({}),
+    } as unknown as SorobanRpc.Server
+
+    await expect(testnetNegotiator.negotiate(mockServer20)).rejects.toThrow()
+
+    // Mainnet negotiator also rejects v21
+    const mainnetNegotiator = new VersionNegotiator(() => {}, 'mainnet', perNetworkOverrides)
+    const mockServer21 = {
+      getVersionInfo: () => Promise.resolve({ protocolVersion: 21 }),
+      getHealth: () => Promise.resolve({}),
+    } as unknown as SorobanRpc.Server
+
+    await expect(mainnetNegotiator.negotiate(mockServer21)).rejects.toThrow()
+  })
+
+  it('falls back to global minimum when no network-specific override exists', async () => {
+    const perNetworkOverrides = {
+      'testnet': 21,
+    }
+    // Using 'staging' network which has no override
+    const negotiator = new VersionNegotiator(() => {}, 'staging', perNetworkOverrides)
+    const mockServer = {
+      getVersionInfo: () => Promise.resolve({ protocolVersion: 20 }),
+      getHealth: () => Promise.resolve({}),
+    } as unknown as SorobanRpc.Server
+
+    // Should accept v20 since no staging override exists, uses global MIN_SUPPORTED_PROTOCOL (20)
+    const info = await negotiator.negotiate(mockServer)
+    expect(info.protocolVersion).toBe(20)
+  })
+
+  it('works without network configuration (backwards compatible)', async () => {
+    // Old-style negotiator without network info
+    const negotiator = new VersionNegotiator(() => {})
+    const mockServer = {
+      getVersionInfo: () => Promise.resolve({ protocolVersion: 21 }),
+      getHealth: () => Promise.resolve({}),
+    } as unknown as SorobanRpc.Server
+
+    const info = await negotiator.negotiate(mockServer)
+    expect(info.protocolVersion).toBe(21)
+  })
 })
 
 // ---------------------------------------------------------------------------
