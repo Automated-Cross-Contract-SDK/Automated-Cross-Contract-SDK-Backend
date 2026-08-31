@@ -366,4 +366,47 @@ describe('RetryPolicy implementations', () => {
       expect(client).toBeDefined()
     })
   })
+
+  describe('SorobanResurrectError with retry context', () => {
+    it('carries attempts and lastError fields', () => {
+      const underlyingError = new Error('Network timeout')
+      const retryError = new SorobanResurrectError(
+        'Operation failed after retries',
+        'NETWORK_ERROR',
+        underlyingError,
+        {
+          rpcUrl: 'https://rpc.example.com',
+          attempts: 3,
+          lastError: underlyingError,
+        },
+      )
+
+      expect(retryError.attempts).toBe(3)
+      expect(retryError.lastError).toBe(underlyingError)
+      expect(retryError.rpcUrl).toBe('https://rpc.example.com')
+    })
+
+    it('creates error with minimal context', () => {
+      const err = new SorobanResurrectError('Test error', 'NETWORK_ERROR')
+      expect(err.attempts).toBeUndefined()
+      expect(err.lastError).toBeUndefined()
+    })
+
+    it('populates attempts on retry exhaustion', () => {
+      const cause = new Error('Original error')
+      const err = new SorobanResurrectError(
+        'Exhausted retries',
+        'NETWORK_ERROR',
+        cause,
+        {
+          attempts: 5,
+          lastError: cause,
+        },
+      )
+
+      expect(err.attempts).toBe(5)
+      expect(err.lastError).toBe(cause)
+      expect(err.cause).toBe(cause)
+    })
+  })
 })

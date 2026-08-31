@@ -225,6 +225,9 @@ export class SorobanResurrect {
           )
           await delay(delayMs)
         } else {
+          // Enhance error with retry context on exhaustion
+          sorobanErr.attempts = attempt
+          sorobanErr.lastError = lastError?.cause ?? lastError
           throw sorobanErr
         }
       }
@@ -233,7 +236,11 @@ export class SorobanResurrect {
       `Operation failed after ${MAX_RETRIES} retries: ${context}`,
       'NETWORK_ERROR',
       lastError,
-      { rpcUrl: this.config.rpcUrl },
+      {
+        rpcUrl: this.config.rpcUrl,
+        attempts: policy.maxRetries + 1,
+        lastError: lastError?.cause ?? lastError,
+      },
     )
   }
 
