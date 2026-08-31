@@ -240,7 +240,7 @@ export class SorobanResurrect {
   async simulate(txXDR: string, source?: string): Promise<SimulationCheckResult> {
     // Check cache first if enabled
     if (this.simulationCache) {
-      const cacheKey = SimulationCache.generateKey(txXDR, source)
+      const cacheKey = SimulationCache.generateKey(txXDR, source, undefined, this.config.networkPassphrase)
       const cachedResult = this.simulationCache.get(cacheKey)
       if (cachedResult) {
         this.log('info', 'Simulation result retrieved from cache')
@@ -319,7 +319,7 @@ export class SorobanResurrect {
 
     // Cache the result if caching is enabled
     if (this.simulationCache) {
-      const cacheKey = SimulationCache.generateKey(txXDR, source)
+      const cacheKey = SimulationCache.generateKey(txXDR, source, undefined, this.config.networkPassphrase)
       this.simulationCache.set(cacheKey, result)
     }
 
@@ -1651,7 +1651,7 @@ export class SorobanResurrect {
     }
 
     if (txXDR) {
-      const cacheKey = SimulationCache.generateKey(txXDR, source)
+      const cacheKey = SimulationCache.generateKey(txXDR, source, undefined, this.config.networkPassphrase)
       this.simulationCache.invalidate(cacheKey)
       this.log('info', 'Invalidated simulation cache for specific transaction')
     } else {

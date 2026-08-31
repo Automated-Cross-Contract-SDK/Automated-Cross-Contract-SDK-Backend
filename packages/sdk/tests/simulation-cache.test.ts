@@ -47,6 +47,35 @@ describe('SimulationCache', () => {
       expect(typeof key).toBe('string')
       expect(key.length).toBeGreaterThan(0)
     })
+
+    it('generates different keys for different networkPassphrase', () => {
+      const key1 = SimulationCache.generateKey('txXDR', 'source', 123, 'Test SDF Network ; September 2015')
+      const key2 = SimulationCache.generateKey('txXDR', 'source', 123, 'Public Global Stellar Network ; September 2015')
+      expect(key1).not.toBe(key2)
+    })
+
+    it('prevents cross-network cache collisions', () => {
+      // Same transaction parameters but different networks must produce different keys
+      const testnetKey = SimulationCache.generateKey(
+        'AAAAAgAAAABa...', // example XDR
+        'GBBD...', // example source
+        12345,
+        'Test SDF Network ; September 2015'
+      )
+      const mainnetKey = SimulationCache.generateKey(
+        'AAAAAgAAAABa...', // identical XDR
+        'GBBD...', // identical source
+        12345,
+        'Public Global Stellar Network ; September 2015'
+      )
+      expect(testnetKey).not.toBe(mainnetKey)
+    })
+
+    it('handles undefined networkPassphrase', () => {
+      const key1 = SimulationCache.generateKey('txXDR', 'source', 123)
+      const key2 = SimulationCache.generateKey('txXDR', 'source', 123, undefined)
+      expect(key1).toBe(key2)
+    })
   })
 
   describe('basic cache operations', () => {
