@@ -63,7 +63,7 @@
     "@ledgerhq/hw-transport-webusb": { "optional": true }
   },
   "devDependencies": {
-    "tsup": "^8.3.0"
+    "tsup": "^8.5.1"
   },
   "publishConfig": {
     "access": "public",
