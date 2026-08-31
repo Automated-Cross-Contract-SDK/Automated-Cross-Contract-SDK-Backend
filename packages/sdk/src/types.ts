@@ -44,10 +44,12 @@ export interface ArchivedKey {
    * - `contractInstance` – the contract's own instance entry (new, issue #48)
    * - `contractData`     – generic contract data (includes SAC entries, issue #47)
    * - `contractCode`     – the contract's WASM bytecode entry
+   * - `liquidityPool`    – a liquidity pool entry
+   * - `claimableBalance` – a claimable balance entry
    * - `ttlEntry`         – a TTL / expiry ledger entry
    * - `unknown`          – unrecognised entry type
    */
-  keyType: 'contractInstance' | 'contractData' | 'contractCode' | 'ttlEntry' | 'unknown'
+  keyType: 'contractInstance' | 'contractData' | 'contractCode' | 'liquidityPool' | 'claimableBalance' | 'ttlEntry' | 'unknown'
   /**
    * SAC-specific sub-classification, only present when `keyType === 'contractData'`
    * and the entry belongs to a Stellar Asset Contract.
