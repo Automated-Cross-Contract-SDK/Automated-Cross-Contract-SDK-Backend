@@ -1,5 +1,8 @@
 # Contributing
 
+Project roles, the decision-making process, RFCs, the contribution ladder, and
+conflict resolution are described in [`GOVERNANCE.md`](./GOVERNANCE.md).
+
 ## Development Setup
 
 ```bash

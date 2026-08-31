@@ -95,14 +95,13 @@ User Action → dApp → SorobanResurrect SDK
                          execute original tx
 ```
 
-## Observability & tooling
+## Governance & proposals
 
-| Topic | Docs |
-|-------|------|
-| Before/after ledger-entry diff for a simulation (`client.simulateDiff(txXDR)`) | [docs/simulation_diff.md](docs/simulation_diff.md) |
-| W3C Trace Context (`traceparent`) propagation to Soroban RPC calls | [docs/distributed_tracing.md](docs/distributed_tracing.md) |
-| Grafana & Datadog dashboard templates for SDK metrics | [dashboards/](dashboards/) |
-| Automated versioning & npm publishing (semantic-release) | [docs/semantic_release.md](docs/semantic_release.md) |
+- [`GOVERNANCE.md`](./GOVERNANCE.md) — maintainer roles, decision-making, RFC
+  process, contribution ladder, release rotation.
+- [`docs/proposals/native-ttl-refresh-on-cross-contract-access.md`](./docs/proposals/native-ttl-refresh-on-cross-contract-access.md)
+  — draft protocol proposal to make Soroban refresh TTL natively on
+  cross-contract entry access, removing the need for the SDK-level workaround.
 
 ## Development
 
