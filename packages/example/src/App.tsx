@@ -2,6 +2,16 @@ import { useState, useEffect, useCallback } from 'react'
 import { SorobanResurrect } from '@soroban-resurrect/sdk'
 import type { ExecutionResult } from '@soroban-resurrect/sdk'
 import { SorobanResurrectProvider, useSorobanResurrect } from '@soroban-resurrect/react'
+import {
+  RestorationFlowVisualizer,
+  INITIAL_FLOW_STATE,
+  type RestorationFlowState,
+  type FlowPhase,
+} from './RestorationFlowVisualizer.js'
+import { RestorationHistoryViewer } from './RestorationHistoryViewer.js'
+
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
+const MAX_XDR_SIZE_BYTES = 100_000
 
 const RPC_URL = 'https://soroban-testnet.stellar.org'
 const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015'
@@ -64,9 +74,12 @@ function WithdrawButton() {
     lastResult,
     error,
     reset,
+    history,
+    clearHistory,
   } = useSorobanResurrect({
     rpcUrl: RPC_URL,
     networkPassphrase: NETWORK_PASSPHRASE,
+    persistHistory: true,
     preFlight: {
       enabled: true,
       onRestoreNeeded: (keys) => {
@@ -80,6 +93,7 @@ function WithdrawButton() {
 
   const [publicKey, setPublicKey] = useState<string | null>(null)
   const [txXDR, setTxXDR] = useState('')
+  const [flowState, setFlowState] = useState<RestorationFlowState>(INITIAL_FLOW_STATE)
 
   useEffect(() => {
     if (window.freighter) {
@@ -137,13 +151,75 @@ function WithdrawButton() {
       alert('Connect Freighter first')
       return
     }
+
+    const timings: RestorationFlowState['timings'] = {}
+    let mark = Date.now()
+    const closePhase = (phase: FlowPhase) => {
+      timings[phase] = { durationMs: Date.now() - mark }
+      mark = Date.now()
+    }
+    const patch = (next: Partial<RestorationFlowState>) =>
+      setFlowState((prev) => ({ ...prev, ...next, timings: { ...timings } }))
+
+    setFlowState({ ...INITIAL_FLOW_STATE, phase: 'input' })
+
     try {
+      closePhase('input')
+      patch({ phase: 'simulate' })
+
+      const check = await checkTransaction(txXDR, { forceRefresh: true })
+      closePhase('simulate')
+
+      const archived = check.archivedKeys
+      const estBytes = archived.reduce((sum, k) => sum + k.keyBase64.length + 200, 0)
+      const batchesTotal = Math.max(1, Math.ceil(estBytes / MAX_XDR_SIZE_BYTES))
+
+      patch({ phase: 'detect', totalKeys: archived.length, archivedKeys: archived.length })
+      await delay(600)
+      closePhase('detect')
+
+      if (archived.length === 0) {
+        patch({ phase: 'original' })
+        const result = await executeWithRestore(txXDR, signWithFreighter)
+        closePhase('original')
+        patch({ phase: 'done', failed: !result.success, error: result.error })
+        return
+      }
+
+      patch({ phase: 'build', keysToRestore: archived.length, batchesTotal })
+      await delay(500)
+      closePhase('build')
+
+      patch({ phase: 'restore' })
       const result: ExecutionResult = await executeWithRestore(txXDR, signWithFreighter)
+      closePhase('restore')
+
+      patch({
+        phase: 'original',
+        keysRestored: result.entriesRestored,
+        batchesDone: batchesTotal,
+      })
+      await delay(500)
+      closePhase('original')
+
+      patch({
+        phase: 'done',
+        failed: !result.success,
+        keysRestored: result.entriesRestored,
+        error: result.error,
+      })
+
       if (result.success) {
         console.log(`Complete! Restored ${result.entriesRestored} entries`)
       }
     } catch (err) {
       console.error('Transaction failed:', err)
+      setFlowState((prev) => ({
+        ...prev,
+        failed: true,
+        error: err instanceof Error ? err.message : String(err),
+        timings: { ...timings },
+      }))
     }
   }
 
@@ -244,7 +320,10 @@ function WithdrawButton() {
         </button>
 
         <button
-          onClick={reset}
+          onClick={() => {
+            reset()
+            setFlowState(INITIAL_FLOW_STATE)
+          }}
           disabled={isChecking || isExecuting}
           style={btnStyle('#6c757d', isChecking || isExecuting, true)}
         >
@@ -252,11 +331,21 @@ function WithdrawButton() {
         </button>
       </div>
 
+      {flowState.phase !== 'idle' && (
+        <div style={{ marginTop: '1.5rem' }}>
+          <RestorationFlowVisualizer state={flowState} />
+        </div>
+      )}
+
       <div style={{ marginTop: '2rem', padding: '1rem', background: '#f8f9fa', borderRadius: 6 }}>
         <h3 style={{ margin: 0, fontSize: '1rem' }}>Status</h3>
         <pre style={{ fontSize: '0.8rem', marginTop: '0.5rem' }}>
           {JSON.stringify({ isChecking, isExecuting, needsRestore, archivedKeys: archivedKeys.length, connected: !!publicKey }, null, 2)}
         </pre>
+      </div>
+
+      <div style={{ marginTop: '1.5rem' }}>
+        <RestorationHistoryViewer records={history} onClear={clearHistory} network="testnet" />
       </div>
     </div>
   )
