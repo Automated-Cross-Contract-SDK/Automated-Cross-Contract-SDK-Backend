@@ -22,6 +22,19 @@ interface AlbedoModule {
   default: AlbedoClient
 }
 
+/** Known valid Stellar network passphrases. */
+const VALID_NETWORK_PASSPHRASES = [
+  'Public Global Stellar Network ; September 2015',
+  'Test SDF Network ; September 2015',
+]
+
+/** Validates a network passphrase against known Stellar networks. */
+function validateNetworkPassphrase(networkPassphrase: string): boolean {
+  return VALID_NETWORK_PASSPHRASES.some(
+    valid => valid.toLowerCase() === networkPassphrase.toLowerCase()
+  )
+}
+
 /** Maps a full network passphrase onto Albedo's coarse testnet/public network selector. */
 function toAlbedoNetwork(networkPassphrase?: string): 'testnet' | 'public' | undefined {
   if (!networkPassphrase) return undefined
@@ -57,6 +70,10 @@ export class AlbedoAdapter implements SorobanWalletAdapter {
   async signTransaction(xdr: string, opts?: SignTransactionOptions): Promise<string> {
     const albedo = await this.getClient()
     try {
+      // Validate networkPassphrase if provided
+      if (opts?.networkPassphrase && !validateNetworkPassphrase(opts.networkPassphrase)) {
+        throw new Error(`Invalid network passphrase: "${opts.networkPassphrase}"`)
+      }
       const result = await albedo.tx({
         xdr,
         pubkey: opts?.accountToSign ?? this.publicKey ?? undefined,
