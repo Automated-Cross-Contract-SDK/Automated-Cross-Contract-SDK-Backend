@@ -23,18 +23,34 @@ export interface DeferredArchivedKey {
 
 /**
  * Converts deferred keys into fully-classified ArchivedKeys.
+ * Deduplicates contractInstance keys by contract ID while preserving
+ * restorePriority ordering.
  * Call this right before batch building or sorting.
  */
 export function classifyDeferredKeys(deferred: DeferredArchivedKey[]): import('./types.js').ArchivedKey[] {
   const result: import('./types.js').ArchivedKey[] = []
+  const seenContractInstances = new Set<string>()
+
   for (const d of deferred) {
     const classification = classifyLedgerKey(d.key)
-    result.push({
+    const classified = {
       key: d.key,
       keyBase64: d.keyBase64,
       ...classification,
-    })
+    }
+
+    // Dedupe contractInstance keys by contract ID, keeping only the first
+    if (classified.keyType === 'contractInstance') {
+      const contractId = classified.contractId ?? '__unknown__'
+      if (seenContractInstances.has(contractId)) {
+        continue // Skip duplicate
+      }
+      seenContractInstances.add(contractId)
+    }
+
+    result.push(classified)
   }
+
   // Sort by restorePriority so contractInstance (0) entries come first
   result.sort((a, b) => a.restorePriority - b.restorePriority)
   return result
