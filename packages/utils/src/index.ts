@@ -6,4 +6,6 @@ export { batchKeysByContract, groupKeysByPriority } from './batching.js'
 export { delay, pollWithRetry } from './polling.js'
 export { hashString } from './hashing.js'
 
+export { deprecate, deprecateFn, clearDeprecationCache, getWarnedItems } from './deprecate.js'
+
 export type { BatchingOptions, PollingOptions } from './types.js'

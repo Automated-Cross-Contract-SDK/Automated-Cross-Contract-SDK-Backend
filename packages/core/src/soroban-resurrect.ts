@@ -38,7 +38,7 @@ import { ExponentialBackoff, type RetryPolicy } from '@soroban-resurrect/rpc'
 import { SimulationCache, type SimulationCacheConfig } from '@soroban-resurrect/rpc'
 import { RpcFailoverManager, type RpcEndpointHealth } from '@soroban-resurrect/rpc'
 import { FootprintCache } from '@soroban-resurrect/rpc'
-import { DEFAULT_MAX_CONCURRENCY, delay, MAX_RETRIES } from '@soroban-resurrect/utils'
+import { DEFAULT_MAX_CONCURRENCY, delay, MAX_RETRIES, deprecate } from '@soroban-resurrect/utils'
 
 const MAX_XDR_SIZE_BYTES = 100_000
 const DEFAULT_RESTORE_FEE = '100000'
@@ -418,7 +418,16 @@ export class SorobanResurrect {
     }
   }
 
+  /**
+   * @deprecated Use `simulate()` instead. This method is an alias and will be removed in v1.0.0.
+   * @example
+   * // Before
+   * const result = await client.checkTransaction(txXDR, source)
+   * // After
+   * const result = await client.simulate(txXDR, source)
+   */
   async checkTransaction(txXDR: string, source?: string): Promise<SimulationCheckResult> {
+    deprecate('checkTransaction() is deprecated. Use simulate() instead', 'v1.0.0')
     return this.simulate(txXDR, source)
   }
 
@@ -591,6 +600,9 @@ export class SorobanResurrect {
   }
 
   /**
+   * @deprecated This is an experimental feature. Enable with `featureFlags.concurrentBatches` and use with caution.
+   * API may change in future versions. Will be stabilized in v1.0.0.
+   *
    * Executes restore batches concurrently up to `maxConcurrency` in-flight at
    * a time.  Unlike `executeRestoreBatches`, this method never short-circuits:
    * all batches are attempted and any failures are collected in the result so
@@ -708,6 +720,9 @@ export class SorobanResurrect {
   }
 
   /**
+   * @deprecated This is an experimental feature. Enable with `featureFlags.concurrentBatches` and use with caution.
+   * API may change in future versions. Will be stabilized in v1.0.0.
+   *
    * Builds restore batches that are optimised for concurrent execution.
    *
    * Keys are first grouped by contract ID (see `groupKeysByContract`).  Each
@@ -780,6 +795,9 @@ export class SorobanResurrect {
   }
 
   /**
+   * @deprecated This is an experimental feature. Enable with `featureFlags.concurrentBatches` and use with caution.
+   * API may change in future versions. Will be stabilized in v1.0.0.
+   *
    * Full concurrent flow: build contract-aware batches, execute them in
    * parallel up to `maxConcurrency`, then submit the original transaction once
    * all restores are complete (or throw if any batch failed).

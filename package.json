@@ -11,6 +11,7 @@
     "packages/utils",
     "packages/core",
     "packages/sdk",
+    "packages/compat",
     "packages/react",
     "packages/wallet-adapters",
     "packages/mock-rpc",
