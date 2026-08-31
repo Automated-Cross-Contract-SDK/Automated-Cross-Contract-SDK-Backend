@@ -2,10 +2,8 @@ export { ExponentialBackoff, FixedDelay, JitterBackoff, CircuitBreaker, DEFAULT_
 export { SimulationCache } from './simulation-cache.js'
 export { FootprintCache } from './footprint-cache.js'
 export { RpcFailoverManager } from './rpc-failover.js'
-export { StellarSdkRpcAdapter, createStellarSdkAdapter } from './stellar-sdk-adapter.js'
 
 export type { RetryPolicy } from '@soroban-resurrect/types'
 export type { SimulationCacheConfig, CacheStatistics } from '@soroban-resurrect/types'
 export type { FootprintCacheConfig, FootprintCacheStatistics } from '@soroban-resurrect/types'
 export type { RpcFailoverConfig, RpcEndpointHealth } from '@soroban-resurrect/types'
-export type { SorobanRpcClient } from '@soroban-resurrect/types'

@@ -24,8 +24,6 @@ import {
   WsTransactionStatusEvent,
   TransactionWaitResult,
   FootprintCacheStatistics,
-  FeatureFlags,
-  SorobanRpcClient,
 } from '@soroban-resurrect/types'
 import { SorobanResurrectError } from '@soroban-resurrect/errors'
 import {
@@ -39,8 +37,7 @@ import { ExponentialBackoff, type RetryPolicy } from '@soroban-resurrect/rpc'
 import { SimulationCache, type SimulationCacheConfig } from '@soroban-resurrect/rpc'
 import { RpcFailoverManager, type RpcEndpointHealth } from '@soroban-resurrect/rpc'
 import { FootprintCache } from '@soroban-resurrect/rpc'
-import { StellarSdkRpcAdapter, createStellarSdkAdapter } from '@soroban-resurrect/rpc'
-import { DEFAULT_MAX_CONCURRENCY, delay, MAX_RETRIES, deprecate } from '@soroban-resurrect/utils'
+import { DEFAULT_MAX_CONCURRENCY, delay, MAX_RETRIES } from '@soroban-resurrect/utils'
 
 const MAX_XDR_SIZE_BYTES = 100_000
 const DEFAULT_RESTORE_FEE = '100000'
@@ -78,7 +75,7 @@ function extractInnerTransaction(tx: any): any {
 }
 
 export class SorobanResurrect {
-  private rpcClient: SorobanRpcClient
+  private server: SorobanRpc.Server
   private config: Required<Omit<SorobanResurrectConfig, 'timeout'>> & { timeout?: number }
   private listeners: Record<string, Set<any>> = {}
   private failoverManager!: RpcFailoverManager
@@ -86,8 +83,6 @@ export class SorobanResurrect {
   private simulationCache?: SimulationCache
   private footprintCache?: FootprintCache
   private _lastFailedRestoreState: FailedRestoreState | null = null
-  private featureFlags: Required<FeatureFlags>
-  private customRpcClient: boolean = false
 
   constructor(config: SorobanResurrectConfig) {
     this.config = {
@@ -103,34 +98,17 @@ export class SorobanResurrect {
       ...config,
     }
 
-    // Initialize feature flags with defaults (all false)
-    this.featureFlags = {
-      feeBumpSupport: false,
-      concurrentBatches: false,
-      wasmParser: false,
-      persistentCache: false,
-      ...config.featureFlags,
+    const serverOptions: SorobanRpc.Server.Options = {
+      allowHttp: this.config.allowHttp,
+    }
+    if (this.config.timeout !== undefined) {
+      serverOptions.timeout = this.config.timeout
     }
 
-    // Use custom RPC client if provided, otherwise create default Stellar SDK adapter
-    if (config.rpcClient) {
-      this.rpcClient = config.rpcClient
-      this.customRpcClient = true
-    } else {
-      const serverOptions: SorobanRpc.Server.Options = {
-        allowHttp: this.config.allowHttp,
-      }
-      if (this.config.timeout !== undefined) {
-        serverOptions.timeout = this.config.timeout
-      }
-
-      const server = new SorobanRpc.Server(
-        Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl,
-        serverOptions,
-      )
-      this.rpcClient = new StellarSdkRpcAdapter(server)
-      this.customRpcClient = false
-    }
+    this.server = new SorobanRpc.Server(
+      Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl,
+      serverOptions,
+    )
 
     this.failoverManager = new RpcFailoverManager(
       Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl : [this.config.rpcUrl],
@@ -145,28 +123,6 @@ export class SorobanResurrect {
   }
 
   /**
-   * Get the current feature flags configuration.
-   */
-  getFeatureFlags(): Required<FeatureFlags> {
-    return { ...this.featureFlags }
-  }
-
-  /**
-   * Check if a specific feature flag is enabled.
-   */
-  isFeatureEnabled(flag: keyof FeatureFlags): boolean {
-    return this.featureFlags[flag] === true
-  }
-
-  /**
-   * Update feature flags at runtime.
-   */
-  setFeatureFlags(flags: Partial<FeatureFlags>): void {
-    this.featureFlags = { ...this.featureFlags, ...flags }
-    this.log('info', 'Feature flags updated', this.featureFlags)
-  }
-
-  /**
    * Confirms the configured `networkPassphrase` matches what the RPC server
    * reports via `getNetwork()`. Runs fire-and-forget from the constructor:
    * mismatches are logged as a warning, or thrown as a `NETWORK_ERROR` when
@@ -174,7 +130,7 @@ export class SorobanResurrect {
    */
   private async validateNetworkPassphrase(): Promise<void> {
     try {
-      const network = await this.rpcClient.getNetwork()
+      const network = await this.server.getNetwork()
       if (network.passphrase !== this.config.networkPassphrase) {
         const rpcUrl = Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl
         const message = `Network passphrase mismatch: configured "${this.config.networkPassphrase}" but RPC server reports "${network.passphrase}"`
@@ -231,13 +187,8 @@ export class SorobanResurrect {
   /**
    * Returns a cached `SorobanRpc.Server` for the given URL (or the current
    * active endpoint when no URL is supplied).
-   *
-   * Note: This method is kept for backward compatibility with the server cache.
-   * When using a custom RPC client, this will create a new adapter on demand.
    */
   private getServer(url?: string): SorobanRpc.Server {
-    // If using custom RPC client, we can't cache SorobanRpc.Server instances
-    // Return a new one from the RPC URL for fallback scenarios
     const targetUrl = url ?? this.failoverManager.getCurrentUrl()
     let server = this.serverCache.get(targetUrl)
     if (!server) {
@@ -245,22 +196,6 @@ export class SorobanResurrect {
       this.serverCache.set(targetUrl, server)
     }
     return server
-  }
-
-  /**
-   * Get the RPC client to use for requests.
-   * Returns the custom client if provided, otherwise creates an adapter from the cached server.
-   */
-  private getRpcClient(url?: string): SorobanRpcClient {
-    if (this.customRpcClient) {
-      return this.rpcClient
-    }
-    // For fallback scenarios with multiple URLs, create adapter from cached server
-    if (url) {
-      const server = this.getServer(url)
-      return new StellarSdkRpcAdapter(server)
-    }
-    return this.rpcClient
   }
 
   private async retryOnFailure<T>(fn: () => Promise<T>, context: string): Promise<T> {
@@ -329,22 +264,18 @@ export class SorobanResurrect {
     let feeBumpMetadata: FeeBumpMetadata = { isFeeBump: false }
 
     if (isFeeBumpTx(tx)) {
-      if (!this.featureFlags.feeBumpSupport) {
-        throw new SorobanResurrectError(
-          'Fee bump transactions are not supported (enable with featureFlags.feeBumpSupport)',
-          'INVALID_XDR',
-          undefined,
-          { rpcUrl: this.config.rpcUrl },
-        )
-      }
-      feeBumpMetadata = extractFeeBumpMetadata(tx)
-      innerTx = extractInnerTransaction(tx)
+      throw new SorobanResurrectError(
+        'Fee bump transactions are not supported',
+        'INVALID_XDR',
+        undefined,
+        { rpcUrl: this.config.rpcUrl },
+      )
     }
 
     let simResult: SorobanRpc.Api.SimulateTransactionResponse
     try {
       simResult = await this.retryOnFailure(
-        () => this.getRpcClient().simulateTransaction(innerTx as any),
+        () => this.server.simulateTransaction(innerTx as any),
         'simulateTransaction',
       )
     } catch (err) {
@@ -406,7 +337,7 @@ export class SorobanResurrect {
     let existingKeys: SorobanRpc.Api.GetLedgerEntriesResponse
     try {
       existingKeys = await this.retryOnFailure(
-        () => this.getRpcClient().getLedgerEntries(...keys.all),
+        () => this.getServer().getLedgerEntries(...keys.all),
         'getLedgerEntries',
       )
     } catch (err) {
@@ -450,16 +381,7 @@ export class SorobanResurrect {
     }
   }
 
-  /**
-   * @deprecated Use `simulate()` instead. This method is an alias and will be removed in v1.0.0.
-   * @example
-   * // Before
-   * const result = await client.checkTransaction(txXDR, source)
-   * // After
-   * const result = await client.simulate(txXDR, source)
-   */
   async checkTransaction(txXDR: string, source?: string): Promise<SimulationCheckResult> {
-    deprecate('checkTransaction() is deprecated. Use simulate() instead', 'v1.0.0')
     return this.simulate(txXDR, source)
   }
 
@@ -521,7 +443,7 @@ export class SorobanResurrect {
 
     // Fetch account once to get initial sequence number
     const sourceAccount = await this.retryOnFailure(
-      () => this.getRpcClient().getAccount(sourceAccountID),
+      () => this.server.getAccount(sourceAccountID),
       `getAccount(${sourceAccountID})`,
     )
 
@@ -632,9 +554,6 @@ export class SorobanResurrect {
   }
 
   /**
-   * @deprecated This is an experimental feature. Enable with `featureFlags.concurrentBatches` and use with caution.
-   * API may change in future versions. Will be stabilized in v1.0.0.
-   *
    * Executes restore batches concurrently up to `maxConcurrency` in-flight at
    * a time.  Unlike `executeRestoreBatches`, this method never short-circuits:
    * all batches are attempted and any failures are collected in the result so
@@ -656,15 +575,6 @@ export class SorobanResurrect {
     signTransaction: (xdr: string) => Promise<string>,
     concurrency?: number,
   ): Promise<ConcurrentRestoreResult> {
-    if (!this.featureFlags.concurrentBatches) {
-      throw new SorobanResurrectError(
-        'Concurrent batch execution is not supported (enable with featureFlags.concurrentBatches)',
-        'INVALID_XDR',
-        undefined,
-        { rpcUrl: this.config.rpcUrl },
-      )
-    }
-
     const limit = Math.max(1, concurrency ?? this.config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY)
     const total = batches.length
 
@@ -752,9 +662,6 @@ export class SorobanResurrect {
   }
 
   /**
-   * @deprecated This is an experimental feature. Enable with `featureFlags.concurrentBatches` and use with caution.
-   * API may change in future versions. Will be stabilized in v1.0.0.
-   *
    * Builds restore batches that are optimised for concurrent execution.
    *
    * Keys are first grouped by contract ID (see `groupKeysByContract`).  Each
@@ -785,7 +692,7 @@ export class SorobanResurrect {
 
     // Fetch account once for the initial sequence number
     const sourceAccount = await this.retryOnFailure(
-      () => this.getRpcClient().getAccount(sourceAccountID),
+      () => this.server.getAccount(sourceAccountID),
       `getAccount(${sourceAccountID})`,
     )
 
@@ -827,9 +734,6 @@ export class SorobanResurrect {
   }
 
   /**
-   * @deprecated This is an experimental feature. Enable with `featureFlags.concurrentBatches` and use with caution.
-   * API may change in future versions. Will be stabilized in v1.0.0.
-   *
    * Full concurrent flow: build contract-aware batches, execute them in
    * parallel up to `maxConcurrency`, then submit the original transaction once
    * all restores are complete (or throw if any batch failed).
@@ -845,15 +749,6 @@ export class SorobanResurrect {
     signTransaction: (xdr: string) => Promise<string>,
     options: { requireAllBatches?: boolean; concurrency?: number } = {},
   ): Promise<ExecutionResult> {
-    if (!this.featureFlags.concurrentBatches) {
-      throw new SorobanResurrectError(
-        'Concurrent batch execution is not supported (enable with featureFlags.concurrentBatches)',
-        'INVALID_XDR',
-        undefined,
-        { rpcUrl: this.config.rpcUrl },
-      )
-    }
-
     const { requireAllBatches = true, concurrency } = options
 
     // Classify keys on demand before batch building (deferred from simulation)
@@ -1027,7 +922,7 @@ export class SorobanResurrect {
         .build()
 
       const simResult = await this.retryOnFailure(
-        () => this.getRpcClient().simulateTransaction(candidateTx as any),
+        () => this.getServer().simulateTransaction(candidateTx as any),
         'simulateTransaction(estimateRestoreFee)',
       )
 
@@ -1064,7 +959,7 @@ export class SorobanResurrect {
     sourceAccountID: string,
   ): Promise<RestoreTransactionResult> {
     const sourceAccount = await this.retryOnFailure(
-      () => this.getRpcClient().getAccount(sourceAccountID),
+      () => this.getServer().getAccount(sourceAccountID),
       `getAccount(${sourceAccountID})`,
     )
 
@@ -1338,7 +1233,7 @@ export class SorobanResurrect {
     const tx = new Transaction(signedXDR, this.config.networkPassphrase)
 
     const sendResult = await this.retryOnFailure(
-      () => this.getRpcClient().sendTransaction(tx),
+      () => this.getServer().sendTransaction(tx),
       'sendTransaction',
     )
 
@@ -1556,7 +1451,7 @@ export class SorobanResurrect {
   private async pollForReceipt(hash: string, maxAttempts = this.config.maxPollAttempts): Promise<string> {
     const intervalMs = this.config.pollIntervalMs ?? 1000
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const receipt = await this.getRpcClient().getTransaction(hash)
+      const receipt = await this.getServer().getTransaction(hash)
       if (receipt.status !== 'NOT_FOUND') {
         if (receipt.status === 'SUCCESS') {
           return hash
@@ -1637,7 +1532,7 @@ export class SorobanResurrect {
 
     // Re-fetch current sequence number so rebuilt transactions are valid
     const sourceAccount = await this.retryOnFailure(
-      () => this.getRpcClient().getAccount(state.sourceAccountID),
+      () => this.getServer().getAccount(state.sourceAccountID),
       `getAccount(${state.sourceAccountID})`,
     )
 
@@ -1851,11 +1746,6 @@ export class SorobanResurrect {
   }
 
   getRpcServer(): SorobanRpc.Server {
-    // If using StellarSdkRpcAdapter, return the underlying server
-    if (!this.customRpcClient && this.rpcClient instanceof StellarSdkRpcAdapter) {
-      return (this.rpcClient as StellarSdkRpcAdapter).getUnderlyingServer()
-    }
-    // Otherwise return the cached server (for backward compatibility)
     return this.getServer()
   }
 

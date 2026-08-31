@@ -1,0 +1,20 @@
+[
+  {
+    "name": "@soroban-resurrect/sdk",
+    "path": "packages/sdk/dist/index.js",
+    "limit": "50 KB",
+    "gzip": true
+  },
+  {
+    "name": "@soroban-resurrect/react",
+    "path": "packages/react/dist/index.js",
+    "limit": "65 KB",
+    "gzip": true
+  },
+  {
+    "name": "@soroban-resurrect/example",
+    "path": "packages/example/dist/assets/*.js",
+    "limit": "200 KB",
+    "gzip": true
+  }
+]

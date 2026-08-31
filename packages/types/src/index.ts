@@ -1,116 +1,4 @@
-import { xdr, Account, Transaction } from '@stellar/stellar-sdk'
-
-/**
- * Abstract interface for Soroban RPC client implementations.
- *
- * This interface abstracts the underlying RPC client (e.g., @stellar/stellar-sdk's SorobanRpc.Server)
- * to allow for alternative implementations such as:
- * - soroban-client instead of @stellar/stellar-sdk
- * - Mock/stub implementations in tests
- * - Custom RPC proxy implementations
- *
- * Implementations must provide the core RPC methods used by SorobanResurrect.
- */
-export interface SorobanRpcClient {
-  /**
-   * Fetch account information from the ledger.
-   * @param publicKey - The public key of the account to fetch
-   * @returns Account information including sequence number
-   */
-  getAccount(publicKey: string): Promise<Account>
-
-  /**
-   * Simulate a transaction without submitting it to the network.
-   * @param tx - The transaction to simulate
-   * @returns Simulation result including resource fees and footprint
-   */
-  simulateTransaction(tx: Transaction): Promise<SorobanRpcApiSimulateTransactionResponse>
-
-  /**
-   * Submit a signed transaction to the network.
-   * @param tx - The signed transaction to submit
-   * @returns Send transaction response with hash and status
-   */
-  sendTransaction(tx: Transaction): Promise<SorobanRpcApiSendTransactionResponse>
-
-  /**
-   * Fetch transaction status and details.
-   * @param hash - The transaction hash to query
-   * @returns Transaction status and metadata
-   */
-  getTransaction(hash: string): Promise<SorobanRpcApiGetTransactionResponse>
-
-  /**
-   * Fetch ledger entries by their keys.
-   * @param keys - Array of ledger keys to fetch
-   * @returns Ledger entries and their values
-   */
-  getLedgerEntries(...keys: xdr.LedgerKey[]): Promise<SorobanRpcApiGetLedgerEntriesResponse>
-
-  /**
-   * Get network information including passphrase and protocol version.
-   * @returns Network metadata
-   */
-  getNetwork(): Promise<SorobanRpcApiNetworkInfo>
-}
-
-/**
- * Re-exported types from @stellar/stellar-sdk SorobanRpc.Api namespace
- * to avoid direct dependency on the SDK in interface definitions.
- *
- * These types match the shape of responses from Soroban RPC methods.
- */
-export interface SorobanRpcApiSimulateTransactionResponse {
-  id?: string
-  transactionData: any
-  minResourceFee: string
-  results?: any[]
-  cost?: {
-    cpuInsns: string
-    memBytes: string
-  }
-  latestLedger: number
-  restorePreamble?: {
-    minResourceFee: string
-    transactionData: any
-  }
-  error?: string
-}
-
-export interface SorobanRpcApiSendTransactionResponse {
-  status: 'PENDING' | 'DUPLICATE' | 'TRY_AGAIN_LATER' | 'ERROR'
-  hash: string
-  latestLedger: number
-  latestLedgerCloseTime?: number
-  errorResult?: string
-}
-
-export interface SorobanRpcApiGetTransactionResponse {
-  status: 'SUCCESS' | 'FAILED' | 'NOT_FOUND' | 'PENDING'
-  hash: string
-  latestLedger: number
-  latestLedgerCloseTime?: number
-  createdAt?: number
-  result?: string
-  resultXdr?: string
-  envelopeXdr?: string
-  metaXdr?: string
-}
-
-export interface SorobanRpcApiGetLedgerEntriesResponse {
-  entries: Array<{
-    key: xdr.LedgerKey
-    xdr: string
-    lastModifiedLedgerSeq: number
-  }>
-  latestLedger: number
-}
-
-export interface SorobanRpcApiNetworkInfo {
-  passphrase: string
-  protocolVersion: number
-  friendbotUrl?: string
-}
+import { xdr } from '@stellar/stellar-sdk'
 
 /**
  * SAC (Stellar Asset Contract) specific key types.
@@ -218,22 +106,6 @@ export interface SorobanResurrectConfig {
    * entries when a new ledger closes.
    */
   footprintCache?: FootprintCacheConfig
-  /**
-   * Runtime feature flags to enable/disable experimental features without
-   * breaking changes. All flags default to `false` (experimental features
-   * disabled).
-   */
-  featureFlags?: FeatureFlags
-  /**
-   * Custom RPC client implementation. When provided, this takes precedence over
-   * the default @stellar/stellar-sdk SorobanRpc.Server instance constructed from
-   * `rpcUrl`. This allows using alternative implementations like soroban-client,
-   * mock servers for testing, or custom RPC proxies.
-   *
-   * When using a custom client, `rpcUrl` is still required for network validation
-   * and fallback logic, but the actual RPC calls will be made through this client.
-   */
-  rpcClient?: SorobanRpcClient
 }
 
 /**
@@ -431,14 +303,6 @@ export interface SimulationCacheConfig {
   ttlMs: number
 }
 
-export interface SimulationCacheStatistics {
-  hits: number
-  misses: number
-  evictions: number
-  size: number
-  hitRate: number
-}
-
 export interface FootprintCacheConfig {
   /** Maximum number of cached entries (default: 500). */
   maxSize: number
@@ -493,6 +357,20 @@ export interface FootprintCacheStatistics {
   hitRate: number
 }
 
+export interface SimulationCacheConfig {
+  enabled: boolean
+  maxSize: number
+  ttlMs: number
+}
+
+export interface SimulationCacheStatistics {
+  hits: number
+  misses: number
+  evictions: number
+  size: number
+  hitRate: number
+}
+
 // Version negotiation types
 export interface ProtocolSupport {
   version: string
@@ -510,19 +388,4 @@ export interface XdrEncodingOptions {
   base64?: boolean
   /** Include XDR type information */
   includeType?: boolean
-}
-
-/**
- * Runtime feature flags to enable/disable experimental features without breaking changes.
- * All flags default to `false` (experimental features disabled).
- */
-export interface FeatureFlags {
-  /** Enable fee bump transaction support (experimental) */
-  feeBumpSupport?: boolean
-  /** Enable concurrent batch execution (experimental) */
-  concurrentBatches?: boolean
-  /** Enable WASM parser for footprint extraction (experimental) */
-  wasmParser?: boolean
-  /** Enable persistent cache for simulation and footprint data (experimental) */
-  persistentCache?: boolean
 }

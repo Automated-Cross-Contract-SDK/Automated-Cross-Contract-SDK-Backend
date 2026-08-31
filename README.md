@@ -95,6 +95,14 @@ User Action → dApp → SorobanResurrect SDK
                          execute original tx
 ```
 
+## Governance & proposals
+
+- [`GOVERNANCE.md`](./GOVERNANCE.md) — maintainer roles, decision-making, RFC
+  process, contribution ladder, release rotation.
+- [`docs/proposals/native-ttl-refresh-on-cross-contract-access.md`](./docs/proposals/native-ttl-refresh-on-cross-contract-access.md)
+  — draft protocol proposal to make Soroban refresh TTL natively on
+  cross-contract entry access, removing the need for the SDK-level workaround.
+
 ## Development
 
 ```bash
