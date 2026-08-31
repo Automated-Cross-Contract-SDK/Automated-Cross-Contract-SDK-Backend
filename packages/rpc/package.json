@@ -1,0 +1,60 @@
+{
+  "name": "@soroban-resurrect/rpc",
+  "version": "0.1.0",
+  "description": "RPC client with retry, caching, and fallback for Soroban Resurrect",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend",
+    "directory": "packages/rpc"
+  },
+  "homepage": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend#readme",
+  "bugs": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend/issues",
+  "keywords": [
+    "stellar",
+    "soroban",
+    "smart-contracts",
+    "state-restoration",
+    "rpc",
+    "retry",
+    "caching"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "build:watch": "tsup --watch",
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@soroban-resurrect/types": "^0.1.0",
+    "@soroban-resurrect/errors": "^0.1.0",
+    "quick-lru": "^7.3.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.0",
+    "typescript": "^5.5.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

@@ -1,4 +1,12 @@
-export { SorobanResurrect } from './soroban-resurrect.js'
+// Re-export from modular packages for backwards compatibility
+export { SorobanResurrect } from '@soroban-resurrect/core'
+
+export {
+  NOOP_LOGGER,
+  consoleLogger,
+  onLogToLogger,
+} from './logger.js'
+export type { Logger } from './logger.js'
 export {
   extractKeysFromFootprint,
   classifyLedgerKey,
@@ -9,11 +17,13 @@ export {
   classifyDeferredKeys,
   STREAMING_PARSER_MEMORY_TARGET,
   STREAMING_THRESHOLD_BYTES,
-} from './footprint-parser.js'
-export type { FootprintKeys, DeferredArchivedKey } from './footprint-parser.js'
+} from '@soroban-resurrect/footprint-parser'
+export type { FootprintKeys, DeferredArchivedKey } from '@soroban-resurrect/footprint-parser'
+
 export {
   SorobanResurrectError,
-} from './types.js'
+} from '@soroban-resurrect/errors'
+
 export type {
   ArchivedKey,
   SacKeyType,
@@ -29,33 +39,61 @@ export type {
   FailedRestoreState,
   PreFlightConfig,
   FeeBumpMetadata,
+  SimulationDiff,
+  LedgerEntryDiff,
+  TtlChange,
 } from './types.js'
+
+export {
+  Tracer,
+  Span,
+  parseTraceparent,
+  formatTraceparent,
+  resolveParentContext,
+} from './tracing.js'
+export type {
+  TraceContext,
+  TracingConfig,
+  SpanData,
+  SpanExporter,
+} from './tracing.js'
 export {
   ExponentialBackoff,
   FixedDelay,
   JitterBackoff,
   CircuitBreaker,
   DEFAULT_RETRY_POLICY,
-} from './retry-policy.js'
-export type { RetryPolicy } from './retry-policy.js'
+} from '@soroban-resurrect/rpc'
+
 export {
   SimulationCache,
-} from './simulation-cache.js'
-export type { SimulationCacheConfig, CacheStatistics } from './simulation-cache.js'
+} from '@soroban-resurrect/rpc'
 
 export {
   FootprintCache,
-} from './footprint-cache.js'
-export type { FootprintCacheConfig, FootprintCacheStatistics } from './footprint-cache.js'
+} from '@soroban-resurrect/rpc'
 
-export { VersionNegotiator, PROTOCOL_COMPATIBILITY_MATRIX, MIN_SUPPORTED_PROTOCOL, MAX_SUPPORTED_PROTOCOL } from './version-negotiator.js'
-export type { ProtocolSupport, ServerVersionInfo, XdrEncodingOptions } from './version-negotiator.js'
+export { RpcFailoverManager } from '@soroban-resurrect/rpc'
 
-export { VERSION } from './version.js'
+export {
+  batchKeysByContract,
+  groupKeysByPriority,
+  createBatches,
+  delay,
+  pollWithRetry,
+  hashString,
+  DEFAULT_MAX_CONCURRENCY,
+  MAX_RETRIES,
+  RETRY_DELAY_MS,
+  DEFAULT_POLL_ATTEMPTS,
+  POLL_INTERVAL_MS,
+  MAX_XDR_SIZE_BYTES,
+  DEFAULT_RESTORE_FEE,
+} from '@soroban-resurrect/utils'
 
-export { RpcFailoverManager } from './rpc-failover.js'
-export type { RpcEndpointHealth, RpcFailoverConfig } from './rpc-failover.js'
+export type { BatchingOptions, PollingOptions } from '@soroban-resurrect/utils'
 
+// Keep wallet adapters in SDK package (not split yet)
 export { WalletAdapterError, loadOptionalWalletDependency, bytesToBase64 } from './wallet-adapter.js'
 export type { SorobanWalletAdapter, SignTransactionOptions, WalletConnectionResult, WalletAdapterErrorCode } from './wallet-adapter.js'
 
@@ -72,3 +110,6 @@ export {
 export type { WalletConnectAdapterConfig, WalletMetadata } from './walletconnect-adapter.js'
 export { LedgerAdapter } from './ledger-adapter.js'
 export type { LedgerAdapterConfig } from './ledger-adapter.js'
+
+/** Lightweight dependency injection container */
+export { Container, Token, BindingBuilder, ContainerError } from './container.js'
