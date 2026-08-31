@@ -35,6 +35,7 @@ import {
 import { ExponentialBackoff, type RetryPolicy } from './retry-policy.js'
 import { SimulationCache, type SimulationCacheConfig } from './simulation-cache.js'
 import { RpcFailoverManager, type RpcEndpointHealth } from './rpc-failover.js'
+import { EventDeduplicator } from './event-deduplicator.js'
 import { DEFAULT_MAX_CONCURRENCY, MAX_RETRIES, TRANSACTION_STATUS } from './constants.js'
 
 const MAX_XDR_SIZE_BYTES = 100_000
@@ -83,6 +84,7 @@ export class SorobanResurrect {
   private failoverManager!: RpcFailoverManager
   private serverCache: Map<string, SorobanRpc.Server> = new Map()
   private simulationCache?: SimulationCache
+  private ledgerEventDeduplicator: EventDeduplicator
 
   constructor(config: SorobanResurrectConfig) {
     this.config = {
@@ -113,6 +115,9 @@ export class SorobanResurrect {
     this.failoverManager = new RpcFailoverManager(
       Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl : [this.config.rpcUrl],
     )
+
+    // Initialize ledger event deduplicator (2-second window for duplicate suppression)
+    this.ledgerEventDeduplicator = new EventDeduplicator({ windowMs: 2000 })
 
     // Initialize footprint cache when configured
     if (this.config.footprintCache) {
@@ -1736,6 +1741,24 @@ export class SorobanResurrect {
       this.footprintCache.invalidateAll()
       this.log('info', 'Cleared all footprint cache entries')
     }
+  }
+
+  /**
+   * Emit a ledger-close event with automatic deduplication within a 2-second window.
+   * Call this when receiving ledger-close events from Soroban RPC to suppress
+   * duplicate emissions from reconnects or event re-delivery.
+   *
+   * @param sequence The ledger sequence number of the closed ledger.
+   * @returns true if the event is a duplicate (suppressed), false if emitted.
+   */
+  emitLedgerClose(sequence: number): boolean {
+    if (this.ledgerEventDeduplicator.isDuplicate(sequence)) {
+      this.log('info', `Suppressed duplicate ledger-close event for sequence ${sequence}`)
+      return true
+    }
+    this.log('info', `Ledger closed: sequence ${sequence}`)
+    this.onLedgerClose()
+    return false
   }
 
   /**
