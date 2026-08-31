@@ -35,7 +35,7 @@ import {
 import { ExponentialBackoff, type RetryPolicy } from './retry-policy.js'
 import { SimulationCache, type SimulationCacheConfig } from './simulation-cache.js'
 import { RpcFailoverManager, type RpcEndpointHealth } from './rpc-failover.js'
-import { DEFAULT_MAX_CONCURRENCY, MAX_RETRIES } from './constants.js'
+import { DEFAULT_MAX_CONCURRENCY, MAX_RETRIES, TRANSACTION_STATUS } from './constants.js'
 
 const MAX_XDR_SIZE_BYTES = 100_000
 const DEFAULT_RESTORE_FEE = '100000'
@@ -1237,13 +1237,13 @@ export class SorobanResurrect {
       'sendTransaction',
     )
 
-    if (sendResult.status === 'PENDING' || sendResult.status === 'DUPLICATE') {
+    if (sendResult.status === TRANSACTION_STATUS.PENDING || sendResult.status === TRANSACTION_STATUS.DUPLICATE) {
       const hash = sendResult.hash
       const { hash: confirmedHash } = await this.waitForTransaction(hash)
       return confirmedHash
     }
 
-    if (sendResult.status === 'ERROR') {
+    if (sendResult.status === TRANSACTION_STATUS.ERROR) {
       throw new SorobanResurrectError(
         `Transaction submission error (rpcUrl=${this.config.rpcUrl})`,
         'ORIGINAL_TX_FAILED',
@@ -1415,10 +1415,10 @@ export class SorobanResurrect {
         if (msg.params?.hash !== hash) return
 
         const status = msg.params.status
-        if (status === 'SUCCESS') {
+        if (status === TRANSACTION_STATUS.SUCCESS) {
           this.log('info', `Transaction ${hash} confirmed via WebSocket`)
           finish()
-        } else if (status === 'FAILED') {
+        } else if (status === TRANSACTION_STATUS.FAILED) {
           finish(new SorobanResurrectError(
             `Transaction ${hash} failed: ${msg.params.error ?? 'unknown error'}`,
             'ORIGINAL_TX_FAILED',
@@ -1452,8 +1452,8 @@ export class SorobanResurrect {
     const intervalMs = this.config.pollIntervalMs ?? 1000
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const receipt = await this.getServer().getTransaction(hash)
-      if (receipt.status !== 'NOT_FOUND') {
-        if (receipt.status === 'SUCCESS') {
+      if (receipt.status !== TRANSACTION_STATUS.NOT_FOUND) {
+        if (receipt.status === TRANSACTION_STATUS.SUCCESS) {
           return hash
         }
         const result = 'result' in receipt ? (receipt as any).result : receipt
