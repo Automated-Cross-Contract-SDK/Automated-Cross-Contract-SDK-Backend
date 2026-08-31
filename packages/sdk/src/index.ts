@@ -33,20 +33,24 @@ export type {
   FailedRestoreState,
   PreFlightConfig,
   FeeBumpMetadata,
-  SorobanResurrectErrorContext,
-  SorobanResurrectErrorBase,
-  SorobanResurrectEvents,
-  WsTransactionStatusEvent,
-  TransactionWaitResult,
-  RetryPolicy,
-  RpcEndpointHealth,
-  RpcFailoverConfig,
-  SimulationCacheConfig,
-  FootprintCacheConfig,
-  CacheStatistics,
-  FootprintCacheStatistics,
-} from '@soroban-resurrect/types'
+  SimulationDiff,
+  LedgerEntryDiff,
+  TtlChange,
+} from './types.js'
 
+export {
+  Tracer,
+  Span,
+  parseTraceparent,
+  formatTraceparent,
+  resolveParentContext,
+} from './tracing.js'
+export type {
+  TraceContext,
+  TracingConfig,
+  SpanData,
+  SpanExporter,
+} from './tracing.js'
 export {
   ExponentialBackoff,
   FixedDelay,
@@ -101,7 +105,5 @@ export type { WalletConnectAdapterConfig, WalletMetadata } from './walletconnect
 export { LedgerAdapter } from './ledger-adapter.js'
 export type { LedgerAdapterConfig } from './ledger-adapter.js'
 
-export { VersionNegotiator, PROTOCOL_COMPATIBILITY_MATRIX, MIN_SUPPORTED_PROTOCOL, MAX_SUPPORTED_PROTOCOL } from './version-negotiator.js'
-export type { ProtocolSupport, ServerVersionInfo, XdrEncodingOptions } from './version-negotiator.js'
-
-export { VERSION } from './version.js'
+/** Lightweight dependency injection container */
+export { Container, Token, BindingBuilder, ContainerError } from './container.js'

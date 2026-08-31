@@ -1,0 +1,201 @@
+{
+  "title": "Soroban Resurrect — SDK Metrics",
+  "description": "Restoration health, throughput, latency and RPC errors for @soroban-resurrect/sdk. Import via Dashboards → New Dashboard → gear → Import Dashboard JSON.",
+  "layout_type": "ordered",
+  "reflow_type": "fixed",
+  "template_variables": [
+    { "name": "env", "prefix": "env", "available_values": [], "default": "*" },
+    { "name": "service", "prefix": "service", "available_values": [], "default": "*" },
+    { "name": "contract_id", "prefix": "contract_id", "available_values": [], "default": "*" }
+  ],
+  "widgets": [
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Restoration success / failure rate",
+        "show_legend": true,
+        "legend_layout": "auto",
+        "requests": [
+          {
+            "display_type": "bars",
+            "formulas": [{ "formula": "query1" }],
+            "queries": [
+              {
+                "name": "query1",
+                "data_source": "metrics",
+                "query": "sum:soroban_resurrect.restorations.count{$env,$service} by {result}.as_rate()"
+              }
+            ],
+            "style": { "palette": "green" }
+          }
+        ]
+      },
+      "layout": { "x": 0, "y": 0, "width": 6, "height": 3 }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Restoration success ratio",
+        "show_legend": false,
+        "requests": [
+          {
+            "display_type": "line",
+            "formulas": [{ "formula": "query1 / query2", "alias": "success ratio" }],
+            "queries": [
+              { "name": "query1", "data_source": "metrics", "query": "sum:soroban_resurrect.restorations.count{$env,$service,result:success}.as_rate()" },
+              { "name": "query2", "data_source": "metrics", "query": "sum:soroban_resurrect.restorations.count{$env,$service}.as_rate()" }
+            ]
+          }
+        ],
+        "yaxis": { "min": "0", "max": "1" }
+      },
+      "layout": { "x": 6, "y": 0, "width": 6, "height": 3 }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Keys restored per minute",
+        "show_legend": true,
+        "requests": [
+          {
+            "display_type": "bars",
+            "formulas": [{ "formula": "query1 * 60", "alias": "keys/min" }],
+            "queries": [
+              {
+                "name": "query1",
+                "data_source": "metrics",
+                "query": "sum:soroban_resurrect.keys_restored.count{$env,$service,$contract_id} by {contract_id}.as_rate()"
+              }
+            ]
+          }
+        ]
+      },
+      "layout": { "x": 0, "y": 3, "width": 6, "height": 3 }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Restoration latency (p50 / p95 / p99)",
+        "show_legend": true,
+        "requests": [
+          {
+            "display_type": "line",
+            "formulas": [
+              { "formula": "query_p50", "alias": "p50" },
+              { "formula": "query_p95", "alias": "p95" },
+              { "formula": "query_p99", "alias": "p99" }
+            ],
+            "queries": [
+              { "name": "query_p50", "data_source": "metrics", "query": "p50:soroban_resurrect.restoration.duration{$env,$service}" },
+              { "name": "query_p95", "data_source": "metrics", "query": "p95:soroban_resurrect.restoration.duration{$env,$service}" },
+              { "name": "query_p99", "data_source": "metrics", "query": "p99:soroban_resurrect.restoration.duration{$env,$service}" }
+            ]
+          }
+        ],
+        "yaxis": { "scale": "linear", "label": "seconds" }
+      },
+      "layout": { "x": 6, "y": 3, "width": 6, "height": 3 }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "RPC error rate by error type",
+        "show_legend": true,
+        "requests": [
+          {
+            "display_type": "bars",
+            "on_right_yaxis": false,
+            "formulas": [{ "formula": "query1" }],
+            "queries": [
+              {
+                "name": "query1",
+                "data_source": "metrics",
+                "query": "sum:soroban_resurrect.rpc_errors.count{$env,$service} by {error_code}.as_rate()"
+              }
+            ],
+            "style": { "palette": "warm" }
+          }
+        ]
+      },
+      "layout": { "x": 0, "y": 6, "width": 6, "height": 3 }
+    },
+    {
+      "definition": {
+        "type": "query_value",
+        "title": "Active restorations",
+        "autoscale": true,
+        "precision": 0,
+        "requests": [
+          {
+            "response_format": "scalar",
+            "formulas": [{ "formula": "query1" }],
+            "queries": [
+              { "name": "query1", "data_source": "metrics", "query": "sum:soroban_resurrect.active_restorations{$env,$service}", "aggregator": "last" }
+            ],
+            "conditional_formats": [
+              { "comparator": ">", "value": 25, "palette": "white_on_red" },
+              { "comparator": ">", "value": 10, "palette": "black_on_yellow" },
+              { "comparator": "<=", "value": 10, "palette": "white_on_green" }
+            ]
+          }
+        ]
+      },
+      "layout": { "x": 6, "y": 6, "width": 3, "height": 3 }
+    },
+    {
+      "definition": {
+        "type": "query_value",
+        "title": "Keys restored (last 5m)",
+        "autoscale": true,
+        "precision": 0,
+        "requests": [
+          {
+            "response_format": "scalar",
+            "formulas": [{ "formula": "query1" }],
+            "queries": [
+              { "name": "query1", "data_source": "metrics", "query": "sum:soroban_resurrect.keys_restored.count{$env,$service}.as_count()", "aggregator": "sum" }
+            ]
+          }
+        ]
+      },
+      "layout": { "x": 9, "y": 6, "width": 3, "height": 3 }
+    },
+    {
+      "definition": {
+        "type": "distribution",
+        "title": "Batch size distribution",
+        "show_legend": false,
+        "requests": [
+          {
+            "query": { "name": "query1", "data_source": "metrics", "query": "avg:soroban_resurrect.batch_size{$env,$service}" },
+            "style": { "palette": "orange" }
+          }
+        ],
+        "xaxis": { "scale": "linear", "label": "keys per batch" }
+      },
+      "layout": { "x": 0, "y": 9, "width": 6, "height": 3 }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Soroban RPC latency (p95 by method)",
+        "show_legend": true,
+        "requests": [
+          {
+            "display_type": "line",
+            "formulas": [{ "formula": "query1" }],
+            "queries": [
+              {
+                "name": "query1",
+                "data_source": "metrics",
+                "query": "p95:soroban_resurrect.rpc.duration{$env,$service} by {rpc_method}"
+              }
+            ]
+          }
+        ],
+        "yaxis": { "label": "seconds" }
+      },
+      "layout": { "x": 6, "y": 9, "width": 6, "height": 3 }
+    }
+  ]
+}
