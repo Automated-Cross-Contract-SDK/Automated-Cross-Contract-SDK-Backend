@@ -25,6 +25,7 @@ import {
   TransactionWaitResult,
   FootprintCacheStatistics,
   FeatureFlags,
+  SorobanRpcClient,
 } from '@soroban-resurrect/types'
 import { SorobanResurrectError } from '@soroban-resurrect/errors'
 import {
@@ -38,6 +39,7 @@ import { ExponentialBackoff, type RetryPolicy } from '@soroban-resurrect/rpc'
 import { SimulationCache, type SimulationCacheConfig } from '@soroban-resurrect/rpc'
 import { RpcFailoverManager, type RpcEndpointHealth } from '@soroban-resurrect/rpc'
 import { FootprintCache } from '@soroban-resurrect/rpc'
+import { StellarSdkRpcAdapter, createStellarSdkAdapter } from '@soroban-resurrect/rpc'
 import { DEFAULT_MAX_CONCURRENCY, delay, MAX_RETRIES, deprecate } from '@soroban-resurrect/utils'
 
 const MAX_XDR_SIZE_BYTES = 100_000
@@ -76,7 +78,7 @@ function extractInnerTransaction(tx: any): any {
 }
 
 export class SorobanResurrect {
-  private server: SorobanRpc.Server
+  private rpcClient: SorobanRpcClient
   private config: Required<Omit<SorobanResurrectConfig, 'timeout'>> & { timeout?: number }
   private listeners: Record<string, Set<any>> = {}
   private failoverManager!: RpcFailoverManager
@@ -85,6 +87,7 @@ export class SorobanResurrect {
   private footprintCache?: FootprintCache
   private _lastFailedRestoreState: FailedRestoreState | null = null
   private featureFlags: Required<FeatureFlags>
+  private customRpcClient: boolean = false
 
   constructor(config: SorobanResurrectConfig) {
     this.config = {
@@ -109,17 +112,25 @@ export class SorobanResurrect {
       ...config.featureFlags,
     }
 
-    const serverOptions: SorobanRpc.Server.Options = {
-      allowHttp: this.config.allowHttp,
-    }
-    if (this.config.timeout !== undefined) {
-      serverOptions.timeout = this.config.timeout
-    }
+    // Use custom RPC client if provided, otherwise create default Stellar SDK adapter
+    if (config.rpcClient) {
+      this.rpcClient = config.rpcClient
+      this.customRpcClient = true
+    } else {
+      const serverOptions: SorobanRpc.Server.Options = {
+        allowHttp: this.config.allowHttp,
+      }
+      if (this.config.timeout !== undefined) {
+        serverOptions.timeout = this.config.timeout
+      }
 
-    this.server = new SorobanRpc.Server(
-      Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl,
-      serverOptions,
-    )
+      const server = new SorobanRpc.Server(
+        Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl,
+        serverOptions,
+      )
+      this.rpcClient = new StellarSdkRpcAdapter(server)
+      this.customRpcClient = false
+    }
 
     this.failoverManager = new RpcFailoverManager(
       Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl : [this.config.rpcUrl],
@@ -163,7 +174,7 @@ export class SorobanResurrect {
    */
   private async validateNetworkPassphrase(): Promise<void> {
     try {
-      const network = await this.server.getNetwork()
+      const network = await this.rpcClient.getNetwork()
       if (network.passphrase !== this.config.networkPassphrase) {
         const rpcUrl = Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl
         const message = `Network passphrase mismatch: configured "${this.config.networkPassphrase}" but RPC server reports "${network.passphrase}"`
@@ -220,8 +231,13 @@ export class SorobanResurrect {
   /**
    * Returns a cached `SorobanRpc.Server` for the given URL (or the current
    * active endpoint when no URL is supplied).
+   *
+   * Note: This method is kept for backward compatibility with the server cache.
+   * When using a custom RPC client, this will create a new adapter on demand.
    */
   private getServer(url?: string): SorobanRpc.Server {
+    // If using custom RPC client, we can't cache SorobanRpc.Server instances
+    // Return a new one from the RPC URL for fallback scenarios
     const targetUrl = url ?? this.failoverManager.getCurrentUrl()
     let server = this.serverCache.get(targetUrl)
     if (!server) {
@@ -229,6 +245,22 @@ export class SorobanResurrect {
       this.serverCache.set(targetUrl, server)
     }
     return server
+  }
+
+  /**
+   * Get the RPC client to use for requests.
+   * Returns the custom client if provided, otherwise creates an adapter from the cached server.
+   */
+  private getRpcClient(url?: string): SorobanRpcClient {
+    if (this.customRpcClient) {
+      return this.rpcClient
+    }
+    // For fallback scenarios with multiple URLs, create adapter from cached server
+    if (url) {
+      const server = this.getServer(url)
+      return new StellarSdkRpcAdapter(server)
+    }
+    return this.rpcClient
   }
 
   private async retryOnFailure<T>(fn: () => Promise<T>, context: string): Promise<T> {
@@ -312,7 +344,7 @@ export class SorobanResurrect {
     let simResult: SorobanRpc.Api.SimulateTransactionResponse
     try {
       simResult = await this.retryOnFailure(
-        () => this.server.simulateTransaction(innerTx as any),
+        () => this.getRpcClient().simulateTransaction(innerTx as any),
         'simulateTransaction',
       )
     } catch (err) {
@@ -374,7 +406,7 @@ export class SorobanResurrect {
     let existingKeys: SorobanRpc.Api.GetLedgerEntriesResponse
     try {
       existingKeys = await this.retryOnFailure(
-        () => this.getServer().getLedgerEntries(...keys.all),
+        () => this.getRpcClient().getLedgerEntries(...keys.all),
         'getLedgerEntries',
       )
     } catch (err) {
@@ -489,7 +521,7 @@ export class SorobanResurrect {
 
     // Fetch account once to get initial sequence number
     const sourceAccount = await this.retryOnFailure(
-      () => this.server.getAccount(sourceAccountID),
+      () => this.getRpcClient().getAccount(sourceAccountID),
       `getAccount(${sourceAccountID})`,
     )
 
@@ -753,7 +785,7 @@ export class SorobanResurrect {
 
     // Fetch account once for the initial sequence number
     const sourceAccount = await this.retryOnFailure(
-      () => this.server.getAccount(sourceAccountID),
+      () => this.getRpcClient().getAccount(sourceAccountID),
       `getAccount(${sourceAccountID})`,
     )
 
@@ -995,7 +1027,7 @@ export class SorobanResurrect {
         .build()
 
       const simResult = await this.retryOnFailure(
-        () => this.getServer().simulateTransaction(candidateTx as any),
+        () => this.getRpcClient().simulateTransaction(candidateTx as any),
         'simulateTransaction(estimateRestoreFee)',
       )
 
@@ -1032,7 +1064,7 @@ export class SorobanResurrect {
     sourceAccountID: string,
   ): Promise<RestoreTransactionResult> {
     const sourceAccount = await this.retryOnFailure(
-      () => this.getServer().getAccount(sourceAccountID),
+      () => this.getRpcClient().getAccount(sourceAccountID),
       `getAccount(${sourceAccountID})`,
     )
 
@@ -1306,7 +1338,7 @@ export class SorobanResurrect {
     const tx = new Transaction(signedXDR, this.config.networkPassphrase)
 
     const sendResult = await this.retryOnFailure(
-      () => this.getServer().sendTransaction(tx),
+      () => this.getRpcClient().sendTransaction(tx),
       'sendTransaction',
     )
 
@@ -1524,7 +1556,7 @@ export class SorobanResurrect {
   private async pollForReceipt(hash: string, maxAttempts = this.config.maxPollAttempts): Promise<string> {
     const intervalMs = this.config.pollIntervalMs ?? 1000
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const receipt = await this.getServer().getTransaction(hash)
+      const receipt = await this.getRpcClient().getTransaction(hash)
       if (receipt.status !== 'NOT_FOUND') {
         if (receipt.status === 'SUCCESS') {
           return hash
@@ -1605,7 +1637,7 @@ export class SorobanResurrect {
 
     // Re-fetch current sequence number so rebuilt transactions are valid
     const sourceAccount = await this.retryOnFailure(
-      () => this.getServer().getAccount(state.sourceAccountID),
+      () => this.getRpcClient().getAccount(state.sourceAccountID),
       `getAccount(${state.sourceAccountID})`,
     )
 
@@ -1819,6 +1851,11 @@ export class SorobanResurrect {
   }
 
   getRpcServer(): SorobanRpc.Server {
+    // If using StellarSdkRpcAdapter, return the underlying server
+    if (!this.customRpcClient && this.rpcClient instanceof StellarSdkRpcAdapter) {
+      return (this.rpcClient as StellarSdkRpcAdapter).getUnderlyingServer()
+    }
+    // Otherwise return the cached server (for backward compatibility)
     return this.getServer()
   }
 
