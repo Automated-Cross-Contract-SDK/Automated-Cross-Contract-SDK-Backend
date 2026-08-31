@@ -403,7 +403,7 @@ export class SorobanResurrect {
       archivedKeys.map(k => ({ key: k.key, keyBase64: k.keyBase64 })),
     )
 
-    const batches = this.batchKeys(classified)
+    const batches = await this.batchKeys(classified)
 
     if (batches.length > 1) {
       this.log('info', `Splitting restore into ${batches.length} batches (${archivedKeys.length} total keys)`)
@@ -432,7 +432,7 @@ export class SorobanResurrect {
       archivedKeys.map(k => ({ key: k.key, keyBase64: k.keyBase64 })),
     )
 
-    const batches = this.batchKeys(classified)
+    const batches = await this.batchKeys(classified)
 
     if (batches.length > 1) {
       this.log(
@@ -683,7 +683,7 @@ export class SorobanResurrect {
     )
 
     const groups = this.groupKeysByContract(classified)
-    const batches = this.batchKeyGroups(groups)
+    const batches = await this.batchKeyGroups(groups)
 
     this.log(
       'info',
@@ -840,29 +840,46 @@ export class SorobanResurrect {
    * into multiple sub-batches that will be executed sequentially (since they
    * share a contract).  Sub-batches from different groups remain independent.
    */
-  private batchKeyGroups(groups: ContractKeyGroup[]): ArchivedKey[][] {
+  private async batchKeyGroups(groups: ContractKeyGroup[]): Promise<ArchivedKey[][]> {
     const allBatches: ArchivedKey[][] = []
 
     for (const group of groups) {
       // Split this group's keys by XDR size, just like batchKeys does
-      const subBatches = this.batchKeys(group.keys)
+      const subBatches = await this.batchKeys(group.keys)
       allBatches.push(...subBatches)
     }
 
     return allBatches
   }
 
-  private batchKeys(keys: ArchivedKey[]): ArchivedKey[][] {
+  private async batchKeys(keys: ArchivedKey[]): Promise<ArchivedKey[][]> {
     const batches: ArchivedKey[][] = []
     let currentBatch: ArchivedKey[] = []
     let currentSize = 0
+    const maxFeeStroops = this.config.maxRestoreFeeStroops ? BigInt(this.config.maxRestoreFeeStroops) : null
+    const maxBatchSize = this.config.maxRestoreBatchSize || 50
 
     for (const key of keys) {
       const keySize = key.keyBase64.length
       const headerOverhead = 200
       const estimatedTotalSize = currentSize + keySize + headerOverhead
 
-      if (estimatedTotalSize > MAX_XDR_SIZE_BYTES && currentBatch.length > 0) {
+      // Check XDR size limit
+      const xdrSizeExceeded = estimatedTotalSize > MAX_XDR_SIZE_BYTES && currentBatch.length > 0
+
+      // Check batch entry count limit
+      const batchSizeExceeded = currentBatch.length >= maxBatchSize
+
+      // Estimate fee for the batch with the new key if fee budget is set
+      let feeBudgetExceeded = false
+      if (maxFeeStroops !== null && currentBatch.length > 0) {
+        // Estimate fee for batch size including the new key
+        const estimatedFeeForBatchWithKey = BigInt(await this.estimateRestoreFee(currentBatch.length + 1))
+        feeBudgetExceeded = estimatedFeeForBatchWithKey > maxFeeStroops
+      }
+
+      // Start a new batch if any limit would be exceeded
+      if ((xdrSizeExceeded || batchSizeExceeded || feeBudgetExceeded) && currentBatch.length > 0) {
         batches.push(currentBatch)
         currentBatch = [key]
         currentSize = keySize

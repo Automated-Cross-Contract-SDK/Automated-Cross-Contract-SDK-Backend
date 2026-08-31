@@ -347,4 +347,114 @@ describe('SorobanResurrect - Multi-Batch Operations', () => {
       }
     })
   })
+
+  describe('buildRestoreTransactionBatches with maxRestoreFeeStroops', () => {
+    it('respects fee budget when configured', async () => {
+      // Create a client with fee budget constraint
+      const feeAwareClient = new SorobanResurrect({
+        rpcUrl: 'https://soroban-testnet.stellar.org',
+        networkPassphrase: 'Test SDF Network ; September 2015',
+        maxRestoreBatchSize: 100, // Large entry count limit
+        maxRestoreFeeStroops: '300000', // Small fee budget
+        dynamicFeeEstimation: true,
+      })
+
+      const mockFeeServer = feeAwareClient.getRpcServer()
+
+      // Mock fee estimation: each batch of N keys costs ~50K stroops per key
+      mockFeeServer.simulateTransaction.mockResolvedValue({
+        minResourceFee: '50000',
+        transactionData: {
+          getFootprint: () => ({
+            readOnly: () => [],
+            readWrite: () => [],
+          }),
+        },
+      })
+
+      mockFeeServer.getAccount.mockResolvedValue({
+        sequenceNumber: () => '1000',
+      })
+
+      // Create enough keys to exceed fee budget if all in one batch
+      const keys: ArchivedKey[] = Array.from({ length: 100 }, (_, i) => ({
+        key: {} as xdr.LedgerKey,
+        keyBase64: `key${i}`.padEnd(30, 'x'),
+        keyType: 'contractData' as const,
+        contractId: `contract${i}`,
+        restorePriority: 2,
+      }))
+
+      const batches = await feeAwareClient.buildRestoreTransactionBatches(
+        keys,
+        'GBFQRG4MXSLCJ7VDQTLBJ3JWKSGGOZAYNLWWRXZL3JECGVFQG3BXJBQM',
+      )
+
+      // With fee budget of 300K stroops and ~50K per key, should get multiple batches
+      // This demonstrates that batching respects fee budget constraint
+      expect(batches.length).toBeGreaterThan(1)
+      expect(batches.reduce((sum, b) => sum + b.keysRestored, 0)).toBe(100)
+    })
+
+    it('uses maxRestoreBatchSize when no fee budget is set', async () => {
+      mockServer.getAccount.mockResolvedValue({
+        sequenceNumber: () => '1000',
+      })
+
+      const keys: ArchivedKey[] = Array.from({ length: 75 }, (_, i) => ({
+        key: {} as xdr.LedgerKey,
+        keyBase64: `key${i}`.padEnd(30, 'x'),
+        keyType: 'contractData' as const,
+        contractId: `contract${i}`,
+        restorePriority: 2,
+      }))
+
+      const batches = await client.buildRestoreTransactionBatches(
+        keys,
+        'GBFQRG4MXSLCJ7VDQTLBJ3JWKSGGOZAYNLWWRXZL3JECGVFQG3BXJBQM',
+      )
+
+      // With default maxRestoreBatchSize=50, 75 keys should create 2 batches
+      expect(batches.length).toBe(2)
+      expect(batches[0].keysRestored).toBe(50)
+      expect(batches[1].keysRestored).toBe(25)
+    })
+
+    it('handles fee estimation failure gracefully', async () => {
+      const feeAwareClient = new SorobanResurrect({
+        rpcUrl: 'https://soroban-testnet.stellar.org',
+        networkPassphrase: 'Test SDF Network ; September 2015',
+        maxRestoreBatchSize: 50,
+        maxRestoreFeeStroops: '500000',
+        dynamicFeeEstimation: true,
+      })
+
+      const mockFeeServer = feeAwareClient.getRpcServer()
+
+      // Simulate fee estimation failure
+      mockFeeServer.simulateTransaction.mockRejectedValue(new Error('RPC unavailable'))
+      mockFeeServer.getAccount.mockResolvedValue({
+        sequenceNumber: () => '1000',
+      })
+
+      const keys: ArchivedKey[] = Array.from({ length: 100 }, (_, i) => ({
+        key: {} as xdr.LedgerKey,
+        keyBase64: `key${i}`.padEnd(30, 'x'),
+        keyType: 'contractData' as const,
+        contractId: `contract${i}`,
+        restorePriority: 2,
+      }))
+
+      // Should not throw despite fee estimation failure; falls back to entry count limit
+      const batches = await feeAwareClient.buildRestoreTransactionBatches(
+        keys,
+        'GBFQRG4MXSLCJ7VDQTLBJ3JWKSGGOZAYNLWWRXZL3JECGVFQG3BXJBQM',
+      )
+
+      // With maxRestoreBatchSize=50 and 100 keys, should get 2 batches
+      // (fee estimation fallback doesn't prevent entry-count batching)
+      expect(batches.length).toBe(2)
+      expect(batches.reduce((sum, b) => sum + b.keysRestored, 0)).toBe(100)
+    })
+  })
 })
