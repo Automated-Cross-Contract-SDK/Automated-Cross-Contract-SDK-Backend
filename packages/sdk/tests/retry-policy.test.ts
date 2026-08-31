@@ -218,6 +218,65 @@ describe('RetryPolicy implementations', () => {
       expect(policy.shouldRetry(networkErr, 1)).toBe(true)
       expect(policy.shouldRetry(invalidXdrErr, 1)).toBe(false)
     })
+
+    it('allows only one probe during half-open state', async () => {
+      const policy = new CircuitBreaker(3, 2, 50, 100) // 50ms timeout
+      const err = new SorobanResurrectError('Test', 'NETWORK_ERROR')
+
+      // Open the circuit
+      expect(policy.shouldRetry(err, 1)).toBe(true)
+      expect(policy.shouldRetry(err, 1)).toBe(false) // Circuit open
+
+      // Wait for timeout to enter half-open
+      await new Promise(resolve => setTimeout(resolve, 75))
+
+      // First probe should be allowed
+      expect(policy.shouldRetry(err, 1)).toBe(true)
+
+      // Second concurrent probe should be rejected
+      expect(policy.shouldRetry(err, 1)).toBe(false)
+    })
+
+    it('rejects concurrent probes during half-open with ABORTED', async () => {
+      const policy = new CircuitBreaker(3, 2, 50, 100) // 50ms timeout
+      const err = new SorobanResurrectError('Test', 'NETWORK_ERROR')
+
+      // Open the circuit
+      policy.shouldRetry(err, 1)
+      policy.shouldRetry(err, 1)
+
+      // Wait for half-open window
+      await new Promise(resolve => setTimeout(resolve, 75))
+
+      // First probe starts
+      const probe1 = policy.shouldRetry(err, 1)
+      expect(probe1).toBe(true)
+
+      // Concurrent probe attempt should be rejected
+      const probe2 = policy.shouldRetry(err, 1)
+      expect(probe2).toBe(false)
+    })
+
+    it('clears probe flag on success via reset', async () => {
+      const policy = new CircuitBreaker(3, 2, 50, 100) // 50ms timeout
+      const err = new SorobanResurrectError('Test', 'NETWORK_ERROR')
+
+      // Open the circuit
+      policy.shouldRetry(err, 1)
+      policy.shouldRetry(err, 1)
+
+      // Wait for half-open
+      await new Promise(resolve => setTimeout(resolve, 75))
+
+      // Probe starts
+      policy.shouldRetry(err, 1)
+
+      // Reset (called on success)
+      policy.reset?.()
+
+      // After reset, circuit should be closed
+      expect(policy.shouldRetry(err, 1)).toBe(true)
+    })
   })
 
   describe('DEFAULT_RETRY_POLICY', () => {
