@@ -24,18 +24,28 @@ export interface DeferredArchivedKey {
 /**
  * Converts deferred keys into fully-classified ArchivedKeys.
  * Call this right before batch building or sorting.
+ *
+ * @param deferred The deferred keys to classify
+ * @param priorityMap Optional custom priority map to override default ordering
  */
-export function classifyDeferredKeys(deferred: DeferredArchivedKey[]): import('./types.js').ArchivedKey[] {
+export function classifyDeferredKeys(
+  deferred: DeferredArchivedKey[],
+  priorityMap?: Partial<Record<import('./types.js').ArchivedKey['keyType'], import('./types.js').RestorePriority>>,
+): import('./types.js').ArchivedKey[] {
   const result: import('./types.js').ArchivedKey[] = []
   for (const d of deferred) {
     const classification = classifyLedgerKey(d.key)
+    const finalPriority = priorityMap && priorityMap[classification.keyType] !== undefined
+      ? priorityMap[classification.keyType]!
+      : classification.restorePriority
     result.push({
       key: d.key,
       keyBase64: d.keyBase64,
       ...classification,
+      restorePriority: finalPriority,
     })
   }
-  // Sort by restorePriority so contractInstance (0) entries come first
+  // Sort by restorePriority so contractInstance (0) entries come first, or custom ordering if provided
   result.sort((a, b) => a.restorePriority - b.restorePriority)
   return result
 }

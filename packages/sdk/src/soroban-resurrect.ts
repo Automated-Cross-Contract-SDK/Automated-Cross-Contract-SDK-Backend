@@ -402,6 +402,7 @@ export class SorobanResurrect {
     // Classify keys on demand before batch building (deferred from simulation)
     const classified = classifyDeferredKeys(
       archivedKeys.map(k => ({ key: k.key, keyBase64: k.keyBase64 })),
+      this.config.restorePriorityMap,
     )
 
     const batches = this.batchKeys(classified)
@@ -431,6 +432,7 @@ export class SorobanResurrect {
     // Classify keys on demand before batch building (deferred from simulation)
     const classified = classifyDeferredKeys(
       archivedKeys.map(k => ({ key: k.key, keyBase64: k.keyBase64 })),
+      this.config.restorePriorityMap,
     )
 
     const batches = this.batchKeys(classified)
@@ -687,6 +689,7 @@ export class SorobanResurrect {
     // Classify keys on demand before batch building (deferred from simulation)
     const classified = classifyDeferredKeys(
       archivedKeys.map(k => ({ key: k.key, keyBase64: k.keyBase64 })),
+      this.config.restorePriorityMap,
     )
 
     const groups = this.groupKeysByContract(classified)
@@ -761,6 +764,7 @@ export class SorobanResurrect {
     // Classify keys on demand before batch building (deferred from simulation)
     const classified = classifyDeferredKeys(
       archivedKeys.map(k => ({ key: k.key, keyBase64: k.keyBase64 })),
+      this.config.restorePriorityMap,
     )
 
     const restoreBatches = await this.buildRestoreTransactionBatchesConcurrent(

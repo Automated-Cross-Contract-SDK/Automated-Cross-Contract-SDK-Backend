@@ -114,6 +114,13 @@ export interface SorobanResurrectConfig {
    * When set, restore transactions will be wrapped with this sponsor account paying the fees.
    */
   feeBumpSponsor?: string
+  /**
+   * Optional custom restore priority ordering per key type.
+   * Keys with lower priority values are restored first.
+   * When omitted for a key type, a sensible default is applied after explicitly-ordered types.
+   * Example: `{ contractData: 0, contractCode: 1, contractInstance: 2 }` restores data before code.
+   */
+  restorePriorityMap?: Partial<Record<'contractInstance' | 'contractData' | 'contractCode' | 'ttlEntry' | 'unknown', RestorePriority>>
 }
 
 /**

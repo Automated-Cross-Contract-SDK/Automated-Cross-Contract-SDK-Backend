@@ -96,6 +96,24 @@ describe('SorobanResurrect', () => {
       const instance = new SorobanResurrect(defaultConfig)
       expect(instance).toBeDefined()
     })
+
+    it('accepts restorePriorityMap configuration', () => {
+      const priorityMap = {
+        contractData: 0,
+        contractCode: 1,
+        contractInstance: 2,
+      }
+      const instance = new SorobanResurrect({
+        ...defaultConfig,
+        restorePriorityMap: priorityMap,
+      })
+      expect((instance as any).config.restorePriorityMap).toEqual(priorityMap)
+    })
+
+    it('works without restorePriorityMap (uses defaults)', () => {
+      const instance = new SorobanResurrect(defaultConfig)
+      expect((instance as any).config.restorePriorityMap).toBeUndefined()
+    })
   })
 
   describe('extractKeysFromFootprint', () => {
