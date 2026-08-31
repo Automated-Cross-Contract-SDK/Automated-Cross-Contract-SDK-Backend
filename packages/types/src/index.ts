@@ -106,6 +106,12 @@ export interface SorobanResurrectConfig {
    * entries when a new ledger closes.
    */
   footprintCache?: FootprintCacheConfig
+  /**
+   * Runtime feature flags to enable/disable experimental features without
+   * breaking changes. All flags default to `false` (experimental features
+   * disabled).
+   */
+  featureFlags?: FeatureFlags
 }
 
 /**
@@ -388,4 +394,19 @@ export interface XdrEncodingOptions {
   base64?: boolean
   /** Include XDR type information */
   includeType?: boolean
+}
+
+/**
+ * Runtime feature flags to enable/disable experimental features without breaking changes.
+ * All flags default to `false` (experimental features disabled).
+ */
+export interface FeatureFlags {
+  /** Enable fee bump transaction support (experimental) */
+  feeBumpSupport?: boolean
+  /** Enable concurrent batch execution (experimental) */
+  concurrentBatches?: boolean
+  /** Enable WASM parser for footprint extraction (experimental) */
+  wasmParser?: boolean
+  /** Enable persistent cache for simulation and footprint data (experimental) */
+  persistentCache?: boolean
 }

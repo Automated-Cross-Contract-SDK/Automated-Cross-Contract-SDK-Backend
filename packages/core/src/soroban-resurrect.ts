@@ -24,6 +24,7 @@ import {
   WsTransactionStatusEvent,
   TransactionWaitResult,
   FootprintCacheStatistics,
+  FeatureFlags,
 } from '@soroban-resurrect/types'
 import { SorobanResurrectError } from '@soroban-resurrect/errors'
 import {
@@ -83,6 +84,7 @@ export class SorobanResurrect {
   private simulationCache?: SimulationCache
   private footprintCache?: FootprintCache
   private _lastFailedRestoreState: FailedRestoreState | null = null
+  private featureFlags: Required<FeatureFlags>
 
   constructor(config: SorobanResurrectConfig) {
     this.config = {
@@ -96,6 +98,15 @@ export class SorobanResurrect {
       pollIntervalMs: 1000,
       maxPollAttempts: 30,
       ...config,
+    }
+
+    // Initialize feature flags with defaults (all false)
+    this.featureFlags = {
+      feeBumpSupport: false,
+      concurrentBatches: false,
+      wasmParser: false,
+      persistentCache: false,
+      ...config.featureFlags,
     }
 
     const serverOptions: SorobanRpc.Server.Options = {
@@ -120,6 +131,28 @@ export class SorobanResurrect {
     }
 
     void this.validateNetworkPassphrase()
+  }
+
+  /**
+   * Get the current feature flags configuration.
+   */
+  getFeatureFlags(): Required<FeatureFlags> {
+    return { ...this.featureFlags }
+  }
+
+  /**
+   * Check if a specific feature flag is enabled.
+   */
+  isFeatureEnabled(flag: keyof FeatureFlags): boolean {
+    return this.featureFlags[flag] === true
+  }
+
+  /**
+   * Update feature flags at runtime.
+   */
+  setFeatureFlags(flags: Partial<FeatureFlags>): void {
+    this.featureFlags = { ...this.featureFlags, ...flags }
+    this.log('info', 'Feature flags updated', this.featureFlags)
   }
 
   /**
@@ -264,12 +297,16 @@ export class SorobanResurrect {
     let feeBumpMetadata: FeeBumpMetadata = { isFeeBump: false }
 
     if (isFeeBumpTx(tx)) {
-      throw new SorobanResurrectError(
-        'Fee bump transactions are not supported',
-        'INVALID_XDR',
-        undefined,
-        { rpcUrl: this.config.rpcUrl },
-      )
+      if (!this.featureFlags.feeBumpSupport) {
+        throw new SorobanResurrectError(
+          'Fee bump transactions are not supported (enable with featureFlags.feeBumpSupport)',
+          'INVALID_XDR',
+          undefined,
+          { rpcUrl: this.config.rpcUrl },
+        )
+      }
+      feeBumpMetadata = extractFeeBumpMetadata(tx)
+      innerTx = extractInnerTransaction(tx)
     }
 
     let simResult: SorobanRpc.Api.SimulateTransactionResponse
@@ -575,6 +612,15 @@ export class SorobanResurrect {
     signTransaction: (xdr: string) => Promise<string>,
     concurrency?: number,
   ): Promise<ConcurrentRestoreResult> {
+    if (!this.featureFlags.concurrentBatches) {
+      throw new SorobanResurrectError(
+        'Concurrent batch execution is not supported (enable with featureFlags.concurrentBatches)',
+        'INVALID_XDR',
+        undefined,
+        { rpcUrl: this.config.rpcUrl },
+      )
+    }
+
     const limit = Math.max(1, concurrency ?? this.config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY)
     const total = batches.length
 
@@ -749,6 +795,15 @@ export class SorobanResurrect {
     signTransaction: (xdr: string) => Promise<string>,
     options: { requireAllBatches?: boolean; concurrency?: number } = {},
   ): Promise<ExecutionResult> {
+    if (!this.featureFlags.concurrentBatches) {
+      throw new SorobanResurrectError(
+        'Concurrent batch execution is not supported (enable with featureFlags.concurrentBatches)',
+        'INVALID_XDR',
+        undefined,
+        { rpcUrl: this.config.rpcUrl },
+      )
+    }
+
     const { requireAllBatches = true, concurrency } = options
 
     // Classify keys on demand before batch building (deferred from simulation)
