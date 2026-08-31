@@ -1187,7 +1187,9 @@ export class SorobanResurrect {
     restoreBatches: RestoreBatchResult[],
     originalXDR: string,
     signTransaction: (xdr: string) => Promise<string>,
+    options: { requireAllBatches?: boolean } = {},
   ): Promise<ExecutionResult> {
+    const { requireAllBatches = true } = options
     let originalTxHash: string | undefined
     let batchResults: RestoreAllBatchesResult
 
@@ -1196,19 +1198,30 @@ export class SorobanResurrect {
       batchResults = await this.executeRestoreBatches(restoreBatches, signTransaction)
 
       if (!batchResults.success) {
-        // Propagate partial-failure fields into the thrown error context so
-        // callers can read them from _lastFailedRestoreState via getFailedKeys().
-        throw new SorobanResurrectError(
-          batchResults.error || `Batch ${batchResults.failedAtBatchIndex} failed`,
-          'RESTORE_FAILED',
-          batchResults,
-        )
+        // When batches fail partway through, expose partial-failure state
+        if (requireAllBatches) {
+          // Original behavior: throw on any batch failure
+          throw new SorobanResurrectError(
+            batchResults.error || `Batch ${batchResults.failedAtBatchIndex} failed`,
+            'RESTORE_FAILED',
+            batchResults,
+          )
+        } else {
+          // New behavior: return partial success so caller can retry via getFailedKeys/retryFailedRestore
+          this.log(
+            'warn',
+            `Batches partially failed at index ${batchResults.failedAtBatchIndex}, proceeding with original tx`,
+          )
+          // Proceed with original transaction despite partial restore failure
+        }
       }
 
-      this.log(
-        'info',
-        `All ${restoreBatches.length} batches succeeded, restored ${batchResults.totalKeysRestored} keys`,
-      )
+      if (batchResults.success) {
+        this.log(
+          'info',
+          `All ${restoreBatches.length} batches succeeded, restored ${batchResults.totalKeysRestored} keys`,
+        )
+      }
     } catch (err) {
       const isRestoreError = err instanceof SorobanResurrectError && err.code === 'RESTORE_FAILED'
       if (isRestoreError) {
@@ -1222,22 +1235,24 @@ export class SorobanResurrect {
     }
 
     try {
-      this.log('info', 'Executing original transaction after all batches confirmed')
+      this.log('info', 'Executing original transaction after restore batches')
       originalTxHash = await this.submitSignedTransaction(originalXDR, signTransaction)
       this.log('info', `Original transaction confirmed: ${originalTxHash}`)
     } catch (err) {
       throw new SorobanResurrectError(
-        `Original transaction failed after successful restore batches: ${err instanceof Error ? err.message : String(err)}`,
+        `Original transaction failed: ${err instanceof Error ? err.message : String(err)}`,
         'ORIGINAL_TX_FAILED',
         err,
       )
     }
 
     return {
-      success: true,
+      success: batchResults.success,
       originalTxHash,
       entriesRestored: batchResults.totalKeysRestored,
       batchResults,
+      failedBatchIndex: batchResults.failedAtBatchIndex,
+      partialEntriesRestored: batchResults.failedAtBatchIndex !== undefined ? batchResults.totalKeysRestored : undefined,
     }
   }
 
