@@ -11,6 +11,14 @@ export interface FootprintCacheConfig {
 }
 
 /**
+ * Cache entry with ledger sequence tracking.
+ */
+interface CacheEntry {
+  result: FootprintKeys | null
+  ledgerSequence: number | undefined
+}
+
+/**
  * Statistics about the footprint cache performance.
  */
 export interface FootprintCacheStatistics {
@@ -49,7 +57,7 @@ function hashXDR(xdr: string): string {
  * are not served.
  */
 export class FootprintCache {
-  private cache: QuickLRU<string, FootprintKeys | null>
+  private cache: QuickLRU<string, CacheEntry>
   private stats = { hits: 0, misses: 0 }
 
   constructor(config: FootprintCacheConfig = { maxSize: 500 }) {
@@ -64,7 +72,8 @@ export class FootprintCache {
     const key = hashXDR(txXDR)
     if (this.cache.has(key)) {
       this.stats.hits++
-      return this.cache.get(key)
+      const entry = this.cache.get(key)
+      return entry?.result
     }
     this.stats.misses++
     return undefined
@@ -72,10 +81,30 @@ export class FootprintCache {
 
   /**
    * Store a footprint result for the given transaction XDR.
+   * @param txXDR Transaction XDR
+   * @param result Footprint keys result
+   * @param ledgerSequence Optional ledger sequence number for TTL tracking
    */
-  set(txXDR: string, result: FootprintKeys | null): void {
+  set(txXDR: string, result: FootprintKeys | null, ledgerSequence?: number): void {
     const key = hashXDR(txXDR)
-    this.cache.set(key, result)
+    this.cache.set(key, { result, ledgerSequence })
+  }
+
+  /**
+   * Flush entries older than 1 ledger when a new ledger closes.
+   * Entries are considered stale if their ledger sequence is <= closedLedgerSequence - 1.
+   * This provides automatic invalidation on top of the time-based TTL.
+   * @param closedLedgerSequence The sequence number of the newly closed ledger
+   */
+  onLedgerClose(closedLedgerSequence: number): void {
+    const staleThreshold = closedLedgerSequence - 1
+    const keys = Array.from(this.cache.keys())
+    for (const key of keys) {
+      const entry = this.cache.get(key)
+      if (entry?.ledgerSequence !== undefined && entry.ledgerSequence <= staleThreshold) {
+        this.cache.delete(key)
+      }
+    }
   }
 
   /**
