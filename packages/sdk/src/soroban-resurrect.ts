@@ -36,6 +36,7 @@ import { ExponentialBackoff, type RetryPolicy } from './retry-policy.js'
 import { SimulationCache, type SimulationCacheConfig } from './simulation-cache.js'
 import { RpcFailoverManager, type RpcEndpointHealth } from './rpc-failover.js'
 import { DEFAULT_MAX_CONCURRENCY, MAX_RETRIES } from './constants.js'
+import { Observable } from 'rxjs'
 
 const MAX_XDR_SIZE_BYTES = 100_000
 const DEFAULT_RESTORE_FEE = '100000'
@@ -84,6 +85,10 @@ export class SorobanResurrect {
   private serverCache: Map<string, SorobanRpc.Server> = new Map()
   private simulationCache?: SimulationCache
 
+  private _events$!: Observable<SorobanResurrectEvents[keyof SorobanResurrectEvents]>
+  private _state$!: Observable<'idle' | 'restoring' | 'original' | 'complete' | 'error'>
+  private _progress$!: Observable<{ batchIndex: number; totalBatches: number }>
+
   constructor(config: SorobanResurrectConfig) {
     this.config = {
       allowHttp: false,
@@ -119,6 +124,8 @@ export class SorobanResurrect {
       this.footprintCache = new FootprintCache(this.config.footprintCache)
     }
 
+    this.initializeObservables()
+
     void this.validateNetworkPassphrase()
   }
 
@@ -146,6 +153,125 @@ export class SorobanResurrect {
       }
       this.config.onLog('warn', `Failed to validate network passphrase: ${err instanceof Error ? err.message : String(err)}`)
     }
+  }
+
+  /**
+   * Initialize RxJS Observables by wrapping the internal event listener system.
+   * Observables are created on-demand and adapt the existing callback-based lifecycle.
+   */
+  private initializeObservables(): void {
+    this._events$ = new Observable((subscriber) => {
+      const handlers: Partial<Record<keyof SorobanResurrectEvents, any>> = {
+        'restore:start': (keys: ArchivedKey[]) => subscriber.next({ event: 'restore:start', keys }),
+        'restore:batch:complete': (batchIndex: number, totalBatches: number) =>
+          subscriber.next({ event: 'restore:batch:complete', batchIndex, totalBatches }),
+        'restore:complete': (result: RestoreTransactionResult) => subscriber.next({ event: 'restore:complete', result }),
+        'original:start': () => subscriber.next({ event: 'original:start' }),
+        'original:complete': (hash: string) => subscriber.next({ event: 'original:complete', hash }),
+        'error': (error: SorobanResurrectError) => subscriber.next({ event: 'error', error }),
+      }
+
+      Object.entries(handlers).forEach(([eventKey, handler]) => {
+        this.on(eventKey as keyof SorobanResurrectEvents, handler)
+      })
+
+      return () => {
+        Object.entries(handlers).forEach(([eventKey, handler]) => {
+          this.off(eventKey as keyof SorobanResurrectEvents, handler)
+        })
+      }
+    })
+
+    let currentState: 'idle' | 'restoring' | 'original' | 'complete' | 'error' = 'idle'
+    this._state$ = new Observable((subscriber) => {
+      subscriber.next(currentState)
+
+      const onRestoreStart = () => {
+        currentState = 'restoring'
+        subscriber.next(currentState)
+      }
+      const onRestoreComplete = () => {
+        currentState = 'original'
+        subscriber.next(currentState)
+      }
+      const onOriginalComplete = () => {
+        currentState = 'complete'
+        subscriber.next(currentState)
+      }
+      const onError = () => {
+        currentState = 'error'
+        subscriber.next(currentState)
+      }
+
+      this.on('restore:start', onRestoreStart)
+      this.on('restore:complete', onRestoreComplete)
+      this.on('original:complete', onOriginalComplete)
+      this.on('error', onError)
+
+      return () => {
+        this.off('restore:start', onRestoreStart)
+        this.off('restore:complete', onRestoreComplete)
+        this.off('original:complete', onOriginalComplete)
+        this.off('error', onError)
+      }
+    })
+
+    this._progress$ = new Observable((subscriber) => {
+      const onBatchComplete = (batchIndex: number, totalBatches: number) => {
+        subscriber.next({ batchIndex, totalBatches })
+      }
+
+      this.on('restore:batch:complete', onBatchComplete)
+
+      return () => {
+        this.off('restore:batch:complete', onBatchComplete)
+      }
+    })
+  }
+
+  /**
+   * Observable stream of all restoration lifecycle events.
+   * Subscribing to this stream taps into the underlying event listener system;
+   * unsubscribing automatically cleans up the listener registration.
+   *
+   * Example:
+   * ```
+   * sdk.events$.pipe(
+   *   filter(evt => evt.event === 'restore:complete'),
+   *   map(evt => evt.result.entriesRestored)
+   * ).subscribe(count => console.log(`Restored ${count} entries`))
+   * ```
+   */
+  get events$(): Observable<any> {
+    return this._events$
+  }
+
+  /**
+   * Observable stream of the restoration lifecycle state.
+   * Emits one of: 'idle' | 'restoring' | 'original' | 'complete' | 'error'.
+   *
+   * Example:
+   * ```
+   * sdk.state$.subscribe(state => console.log(`Current state: ${state}`))
+   * ```
+   */
+  get state$(): Observable<'idle' | 'restoring' | 'original' | 'complete' | 'error'> {
+    return this._state$
+  }
+
+  /**
+   * Observable stream of restoration progress (batch completion events).
+   * Emits `{ batchIndex, totalBatches }` for each completed restore batch.
+   *
+   * Example:
+   * ```
+   * sdk.progress$.pipe(
+   *   map(p => Math.round((p.batchIndex / p.totalBatches) * 100))
+   * ).subscribe(pct => console.log(`${pct}% complete`))
+   * ```
+   */
+  get progress$(): Observable<{ batchIndex: number; totalBatches: number }> {
+    return this._progress$
   }
 
   /**
