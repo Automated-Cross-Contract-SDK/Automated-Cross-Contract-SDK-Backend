@@ -2,6 +2,7 @@ import { xdr } from '@stellar/stellar-sdk'
 import type { RetryPolicy } from './retry-policy.js'
 import type { SimulationCacheConfig } from './simulation-cache.js'
 import type { FootprintCacheConfig } from './footprint-cache.js'
+import type { TracingConfig } from './tracing.js'
 
 /**
  * SAC (Stellar Asset Contract) specific key types.
@@ -63,6 +64,8 @@ export interface ArchivedKey {
   restorePriority: RestorePriority
 }
 
+import type { Logger } from './logger.js'
+
 export interface SorobanResurrectConfig {
   /** Single RPC URL or an ordered list of fallback URLs */
   rpcUrl: string | string[]
@@ -75,6 +78,16 @@ export interface SorobanResurrectConfig {
    * Defaults to the Stellar SDK default when not set.
    */
   timeout?: number
+  /**
+   * Structured logger used throughout the SDK. Any object providing `info`,
+   * `warn`, `error`, and `debug` methods can be used here.
+   */
+  logger?: Logger
+  /**
+   * Legacy callback kept for backwards compatibility.
+   *
+   * Prefer `logger` for new integrations. When both are present, `logger` wins.
+   */
   onLog?: (level: 'info' | 'warn' | 'error', message: string, data?: unknown) => void
   /**
    * When `true`, the SDK attempts to subscribe to transaction status updates
@@ -109,6 +122,58 @@ export interface SorobanResurrectConfig {
    * entries when a new ledger closes.
    */
   footprintCache?: FootprintCacheConfig
+  /**
+   * Enables W3C Trace Context (`traceparent` / `tracestate`) header propagation
+   * to Soroban RPC calls. Provide the incoming request headers (or an explicit
+   * parent context) and an optional span exporter to integrate with
+   * OpenTelemetry, Datadog, Jaeger or Zipkin.
+   */
+  tracing?: TracingConfig
+}
+
+/**
+ * A single ledger entry's state transition observed during a simulation diff.
+ */
+export interface LedgerEntryDiff {
+  /** The archived / inspected ledger key. */
+  key: ArchivedKey
+  /** Base64 XDR of the key, for stable identification and logging. */
+  keyBase64: string
+  /** Current on-chain `LedgerEntryData` XDR (base64), when the entry is still live. */
+  before?: string
+  /** Expected `LedgerEntryData` XDR (base64) after a restore, when known. */
+  after?: string
+  /**
+   * - `live`     — entry is present and not archived; no restore needed
+   * - `archived` — entry is archived and would be restored by the SDK
+   * - `restored` — entry was archived and a restore transaction was built for it
+   */
+  status: 'live' | 'archived' | 'restored'
+}
+
+export interface TtlChange {
+  /** Base64 XDR of the ledger key whose TTL changes. */
+  key: string
+  /** Current `liveUntilLedgerSeq`, or `0` when the entry is archived. */
+  oldTTL: number
+  /** Projected `liveUntilLedgerSeq` after restoration. */
+  newTTL: number
+}
+
+/**
+ * Before/after report of ledger-entry state produced by
+ * `SorobanResurrect.simulateDiff()`. Useful for debugging which entries are
+ * being restored and how their state / TTL changes.
+ */
+export interface SimulationDiff {
+  entries: LedgerEntryDiff[]
+  /** Sum of the byte size of every archived entry that would be restored. */
+  totalBytesRestored: number
+  ttlChanges: TtlChange[]
+  /** Ledger sequence the simulation was evaluated against, when reported by the RPC. */
+  latestLedger?: number
+  /** Whether any entry in the footprint needs restoration. */
+  needsRestoration: boolean
 }
 
 /**

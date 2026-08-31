@@ -45,15 +45,22 @@
     "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
+    "dev:test": "vitest --watch --reporter=verbose",
     "test:coverage": "vitest run --coverage",
     "test:integration": "vitest run --config vitest.integration.ts",
     "test:property": "vitest run tests/property",
     "test:fuzz": "jazzer tests/fuzz/xdr-parsing.fuzz.ts --fuzz_function=fuzz -- -max_total_time=60",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "repl": "node --experimental-repl-await --require tsx/cjs ./src/repl.ts"
   },
   "dependencies": {
-    "@stellar/stellar-sdk": "^12.0.0",
-    "quick-lru": "^7.3.0"
+    "@soroban-resurrect/types": "workspace:*",
+    "@soroban-resurrect/errors": "workspace:*",
+    "@soroban-resurrect/footprint-parser": "workspace:*",
+    "@soroban-resurrect/rpc": "workspace:*",
+    "@soroban-resurrect/utils": "workspace:*",
+    "@soroban-resurrect/core": "workspace:*",
+    "@stellar/stellar-sdk": "^12.0.0"
   },
   "peerDependencies": {
     "@ledgerhq/hw-app-str": "^6.29.0",

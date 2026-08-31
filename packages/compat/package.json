@@ -1,0 +1,62 @@
+{
+  "name": "@soroban-resurrect/compat",
+  "version": "0.1.0",
+  "description": "Backwards compatibility layer for @soroban-resurrect/sdk v0.x to v1.0 migration",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend",
+    "directory": "packages/compat"
+  },
+  "homepage": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend#readme",
+  "bugs": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend/issues",
+  "keywords": [
+    "stellar",
+    "soroban",
+    "smart-contracts",
+    "state-restoration",
+    "compatibility",
+    "migration"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "build:watch": "tsup --watch",
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@soroban-resurrect/core": "workspace:*",
+    "@soroban-resurrect/types": "workspace:*",
+    "@soroban-resurrect/errors": "workspace:*",
+    "@soroban-resurrect/footprint-parser": "workspace:*",
+    "@soroban-resurrect/rpc": "workspace:*",
+    "@soroban-resurrect/utils": "workspace:*"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.0",
+    "typescript": "^5.5.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

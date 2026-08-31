@@ -25,6 +25,8 @@ interface FreighterApi {
   isAllowed?(): Promise<boolean>
   getAddress(): Promise<{ address: string }>
   getNetworkDetails(): Promise<{ networkPassphrase: string; networkUrl?: string }>
+  /** Prompts the user to switch to the specified network passphrase. Rejects if the user cancels the prompt. */
+  setNetwork?(networkPassphrase: string): Promise<void>
   signTransaction(xdr: string, opts?: { networkPassphrase?: string; address?: string }): Promise<{ signedTxXdr: string }>
   on?(event: 'accountChange' | 'networkChange' | 'disconnect', handler: (payload?: unknown) => void): void
   off?(event: 'accountChange' | 'networkChange' | 'disconnect', handler: (payload?: unknown) => void): void
@@ -98,6 +100,28 @@ export class FreighterAdapter implements SorobanWalletAdapter {
     }
   }
 
+  /**
+   * Prompts the user to switch Freighter to the given network passphrase.
+   *
+   * If the user cancels the prompt Freighter throws an error whose message
+   * contains words like "rejected" or "denied". This method maps that raw
+   * error to `WalletAdapterError` with code `USER_REJECTED` so callers can
+   * distinguish a deliberate cancellation from a connectivity failure.
+   */
+  async switchNetwork(networkPassphrase: string): Promise<void> {
+    const api = getFreighter()
+    if (!api) throw new WalletAdapterError('Freighter extension not found', 'NOT_INSTALLED')
+    if (typeof api.setNetwork !== 'function') {
+      // Older Freighter versions don't expose setNetwork — nothing to do.
+      return
+    }
+    try {
+      await api.setNetwork(networkPassphrase)
+    } catch (cause) {
+      throw mapCommonWalletError(this.name, cause)
+    }
+  }
+
   onConnectionChange(listener: ConnectionStatusListener): () => void {
     this.connectionListeners.add(listener)
     return () => this.connectionListeners.delete(listener)
@@ -144,8 +168,18 @@ export class FreighterAdapter implements SorobanWalletAdapter {
     }
 
     const onNetworkChange = async () => {
-      const network = await this.safeGetNetwork(api)
-      this.networkListeners.forEach((listener) => listener({ networkPassphrase: network }))
+      try {
+        const details = await api.getNetworkDetails()
+        this.networkListeners.forEach((listener) => listener({ networkPassphrase: details.networkPassphrase }))
+      } catch (cause) {
+        // User cancelled the network-switch prompt — surface as USER_REJECTED so callers
+        // can distinguish a deliberate cancellation from a connectivity failure.
+        const mapped = mapCommonWalletError(this.name, cause)
+        this.emitStatus('error')
+        // Re-throw into the microtask queue so connection-change listeners are notified
+        // but the internal listener itself does not crash the Freighter event pipeline.
+        Promise.reject(mapped)
+      }
     }
 
     const onDisconnect = () => {

@@ -3,6 +3,7 @@ import {
   xdr,
   Account,
   SorobanDataBuilder,
+  Transaction,
 } from '@stellar/stellar-sdk'
 import type {
   MockRpcConfig,
@@ -14,6 +15,14 @@ import type {
   SimulatedLedgerEntry,
   RecordedInteraction,
 } from './types.js'
+import type {
+  SorobanRpcClient,
+  SorobanRpcApiSimulateTransactionResponse,
+  SorobanRpcApiSendTransactionResponse,
+  SorobanRpcApiGetTransactionResponse,
+  SorobanRpcApiGetLedgerEntriesResponse,
+  SorobanRpcApiNetworkInfo,
+} from '@soroban-resurrect/types'
 import { MockLedgerState } from './ledger-state.js'
 import { SequenceManager } from './sequence-manager.js'
 import { FixtureRecorder } from './fixture-recorder.js'
@@ -46,11 +55,15 @@ import { FixtureRecorder } from './fixture-recorder.js'
  * // Simulate a network timeout
  * mock.setNetworkCondition('timeout')
  *
- * // Get the server instance for use with SorobanResurrect
- * const server = mock.getServer()
+ * // Use directly with SorobanResurrect as it implements SorobanRpcClient
+ * const client = new SorobanResurrect({
+ *   rpcUrl: 'mock://',
+ *   networkPassphrase: 'Test SDF Network ; September 2015',
+ *   rpcClient: mock,
+ * })
  * ```
  */
-export class MockRpcServer {
+export class MockRpcServer implements SorobanRpcClient {
   /** The simulated ledger state manager. */
   readonly ledgerState: MockLedgerState
   /** Deterministic sequence number manager. */
@@ -197,11 +210,39 @@ export class MockRpcServer {
     }
   }
 
-  // ── RPC Method implementations ───────────────────────────────────────────
+  // ── SorobanRpcClient interface implementation ───────────────────────────────────────────
+
+  async getAccount(accountId: string): Promise<Account> {
+    return this.handleGetAccount(accountId) as Promise<Account>
+  }
+
+  async simulateTransaction(tx: Transaction): Promise<SorobanRpcApiSimulateTransactionResponse> {
+    return this.handleSimulateTransaction(tx) as Promise<SorobanRpcApiSimulateTransactionResponse>
+  }
+
+  async sendTransaction(tx: Transaction): Promise<SorobanRpcApiSendTransactionResponse> {
+    return this.handleSendTransaction(tx) as Promise<SorobanRpcApiSendTransactionResponse>
+  }
+
+  async getTransaction(hash: string): Promise<SorobanRpcApiGetTransactionResponse> {
+    return this.handleGetTransaction(hash) as Promise<SorobanRpcApiGetTransactionResponse>
+  }
+
+  async getLedgerEntries(...keys: xdr.LedgerKey[]): Promise<SorobanRpcApiGetLedgerEntriesResponse> {
+    return this.handleGetLedgerEntries(keys) as Promise<SorobanRpcApiGetLedgerEntriesResponse>
+  }
+
+  async getNetwork(): Promise<SorobanRpcApiNetworkInfo> {
+    return this.handleGetNetwork() as Promise<SorobanRpcApiNetworkInfo>
+  }
+
+  // ── Legacy getServer method for backward compatibility ───────────────────────────────────────────
 
   /**
    * Build a mock `SorobanRpc.Server` instance whose methods are wired to
    * this mock's implementations.  Use this with `SorobanResurrect`.
+   *
+   * @deprecated Use the MockRpcServer directly as a SorobanRpcClient instead.
    */
   getServer(): SorobanRpc.Server {
     const server = {
@@ -310,7 +351,7 @@ export class MockRpcServer {
 
   // ── Private: RPC method implementations ──────────────────────────────────
 
-  private async handleSimulateTransaction(tx: unknown): Promise<unknown> {
+  private async handleSimulateTransaction(tx: unknown): Promise<SorobanRpcApiSimulateTransactionResponse> {
     return this.handleRequest('simulateTransaction', [tx], () => {
       // Build a minimal successful simulation response
       // Use the ledgerState to determine archived keys in the footprint
@@ -384,7 +425,7 @@ export class MockRpcServer {
     })
   }
 
-  private async handleGetLedgerEntries(keys: xdr.LedgerKey[]): Promise<unknown> {
+  private async handleGetLedgerEntries(keys: xdr.LedgerKey[]): Promise<SorobanRpcApiGetLedgerEntriesResponse> {
     return this.handleRequest('getLedgerEntries', keys, () => {
       const liveEntries = this.ledgerState.getLiveEntries(keys)
 
@@ -399,14 +440,14 @@ export class MockRpcServer {
     })
   }
 
-  private async handleGetAccount(accountId: string): Promise<unknown> {
+  private async handleGetAccount(accountId: string): Promise<Account> {
     return this.handleRequest('getAccount', [accountId], () => {
       const account = this.sequenceManager.buildMockAccount(accountId)
       return account
     })
   }
 
-  private async handleSendTransaction(tx: unknown): Promise<unknown> {
+  private async handleSendTransaction(tx: unknown): Promise<SorobanRpcApiSendTransactionResponse> {
     return this.handleRequest('sendTransaction', [tx], () => {
       const hash = `mock-tx-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
       // We could store the pending tx but for unit tests, just return PENDING
@@ -419,7 +460,7 @@ export class MockRpcServer {
     })
   }
 
-  private async handleGetTransaction(hash: string): Promise<unknown> {
+  private async handleGetTransaction(hash: string): Promise<SorobanRpcApiGetTransactionResponse> {
     return this.handleRequest('getTransaction', [hash], () => ({
       status: 'SUCCESS',
       hash,
@@ -439,7 +480,7 @@ export class MockRpcServer {
     }))
   }
 
-  private async handleGetNetwork(): Promise<unknown> {
+  private async handleGetNetwork(): Promise<SorobanRpcApiNetworkInfo> {
     return this.handleRequest('getNetwork', [], () => ({
       passphrase: this.config.networkPassphrase ?? 'Test SDF Network ; September 2015',
       protocolVersion: 22,
