@@ -24,7 +24,6 @@ import {
   WsTransactionStatusEvent,
   TransactionWaitResult,
   FootprintCacheStatistics,
-  FeatureFlags,
 } from '@soroban-resurrect/types'
 import { SorobanResurrectError } from '@soroban-resurrect/errors'
 import {
@@ -38,7 +37,7 @@ import { ExponentialBackoff, type RetryPolicy } from '@soroban-resurrect/rpc'
 import { SimulationCache, type SimulationCacheConfig } from '@soroban-resurrect/rpc'
 import { RpcFailoverManager, type RpcEndpointHealth } from '@soroban-resurrect/rpc'
 import { FootprintCache } from '@soroban-resurrect/rpc'
-import { DEFAULT_MAX_CONCURRENCY, delay, MAX_RETRIES, deprecate } from '@soroban-resurrect/utils'
+import { DEFAULT_MAX_CONCURRENCY, delay, MAX_RETRIES } from '@soroban-resurrect/utils'
 
 const MAX_XDR_SIZE_BYTES = 100_000
 const DEFAULT_RESTORE_FEE = '100000'
@@ -84,7 +83,6 @@ export class SorobanResurrect {
   private simulationCache?: SimulationCache
   private footprintCache?: FootprintCache
   private _lastFailedRestoreState: FailedRestoreState | null = null
-  private featureFlags: Required<FeatureFlags>
 
   constructor(config: SorobanResurrectConfig) {
     this.config = {
@@ -98,15 +96,6 @@ export class SorobanResurrect {
       pollIntervalMs: 1000,
       maxPollAttempts: 30,
       ...config,
-    }
-
-    // Initialize feature flags with defaults (all false)
-    this.featureFlags = {
-      feeBumpSupport: false,
-      concurrentBatches: false,
-      wasmParser: false,
-      persistentCache: false,
-      ...config.featureFlags,
     }
 
     const serverOptions: SorobanRpc.Server.Options = {
@@ -131,28 +120,6 @@ export class SorobanResurrect {
     }
 
     void this.validateNetworkPassphrase()
-  }
-
-  /**
-   * Get the current feature flags configuration.
-   */
-  getFeatureFlags(): Required<FeatureFlags> {
-    return { ...this.featureFlags }
-  }
-
-  /**
-   * Check if a specific feature flag is enabled.
-   */
-  isFeatureEnabled(flag: keyof FeatureFlags): boolean {
-    return this.featureFlags[flag] === true
-  }
-
-  /**
-   * Update feature flags at runtime.
-   */
-  setFeatureFlags(flags: Partial<FeatureFlags>): void {
-    this.featureFlags = { ...this.featureFlags, ...flags }
-    this.log('info', 'Feature flags updated', this.featureFlags)
   }
 
   /**
@@ -297,16 +264,12 @@ export class SorobanResurrect {
     let feeBumpMetadata: FeeBumpMetadata = { isFeeBump: false }
 
     if (isFeeBumpTx(tx)) {
-      if (!this.featureFlags.feeBumpSupport) {
-        throw new SorobanResurrectError(
-          'Fee bump transactions are not supported (enable with featureFlags.feeBumpSupport)',
-          'INVALID_XDR',
-          undefined,
-          { rpcUrl: this.config.rpcUrl },
-        )
-      }
-      feeBumpMetadata = extractFeeBumpMetadata(tx)
-      innerTx = extractInnerTransaction(tx)
+      throw new SorobanResurrectError(
+        'Fee bump transactions are not supported',
+        'INVALID_XDR',
+        undefined,
+        { rpcUrl: this.config.rpcUrl },
+      )
     }
 
     let simResult: SorobanRpc.Api.SimulateTransactionResponse
@@ -418,16 +381,7 @@ export class SorobanResurrect {
     }
   }
 
-  /**
-   * @deprecated Use `simulate()` instead. This method is an alias and will be removed in v1.0.0.
-   * @example
-   * // Before
-   * const result = await client.checkTransaction(txXDR, source)
-   * // After
-   * const result = await client.simulate(txXDR, source)
-   */
   async checkTransaction(txXDR: string, source?: string): Promise<SimulationCheckResult> {
-    deprecate('checkTransaction() is deprecated. Use simulate() instead', 'v1.0.0')
     return this.simulate(txXDR, source)
   }
 
@@ -600,9 +554,6 @@ export class SorobanResurrect {
   }
 
   /**
-   * @deprecated This is an experimental feature. Enable with `featureFlags.concurrentBatches` and use with caution.
-   * API may change in future versions. Will be stabilized in v1.0.0.
-   *
    * Executes restore batches concurrently up to `maxConcurrency` in-flight at
    * a time.  Unlike `executeRestoreBatches`, this method never short-circuits:
    * all batches are attempted and any failures are collected in the result so
@@ -624,15 +575,6 @@ export class SorobanResurrect {
     signTransaction: (xdr: string) => Promise<string>,
     concurrency?: number,
   ): Promise<ConcurrentRestoreResult> {
-    if (!this.featureFlags.concurrentBatches) {
-      throw new SorobanResurrectError(
-        'Concurrent batch execution is not supported (enable with featureFlags.concurrentBatches)',
-        'INVALID_XDR',
-        undefined,
-        { rpcUrl: this.config.rpcUrl },
-      )
-    }
-
     const limit = Math.max(1, concurrency ?? this.config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY)
     const total = batches.length
 
@@ -720,9 +662,6 @@ export class SorobanResurrect {
   }
 
   /**
-   * @deprecated This is an experimental feature. Enable with `featureFlags.concurrentBatches` and use with caution.
-   * API may change in future versions. Will be stabilized in v1.0.0.
-   *
    * Builds restore batches that are optimised for concurrent execution.
    *
    * Keys are first grouped by contract ID (see `groupKeysByContract`).  Each
@@ -795,9 +734,6 @@ export class SorobanResurrect {
   }
 
   /**
-   * @deprecated This is an experimental feature. Enable with `featureFlags.concurrentBatches` and use with caution.
-   * API may change in future versions. Will be stabilized in v1.0.0.
-   *
    * Full concurrent flow: build contract-aware batches, execute them in
    * parallel up to `maxConcurrency`, then submit the original transaction once
    * all restores are complete (or throw if any batch failed).
@@ -813,15 +749,6 @@ export class SorobanResurrect {
     signTransaction: (xdr: string) => Promise<string>,
     options: { requireAllBatches?: boolean; concurrency?: number } = {},
   ): Promise<ExecutionResult> {
-    if (!this.featureFlags.concurrentBatches) {
-      throw new SorobanResurrectError(
-        'Concurrent batch execution is not supported (enable with featureFlags.concurrentBatches)',
-        'INVALID_XDR',
-        undefined,
-        { rpcUrl: this.config.rpcUrl },
-      )
-    }
-
     const { requireAllBatches = true, concurrency } = options
 
     // Classify keys on demand before batch building (deferred from simulation)
