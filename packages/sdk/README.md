@@ -94,3 +94,36 @@ const sacType = classifySacKey(scVal) // 'sacBalance' | 'sacAllowance' | ... | u
 ```
 
 Returns `undefined` when the `ScVal` does not match any known SAC pattern.
+
+## Interactive REPL Playground
+
+For experimentation and rapid prototyping, use the interactive REPL with pre-imported SDK modules:
+
+```bash
+npm run repl
+```
+
+This launches Node.js with the `--experimental-repl-await` flag, giving you access to:
+
+- `SorobanResurrect` — main SDK class
+- `extractKeysFromFootprint` — extract keys from transaction footprints
+- `classifyLedgerKey` — classify ledger key types
+- `FootprintCache` — cache footprint operations
+- `SimulationCache` — cache simulation results
+- `RpcFailoverManager` — manage multiple RPC endpoints
+- `VersionNegotiator` — handle protocol version compatibility
+- `createTestConfig(rpcUrl?, networkPassphrase?)` — helper to create test configuration
+- `help()` — display available functions
+
+Example session:
+
+```javascript
+const config = createTestConfig()
+const sdk = new SorobanResurrect(config)
+
+// Simulate a transaction to check for archived keys
+const result = await sdk.simulate(txXdrString)
+console.log('Archived keys:', result.archivedKeys.length)
+```
+
+The REPL provides a convenient environment for offline experimentation with mock RPC server support.

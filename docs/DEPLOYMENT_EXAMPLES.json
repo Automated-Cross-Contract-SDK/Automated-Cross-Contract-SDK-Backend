@@ -1,0 +1,94 @@
+{
+  "examples": {
+    "dex_aggregator": {
+      "name": "DEX Aggregator",
+      "description": "DEX aggregator integrating cross-contract swaps with footprint restoration for optimal routing",
+      "architecture": "graph LR\n    A[User Swap Request] -->|parse routes| B[DEX Aggregator]\n    B -->|detect keys| C[Footprint Analyzer]\n    C -->|restore keys| D[Contract Executor]\n    D -->|execute swap| E[Token Transfer]\n    E -->|return result| F[User]",
+      "integrationCode": "const swapRoute = await dexAggregator.findBestRoute({\n  tokenIn: usdc,\n  tokenOut: usdt,\n  amount: 1000n\n});\n\nconst footprint = await detectArchivedKeys(swapRoute.contracts);\nconst restored = await restoreKeys(footprint);\n\nconst result = await executeSwap({\n  ...swapRoute,\n  footprint: restored\n});",
+      "performanceData": {
+        "before": 2450,
+        "after": 680,
+        "improvement": "72.2% faster"
+      },
+      "lessonsLearned": [
+        "Pre-compute common swap routes to reduce detection time",
+        "Cache restored footprints for frequently used DEX pairs",
+        "Batch multiple swaps in single transaction to amortize restoration cost",
+        "Monitor gas usage - restoration adds ~150k units per operation",
+        "Implement fallback for routes with incomplete footprints"
+      ]
+    },
+    "lending_protocol": {
+      "name": "Lending Protocol",
+      "description": "Lending protocol with liquidation calls leveraging cross-contract key restoration",
+      "architecture": "graph LR\n    A[Monitor Positions] -->|detect liquidation| B[Liquidator]\n    B -->|get affected keys| C[Position Analyzer]\n    C -->|restore keys| D[Liquidation Engine]\n    D -->|execute liquidation| E[Collateral Transfer]\n    E -->|claim reward| F[Liquidator Account]",
+      "integrationCode": "const position = await lendingPool.getPosition(userAddress);\nconst health = await calculateHealthFactor(position);\n\nif (health < 1.0) {\n  const affectedKeys = await detectLiquidationKeys(position);\n  const footprint = await restoreKeys(affectedKeys);\n  \n  const liquidation = await executeLiquidation({\n    position,\n    collateral: position.collateral,\n    footprint\n  });\n  \n  return liquidation.reward;\n}",
+      "performanceData": {
+        "before": 3200,
+        "after": 850,
+        "improvement": "73.4% faster"
+      },
+      "lessonsLearned": [
+        "Prioritize liquidations with higher health factor gaps",
+        "Use parallel detection for multiple positions to save time",
+        "Store health factor history to predict liquidation events",
+        "Implement MEV protection by timing liquidations carefully",
+        "Account for gas price volatility when calculating liquidation profitability"
+      ]
+    },
+    "nft_marketplace": {
+      "name": "NFT Marketplace",
+      "description": "NFT marketplace with batch operations using cross-contract key restoration",
+      "architecture": "graph LR\n    A[Batch List Request] -->|parse NFTs| B[Marketplace]\n    B -->|detect keys| C[Key Detector]\n    C -->|restore all| D[Batch Processor]\n    D -->|list NFTs| E[Marketplace Contract]\n    E -->|emit events| F[Index/Frontend]",
+      "integrationCode": "const nftsToList = [\n  { contract: nftA, tokenId: 1 },\n  { contract: nftB, tokenId: 5 },\n  { contract: nftC, tokenId: 99 }\n];\n\nconst footprints = await detectArchivedKeys(\n  nftsToList.map(n => n.contract)\n);\nconst restored = await restoreKeys(footprints);\n\nconst results = await batchListNFTs({\n  nfts: nftsToList,\n  footprint: restored,\n  prices: [100, 250, 500]\n});",
+      "performanceData": {
+        "before": 4100,
+        "after": 980,
+        "improvement": "76.1% faster"
+      },
+      "lessonsLearned": [
+        "Batch operations show highest improvement (>75% faster)",
+        "Limit batch size to 50-100 items for optimal throughput",
+        "Use streaming for large NFT collections (>1000 items)",
+        "Implement progress tracking for UI responsiveness",
+        "Cache collection-level footprints for repeated operations"
+      ]
+    },
+    "bridge_contract": {
+      "name": "Bridge Contract",
+      "description": "Bridge contract with multiple validators using key restoration for consensus",
+      "architecture": "graph LR\n    A[Cross-chain Message] -->|validate| B[Validator Set]\n    B -->|detect keys| C[Signature Verifier]\n    C -->|restore keys| D[Consensus Engine]\n    D -->|collect sigs| E[Threshold Checker]\n    E -->|mint/burn| F[Bridge Token]",
+      "integrationCode": "const validators = await bridgeContract.getValidators();\nconst affectedKeys = await detectValidatorKeys(validators);\nconst footprint = await restoreKeys(affectedKeys);\n\nconst signatures = await collectSignatures({\n  validators,\n  message: bridgeMessage,\n  footprint\n});\n\nif (signatures.length >= threshold) {\n  await executeBridgeTransaction({\n    message: bridgeMessage,\n    signatures,\n    footprint\n  });\n}",
+      "performanceData": {
+        "before": 5600,
+        "after": 1650,
+        "improvement": "70.5% faster"
+      },
+      "lessonsLearned": [
+        "Validator set management is critical - cache and validate regularly",
+        "Use threshold scheme (N of M) to reduce verification burden",
+        "Implement time windows for signature collection",
+        "Monitor validator responsiveness - exclude slow validators if needed",
+        "Test bridge security with contract verification tools"
+      ]
+    },
+    "yield_aggregator": {
+      "name": "Yield Aggregator",
+      "description": "Yield aggregator with strategy composition using cross-contract restoration",
+      "architecture": "graph LR\n    A[User Deposit] -->|allocate| B[Strategy Composer]\n    B -->|detect keys| C[Contract Analyzer]\n    C -->|restore keys| D[Execution Engine]\n    D -->|execute strategies| E[DeFi Protocols]\n    E -->|accrue yield| F[User Account]",
+      "integrationCode": "const strategies = [\n  { contract: strategyA, allocation: 40n },\n  { contract: strategyB, allocation: 35n },\n  { contract: strategyC, allocation: 25n }\n];\n\nconst allKeys = await detectArchivedKeys(\n  strategies.map(s => s.contract)\n);\nconst footprint = await restoreKeys(allKeys);\n\nconst executed = await executeComposedStrategy({\n  strategies,\n  amount: depositAmount,\n  footprint\n});\n\nawait trackYield(executed);",
+      "performanceData": {
+        "before": 3850,
+        "after": 920,
+        "improvement": "76.1% faster"
+      },
+      "lessonsLearned": [
+        "Rebalancing operations benefit most from batching (>75% faster)",
+        "Implement automated rebalancing on schedule or price thresholds",
+        "Use dust collection strategy for small remaining balances",
+        "Monitor strategy performance and adjust allocations dynamically",
+        "Set maximum slippage tolerance to protect against sandwich attacks"
+      ]
+    }
+  }
+}
