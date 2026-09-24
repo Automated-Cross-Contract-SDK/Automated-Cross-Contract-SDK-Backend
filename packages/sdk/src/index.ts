@@ -95,7 +95,14 @@ export type { BatchingOptions, PollingOptions } from '@soroban-resurrect/utils'
 
 // Keep wallet adapters in SDK package (not split yet)
 export { WalletAdapterError, loadOptionalWalletDependency, bytesToBase64 } from './wallet-adapter.js'
-export type { SorobanWalletAdapter, SignTransactionOptions, WalletConnectionResult, WalletAdapterErrorCode } from './wallet-adapter.js'
+export type {
+  SorobanWalletAdapter,
+  SignTransactionOptions,
+  SignAndSubmitOptions,
+  SignAndSubmitResult,
+  WalletConnectionResult,
+  WalletAdapterErrorCode,
+} from './wallet-adapter.js'
 
 export { XBullAdapter } from './xbull-adapter.js'
 export { LobstrAdapter } from './lobstr-adapter.js'
