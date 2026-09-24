@@ -74,6 +74,15 @@ export interface SorobanResurrectConfig {
   restoreFee?: string
   maxRestoreBatchSize?: number
   /**
+   * Maximum fee budget in stroops for a single restore batch.
+   * When set, batching stops adding entries once the estimated restore fee
+   * would exceed this budget. The limit is applied alongside `maxRestoreBatchSize`,
+   * with whichever constraint is hit first determining the actual batch boundary.
+   * Requires `dynamicFeeEstimation` to be enabled for accurate fee tracking.
+   * When omitted or undefined, batching uses only `maxRestoreBatchSize`.
+   */
+  maxRestoreFeeStroops?: string
+  /**
    * Timeout in milliseconds for RPC requests made by SorobanRpc.Server.
    * Defaults to the Stellar SDK default when not set.
    */

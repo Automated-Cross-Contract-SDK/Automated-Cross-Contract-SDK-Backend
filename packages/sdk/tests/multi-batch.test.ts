@@ -347,4 +347,252 @@ describe('SorobanResurrect - Multi-Batch Operations', () => {
       }
     })
   })
+
+  describe('buildRestoreTransactionBatches with maxRestoreFeeStroops', () => {
+    it('respects fee budget when configured', async () => {
+      // Create a client with fee budget constraint
+      const feeAwareClient = new SorobanResurrect({
+        rpcUrl: 'https://soroban-testnet.stellar.org',
+        networkPassphrase: 'Test SDF Network ; September 2015',
+        maxRestoreBatchSize: 100, // Large entry count limit
+        maxRestoreFeeStroops: '300000', // Small fee budget
+        dynamicFeeEstimation: true,
+      })
+
+      const mockFeeServer = feeAwareClient.getRpcServer()
+
+      // Mock fee estimation: each batch of N keys costs ~50K stroops per key
+      mockFeeServer.simulateTransaction.mockResolvedValue({
+        minResourceFee: '50000',
+        transactionData: {
+          getFootprint: () => ({
+            readOnly: () => [],
+            readWrite: () => [],
+          }),
+        },
+      })
+
+      mockFeeServer.getAccount.mockResolvedValue({
+        sequenceNumber: () => '1000',
+      })
+
+      // Create enough keys to exceed fee budget if all in one batch
+      const keys: ArchivedKey[] = Array.from({ length: 100 }, (_, i) => ({
+        key: {} as xdr.LedgerKey,
+        keyBase64: `key${i}`.padEnd(30, 'x'),
+        keyType: 'contractData' as const,
+        contractId: `contract${i}`,
+        restorePriority: 2,
+      }))
+
+      const batches = await feeAwareClient.buildRestoreTransactionBatches(
+        keys,
+        'GBFQRG4MXSLCJ7VDQTLBJ3JWKSGGOZAYNLWWRXZL3JECGVFQG3BXJBQM',
+      )
+
+      // With fee budget of 300K stroops and ~50K per key, should get multiple batches
+      // This demonstrates that batching respects fee budget constraint
+      expect(batches.length).toBeGreaterThan(1)
+      expect(batches.reduce((sum, b) => sum + b.keysRestored, 0)).toBe(100)
+    })
+
+    it('uses maxRestoreBatchSize when no fee budget is set', async () => {
+      mockServer.getAccount.mockResolvedValue({
+        sequenceNumber: () => '1000',
+      })
+
+      const keys: ArchivedKey[] = Array.from({ length: 75 }, (_, i) => ({
+        key: {} as xdr.LedgerKey,
+        keyBase64: `key${i}`.padEnd(30, 'x'),
+        keyType: 'contractData' as const,
+        contractId: `contract${i}`,
+        restorePriority: 2,
+      }))
+
+      const batches = await client.buildRestoreTransactionBatches(
+        keys,
+        'GBFQRG4MXSLCJ7VDQTLBJ3JWKSGGOZAYNLWWRXZL3JECGVFQG3BXJBQM',
+      )
+
+      // With default maxRestoreBatchSize=50, 75 keys should create 2 batches
+      expect(batches.length).toBe(2)
+      expect(batches[0].keysRestored).toBe(50)
+      expect(batches[1].keysRestored).toBe(25)
+    })
+
+    it('handles fee estimation failure gracefully', async () => {
+      const feeAwareClient = new SorobanResurrect({
+        rpcUrl: 'https://soroban-testnet.stellar.org',
+        networkPassphrase: 'Test SDF Network ; September 2015',
+        maxRestoreBatchSize: 50,
+        maxRestoreFeeStroops: '500000',
+        dynamicFeeEstimation: true,
+      })
+
+      const mockFeeServer = feeAwareClient.getRpcServer()
+
+      // Simulate fee estimation failure
+      mockFeeServer.simulateTransaction.mockRejectedValue(new Error('RPC unavailable'))
+      mockFeeServer.getAccount.mockResolvedValue({
+        sequenceNumber: () => '1000',
+      })
+
+      const keys: ArchivedKey[] = Array.from({ length: 100 }, (_, i) => ({
+        key: {} as xdr.LedgerKey,
+        keyBase64: `key${i}`.padEnd(30, 'x'),
+        keyType: 'contractData' as const,
+        contractId: `contract${i}`,
+        restorePriority: 2,
+      }))
+
+      // Should not throw despite fee estimation failure; falls back to entry count limit
+      const batches = await feeAwareClient.buildRestoreTransactionBatches(
+        keys,
+        'GBFQRG4MXSLCJ7VDQTLBJ3JWKSGGOZAYNLWWRXZL3JECGVFQG3BXJBQM',
+      )
+
+      // With maxRestoreBatchSize=50 and 100 keys, should get 2 batches
+      // (fee estimation fallback doesn't prevent entry-count batching)
+      expect(batches.length).toBe(2)
+      expect(batches.reduce((sum, b) => sum + b.keysRestored, 0)).toBe(100)
+    })
+  })
+
+  describe('executeRestoreThenOriginalBatches with partial-failure resume', () => {
+    it('captures partial-failure state when intermediate batch fails', async () => {
+      const restoreBatches: RestoreBatchResult[] = [
+        { batchIndex: 0, transactionXDR: 'xdr-1', keysRestored: 50, status: 'pending' },
+        { batchIndex: 1, transactionXDR: 'xdr-2', keysRestored: 50, status: 'pending' },
+        { batchIndex: 2, transactionXDR: 'xdr-3', keysRestored: 50, status: 'pending' },
+      ]
+
+      const originalXDR = 'original-tx-xdr'
+
+      // Mock: first batch succeeds, second fails, third never executes
+      mockServer.sendTransaction
+        .mockResolvedValueOnce({
+          status: 'PENDING',
+          hash: 'txhash1',
+        })
+        .mockRejectedValueOnce(new Error('Insufficient balance'))
+
+      mockServer.getTransaction.mockResolvedValueOnce({
+        status: 'SUCCESS',
+      })
+
+      try {
+        await client.executeRestoreThenOriginalBatches(
+          restoreBatches,
+          originalXDR,
+          async (xdr) => `signed-${xdr}`,
+        )
+        expect.fail('Should have thrown')
+      } catch (err: any) {
+        expect(err.code).toBe('RESTORE_FAILED')
+      }
+
+      // Verify partial-failure state was captured
+      const failedState = client.getFailedKeys()
+      expect(failedState).not.toBeNull()
+      expect(failedState?.failedBatchIndex).toBe(1)
+      expect(failedState?.partialEntriesRestored).toBe(50) // First batch succeeded
+      expect(failedState?.failedBatches).toHaveLength(2) // Batches 1 and 2 failed
+    })
+
+    it('allows retry of failed batches via retryFailedRestore', async () => {
+      const restoreBatches: RestoreBatchResult[] = [
+        { batchIndex: 0, transactionXDR: 'xdr-1', keysRestored: 50, status: 'pending' },
+        { batchIndex: 1, transactionXDR: 'xdr-2', keysRestored: 50, status: 'pending' },
+        { batchIndex: 2, transactionXDR: 'xdr-3', keysRestored: 50, status: 'pending' },
+      ]
+
+      mockServer.getAccount.mockResolvedValue({
+        sequenceNumber: () => '1000',
+      })
+
+      // Initial attempt: first batch succeeds, second fails
+      mockServer.sendTransaction
+        .mockResolvedValueOnce({
+          status: 'PENDING',
+          hash: 'txhash1',
+        })
+        .mockRejectedValueOnce(new Error('Insufficient balance'))
+
+      mockServer.getTransaction.mockResolvedValueOnce({
+        status: 'SUCCESS',
+      })
+
+      try {
+        await client.executeRestoreBatches(restoreBatches, async (xdr) => `signed-${xdr}`)
+      } catch {
+        // Expected to fail
+      }
+
+      // Capture failed state
+      const failedState = client.getFailedKeys()
+      expect(failedState).not.toBeNull()
+      expect(failedState!.failedBatchIndex).toBe(1)
+
+      // Reset mocks for retry
+      vi.clearAllMocks()
+      mockServer.sendTransaction.mockResolvedValue({
+        status: 'PENDING',
+        hash: 'txhash-retry',
+      })
+      mockServer.getTransaction.mockResolvedValue({
+        status: 'SUCCESS',
+      })
+
+      // Retry failed batches
+      const retryResult = await client.retryFailedRestore(
+        failedState!,
+        async (xdr) => `signed-${xdr}`,
+      )
+
+      expect(retryResult.success).toBe(true)
+      // Total entries: 50 (original) + 100 (retry of batches 1 and 2)
+      expect(retryResult.entriesRestored).toBe(150)
+    })
+
+    it('returns partial failure result when requireAllBatches=false', async () => {
+      const restoreBatches: RestoreBatchResult[] = [
+        { batchIndex: 0, transactionXDR: 'xdr-1', keysRestored: 50, status: 'pending' },
+        { batchIndex: 1, transactionXDR: 'xdr-2', keysRestored: 50, status: 'pending' },
+      ]
+
+      const originalXDR = 'original-tx-xdr'
+
+      // Mock: first batch succeeds, second fails, but we still execute original
+      mockServer.sendTransaction
+        .mockResolvedValueOnce({
+          status: 'PENDING',
+          hash: 'txhash1',
+        })
+        .mockRejectedValueOnce(new Error('Batch failed'))
+        .mockResolvedValueOnce({
+          status: 'PENDING',
+          hash: 'txhash-original',
+        })
+
+      mockServer.getTransaction
+        .mockResolvedValueOnce({
+          status: 'SUCCESS',
+        })
+        .mockResolvedValueOnce({
+          status: 'SUCCESS',
+        })
+
+      const result = await client.executeRestoreThenOriginalBatches(
+        restoreBatches,
+        originalXDR,
+        async (xdr) => `signed-${xdr}`,
+        { requireAllBatches: false },
+      )
+
+      expect(result.success).toBe(false)
+      expect(result.failedBatchIndex).toBe(1)
+      expect(result.partialEntriesRestored).toBe(50) // Only first batch succeeded
+      expect(result.originalTxHash).toBeDefined() // Original still executed
+    })
+  })
 })

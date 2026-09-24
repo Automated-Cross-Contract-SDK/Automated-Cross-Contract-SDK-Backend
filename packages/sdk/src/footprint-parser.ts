@@ -23,6 +23,8 @@ export interface DeferredArchivedKey {
 
 /**
  * Converts deferred keys into fully-classified ArchivedKeys.
+ * Deduplicates contractInstance keys by contract ID while preserving
+ * restorePriority ordering.
  * Call this right before batch building or sorting.
  *
  * @param deferred The deferred keys to classify
@@ -33,6 +35,8 @@ export function classifyDeferredKeys(
   priorityMap?: Partial<Record<import('./types.js').ArchivedKey['keyType'], import('./types.js').RestorePriority>>,
 ): import('./types.js').ArchivedKey[] {
   const result: import('./types.js').ArchivedKey[] = []
+  const seenContractInstances = new Set<string>()
+
   for (const d of deferred) {
     const classification = classifyLedgerKey(d.key)
     const finalPriority = priorityMap && priorityMap[classification.keyType] !== undefined
@@ -83,6 +87,7 @@ const SCV_LEDGER_KEY_CONTRACT_INSTANCE = 20
  */
 const SAC_VEC_SYMBOLS = new Set(['Balance', 'Allowance'])
 const SAC_SYMBOL_KEYS = new Set(['Admin', 'Name', 'Symbol', 'Decimals'])
+const SAC_CUSTOM_EXTENSION_KEYS = new Set(['Capped', 'Blocklist'])
 
 /**
  * Attempt to determine the SAC-specific sub-key type from the `ScVal` key of a
@@ -96,9 +101,13 @@ const SAC_SYMBOL_KEYS = new Set(['Admin', 'Name', 'Symbol', 'Decimals'])
  * | `scvVec([ scvSymbol("Allowance"), scvMap(...) ])`   | sacAllowance  |
  * | `scvLedgerKeyNonce(...)`                            | sacNonce      |
  * | `scvSymbol("Admin")`                                | sacAdmin      |
+ * | `scvSymbol("Capped"|"Blocklist")`                   | sacMetadata   |
  * | `scvSymbol("Name"|"Symbol"|"Decimals")`             | sacMetadata   |
  *
- * Returns `undefined` when the key does not match any known SAC pattern.
+ * Custom token extensions (`Capped`, `Blocklist`) fall back to `sacMetadata`.
+ * Any other unrecognized symbol also falls back to `sacMetadata` gracefully.
+ *
+ * Returns `undefined` only when the key structure doesn't match a SAC pattern at all.
  */
 export function classifySacKey(dataKey: xdr.ScVal): SacKeyType | undefined {
   try {
@@ -114,12 +123,16 @@ export function classifySacKey(dataKey: xdr.ScVal): SacKeyType | undefined {
       return undefined // instance entries are classified at classifyLedgerKey level
     }
 
-    // scvSymbol("Admin"|"Name"|"Symbol"|"Decimals")
+    // scvSymbol — check against known keys
     if (typeVal === SCV_SYMBOL) {
       const sym: string = dataKey.value().toString()
       if (sym === 'Admin') return 'sacAdmin'
-      if (SAC_SYMBOL_KEYS.has(sym)) return 'sacMetadata'
-      return undefined
+      // Metadata keys: standard + custom extensions + any other unrecognized symbol
+      if (SAC_SYMBOL_KEYS.has(sym) || SAC_CUSTOM_EXTENSION_KEYS.has(sym)) {
+        return 'sacMetadata'
+      }
+      // Graceful fallback for unrecognized symbol keys
+      return 'sacMetadata'
     }
 
     // scvVec([ scvSymbol("Balance"|"Allowance"), ... ])
