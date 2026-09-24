@@ -205,6 +205,12 @@ export function classifyLedgerKey(key: xdr.LedgerKey): {
       return { keyType: 'contractCode', contractId, restorePriority: 1 }
     }
 
+    case xdr.LedgerEntryType.liquidityPool():
+      return { keyType: 'liquidityPool', restorePriority: 3 }
+
+    case xdr.LedgerEntryType.claimableBalance():
+      return { keyType: 'claimableBalance', restorePriority: 3 }
+
     case xdr.LedgerEntryType.ttl():
       return { keyType: 'ttlEntry', restorePriority: 3 }
 

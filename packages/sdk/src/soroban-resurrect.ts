@@ -144,6 +144,9 @@ export class SorobanResurrect {
       Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl : [this.config.rpcUrl],
     )
 
+    // Initialize ledger event deduplicator (2-second window for duplicate suppression)
+    this.ledgerEventDeduplicator = new EventDeduplicator({ windowMs: 2000 })
+
     // Initialize footprint cache when configured
     if (this.config.footprintCache) {
       this.footprintCache = new FootprintCache(this.config.footprintCache)
@@ -160,8 +163,8 @@ export class SorobanResurrect {
   /**
    * Confirms the configured `networkPassphrase` matches what the RPC server
    * reports via `getNetwork()`. Runs fire-and-forget from the constructor:
-   * mismatches are logged as a warning, or thrown as a `NETWORK_ERROR` when
-   * `strictNetworkValidation` is enabled.
+   * mismatches are logged as a warning, logged as error in 'warn' mode, or
+   * thrown as a `NETWORK_ERROR` when `strictNetworkValidation` is `true`.
    */
   private async validateNetworkPassphrase(): Promise<void> {
     try {
@@ -170,7 +173,7 @@ export class SorobanResurrect {
         this.networkPassphraseValid = false
         const rpcUrl = Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl
         const message = `Network passphrase mismatch: configured "${this.config.networkPassphrase}" but RPC server reports "${network.passphrase}"`
-        if (this.config.strictNetworkValidation) {
+        if (this.config.strictNetworkValidation === true) {
           throw new SorobanResurrectError(message, 'NETWORK_ERROR', undefined, { rpcUrl })
         }
         this.logger.warn(message, { rpcUrl })
@@ -1622,13 +1625,13 @@ export class SorobanResurrect {
       'sendTransaction',
     )
 
-    if (sendResult.status === 'PENDING' || sendResult.status === 'DUPLICATE') {
+    if (sendResult.status === TRANSACTION_STATUS.PENDING || sendResult.status === TRANSACTION_STATUS.DUPLICATE) {
       const hash = sendResult.hash
       const { hash: confirmedHash } = await this.waitForTransaction(hash)
       return confirmedHash
     }
 
-    if (sendResult.status === 'ERROR') {
+    if (sendResult.status === TRANSACTION_STATUS.ERROR) {
       throw new SorobanResurrectError(
         `Transaction submission error (rpcUrl=${this.config.rpcUrl})`,
         'ORIGINAL_TX_FAILED',
@@ -1800,10 +1803,10 @@ export class SorobanResurrect {
         if (msg.params?.hash !== hash) return
 
         const status = msg.params.status
-        if (status === 'SUCCESS') {
+        if (status === TRANSACTION_STATUS.SUCCESS) {
           this.log('info', `Transaction ${hash} confirmed via WebSocket`)
           finish()
-        } else if (status === 'FAILED') {
+        } else if (status === TRANSACTION_STATUS.FAILED) {
           finish(new SorobanResurrectError(
             `Transaction ${hash} failed: ${msg.params.error ?? 'unknown error'}`,
             'ORIGINAL_TX_FAILED',
@@ -1837,8 +1840,8 @@ export class SorobanResurrect {
     const intervalMs = this.config.pollIntervalMs ?? 1000
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const receipt = await this.getServer().getTransaction(hash)
-      if (receipt.status !== 'NOT_FOUND') {
-        if (receipt.status === 'SUCCESS') {
+      if (receipt.status !== TRANSACTION_STATUS.NOT_FOUND) {
+        if (receipt.status === TRANSACTION_STATUS.SUCCESS) {
           return hash
         }
         const result = 'result' in receipt ? (receipt as any).result : receipt
@@ -2160,6 +2163,24 @@ export class SorobanResurrect {
       this.footprintCache.invalidateAll()
       this.log('info', 'Cleared all footprint cache entries')
     }
+  }
+
+  /**
+   * Emit a ledger-close event with automatic deduplication within a 2-second window.
+   * Call this when receiving ledger-close events from Soroban RPC to suppress
+   * duplicate emissions from reconnects or event re-delivery.
+   *
+   * @param sequence The ledger sequence number of the closed ledger.
+   * @returns true if the event is a duplicate (suppressed), false if emitted.
+   */
+  emitLedgerClose(sequence: number): boolean {
+    if (this.ledgerEventDeduplicator.isDuplicate(sequence)) {
+      this.log('info', `Suppressed duplicate ledger-close event for sequence ${sequence}`)
+      return true
+    }
+    this.log('info', `Ledger closed: sequence ${sequence}`)
+    this.onLedgerClose()
+    return false
   }
 
   /**

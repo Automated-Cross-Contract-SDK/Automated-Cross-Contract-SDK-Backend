@@ -49,6 +49,8 @@ vi.mock('@stellar/stellar-sdk', () => {
       LedgerEntryType: {
         contractData: () => 'contractData',
         contractCode: () => 'contractCode',
+        liquidityPool: () => 'liquidityPool',
+        claimableBalance: () => 'claimableBalance',
         ttl: () => 'ttl',
       },
       ScValType: {
@@ -128,7 +130,7 @@ describe('property: classifySacKey', () => {
 describe('property: classifyLedgerKey', () => {
   it('is deterministic/idempotent for any given key', () => {
     fc.assert(
-      fc.property(fc.constantFrom('contractData', 'contractCode', 'ttl', 'account'), (entryType) => {
+      fc.property(fc.constantFrom('contractData', 'contractCode', 'liquidityPool', 'claimableBalance', 'ttl', 'account'), (entryType) => {
         const key = (xdr as any)._makeLedgerKey(entryType) as unknown as xdr.LedgerKey
         const first = classifyLedgerKey(key)
         const second = classifyLedgerKey(key)
@@ -139,7 +141,7 @@ describe('property: classifyLedgerKey', () => {
 
   it('always assigns contractInstance entries restorePriority 0 and everything else > 0', () => {
     fc.assert(
-      fc.property(fc.constantFrom('contractData', 'contractCode', 'ttl', 'account'), (entryType) => {
+      fc.property(fc.constantFrom('contractData', 'contractCode', 'liquidityPool', 'claimableBalance', 'ttl', 'account'), (entryType) => {
         const key = (xdr as any)._makeLedgerKey(entryType) as unknown as xdr.LedgerKey
         const { keyType, restorePriority } = classifyLedgerKey(key)
         if (keyType === 'contractInstance') {
