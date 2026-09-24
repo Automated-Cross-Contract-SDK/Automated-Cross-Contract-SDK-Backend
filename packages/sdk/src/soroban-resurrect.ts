@@ -344,6 +344,9 @@ export class SorobanResurrect {
           )
           await delay(delayMs)
         } else {
+          // Enhance error with retry context on exhaustion
+          sorobanErr.attempts = attempt
+          sorobanErr.lastError = lastError?.cause ?? lastError
           throw sorobanErr
         }
       }
@@ -352,7 +355,11 @@ export class SorobanResurrect {
       `Operation failed after ${MAX_RETRIES} retries: ${context}`,
       'NETWORK_ERROR',
       lastError,
-      { rpcUrl: this.config.rpcUrl },
+      {
+        rpcUrl: this.config.rpcUrl,
+        attempts: policy.maxRetries + 1,
+        lastError: lastError?.cause ?? lastError,
+      },
     )
   }
 
@@ -2064,7 +2071,7 @@ export class SorobanResurrect {
     }
 
     if (txXDR) {
-      const cacheKey = SimulationCache.generateKey(txXDR, source)
+      const cacheKey = SimulationCache.generateKey(txXDR, source, undefined, this.config.networkPassphrase)
       this.simulationCache.invalidate(cacheKey)
       this.log('info', 'Invalidated simulation cache for specific transaction')
     } else {
@@ -2114,17 +2121,25 @@ export class SorobanResurrect {
   }
 
   /**
-   * Invalidate **all** entries in the footprint cache.
+   * Invalidate stale entries in the footprint cache on ledger close.
    *
-   * Call this whenever the ledger closes (i.e. a new ledger sequence is
-   * available) to ensure that subsequent calls to `extractFootprintCached`
-   * do not serve stale data.  Cached footprint keys are only valid for the
-   * current ledger.
+   * Call this whenever the ledger closes with the newly closed ledger's sequence number.
+   * If sequence is provided, only entries older than 1 ledger are flushed; otherwise,
+   * all entries are invalidated for backwards compatibility.
+   *
+   * Cached footprint keys are only valid for the current ledger.
+   *
+   * @param closedLedgerSequence Optional sequence number of the newly closed ledger
    */
-  onLedgerClose(): void {
+  onLedgerClose(closedLedgerSequence?: number): void {
     if (this.footprintCache) {
-      this.footprintCache.invalidateAll()
-      this.log('info', 'Footprint cache invalidated (ledger close)')
+      if (closedLedgerSequence !== undefined) {
+        this.footprintCache.onLedgerClose(closedLedgerSequence)
+        this.log('info', `Footprint cache flushed for ledger close at sequence ${closedLedgerSequence}`)
+      } else {
+        this.footprintCache.invalidateAll()
+        this.log('info', 'Footprint cache invalidated (ledger close)')
+      }
     }
   }
 

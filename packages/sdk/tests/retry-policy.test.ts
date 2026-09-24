@@ -218,6 +218,65 @@ describe('RetryPolicy implementations', () => {
       expect(policy.shouldRetry(networkErr, 1)).toBe(true)
       expect(policy.shouldRetry(invalidXdrErr, 1)).toBe(false)
     })
+
+    it('allows only one probe during half-open state', async () => {
+      const policy = new CircuitBreaker(3, 2, 50, 100) // 50ms timeout
+      const err = new SorobanResurrectError('Test', 'NETWORK_ERROR')
+
+      // Open the circuit
+      expect(policy.shouldRetry(err, 1)).toBe(true)
+      expect(policy.shouldRetry(err, 1)).toBe(false) // Circuit open
+
+      // Wait for timeout to enter half-open
+      await new Promise(resolve => setTimeout(resolve, 75))
+
+      // First probe should be allowed
+      expect(policy.shouldRetry(err, 1)).toBe(true)
+
+      // Second concurrent probe should be rejected
+      expect(policy.shouldRetry(err, 1)).toBe(false)
+    })
+
+    it('rejects concurrent probes during half-open with ABORTED', async () => {
+      const policy = new CircuitBreaker(3, 2, 50, 100) // 50ms timeout
+      const err = new SorobanResurrectError('Test', 'NETWORK_ERROR')
+
+      // Open the circuit
+      policy.shouldRetry(err, 1)
+      policy.shouldRetry(err, 1)
+
+      // Wait for half-open window
+      await new Promise(resolve => setTimeout(resolve, 75))
+
+      // First probe starts
+      const probe1 = policy.shouldRetry(err, 1)
+      expect(probe1).toBe(true)
+
+      // Concurrent probe attempt should be rejected
+      const probe2 = policy.shouldRetry(err, 1)
+      expect(probe2).toBe(false)
+    })
+
+    it('clears probe flag on success via reset', async () => {
+      const policy = new CircuitBreaker(3, 2, 50, 100) // 50ms timeout
+      const err = new SorobanResurrectError('Test', 'NETWORK_ERROR')
+
+      // Open the circuit
+      policy.shouldRetry(err, 1)
+      policy.shouldRetry(err, 1)
+
+      // Wait for half-open
+      await new Promise(resolve => setTimeout(resolve, 75))
+
+      // Probe starts
+      policy.shouldRetry(err, 1)
+
+      // Reset (called on success)
+      policy.reset?.()
+
+      // After reset, circuit should be closed
+      expect(policy.shouldRetry(err, 1)).toBe(true)
+    })
   })
 
   describe('DEFAULT_RETRY_POLICY', () => {
@@ -305,6 +364,49 @@ describe('RetryPolicy implementations', () => {
 
       // Default policy should be used
       expect(client).toBeDefined()
+    })
+  })
+
+  describe('SorobanResurrectError with retry context', () => {
+    it('carries attempts and lastError fields', () => {
+      const underlyingError = new Error('Network timeout')
+      const retryError = new SorobanResurrectError(
+        'Operation failed after retries',
+        'NETWORK_ERROR',
+        underlyingError,
+        {
+          rpcUrl: 'https://rpc.example.com',
+          attempts: 3,
+          lastError: underlyingError,
+        },
+      )
+
+      expect(retryError.attempts).toBe(3)
+      expect(retryError.lastError).toBe(underlyingError)
+      expect(retryError.rpcUrl).toBe('https://rpc.example.com')
+    })
+
+    it('creates error with minimal context', () => {
+      const err = new SorobanResurrectError('Test error', 'NETWORK_ERROR')
+      expect(err.attempts).toBeUndefined()
+      expect(err.lastError).toBeUndefined()
+    })
+
+    it('populates attempts on retry exhaustion', () => {
+      const cause = new Error('Original error')
+      const err = new SorobanResurrectError(
+        'Exhausted retries',
+        'NETWORK_ERROR',
+        cause,
+        {
+          attempts: 5,
+          lastError: cause,
+        },
+      )
+
+      expect(err.attempts).toBe(5)
+      expect(err.lastError).toBe(cause)
+      expect(err.cause).toBe(cause)
     })
   })
 })

@@ -63,10 +63,11 @@ export class SimulationCache {
    * @param txXDR Transaction XDR
    * @param source Source account (optional)
    * @param ledgerSequence Ledger sequence number (optional)
+   * @param networkPassphrase Network passphrase (optional)
    * @returns Cache key
    */
-  static generateKey(txXDR: string, source?: string, ledgerSequence?: number): string {
-    const combined = `${txXDR}|${source || ''}|${ledgerSequence || ''}`
+  static generateKey(txXDR: string, source?: string, ledgerSequence?: number, networkPassphrase?: string): string {
+    const combined = `${txXDR}|${source || ''}|${ledgerSequence || ''}|${networkPassphrase || ''}`
     return hashKey(combined)
   }
 

@@ -341,6 +341,10 @@ export interface SorobanResurrectErrorContext {
   txHash?: string
   /** Archived ledger-key details that triggered the failure, when available. */
   archivedKeys?: Array<{ keyBase64: string; keyType: string; contractId?: string }>
+  /** Number of attempts made before exhausting retries. */
+  attempts?: number
+  /** The final underlying error that caused retry exhaustion. */
+  lastError?: unknown
 }
 
 export class SorobanResurrectError extends Error {
@@ -350,6 +354,10 @@ export class SorobanResurrectError extends Error {
   public txHash?: string
   /** Archived key details when detection/restore fails. */
   public archivedKeys?: Array<{ keyBase64: string; keyType: string; contractId?: string }>
+  /** Number of retry attempts made before exhaustion. */
+  public attempts?: number
+  /** The final underlying error from the last retry attempt. */
+  public lastError?: unknown
 
   constructor(
     message: string,
@@ -363,6 +371,8 @@ export class SorobanResurrectError extends Error {
       this.rpcUrl = context.rpcUrl
       this.txHash = context.txHash
       this.archivedKeys = context.archivedKeys
+      this.attempts = context.attempts
+      this.lastError = context.lastError
     }
   }
 }
