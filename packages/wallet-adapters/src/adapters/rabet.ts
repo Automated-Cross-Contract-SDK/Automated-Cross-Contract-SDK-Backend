@@ -80,8 +80,10 @@ export class RabetAdapter implements SorobanWalletAdapter {
           publicKey: opts?.accountToSign ?? this.publicKey,
           network: opts?.networkPassphrase,
         })
+        this.teardownIframe()
         return signedXdr
       } catch (cause) {
+        this.teardownIframe()
         throw mapCommonWalletError(this.name, cause)
       }
     }
@@ -133,14 +135,28 @@ export class RabetAdapter implements SorobanWalletAdapter {
     const iframe = this.getOrCreateIframe()
     return new Promise((resolve, reject) => {
       const requestId = `rabet-${Math.random().toString(36).slice(2)}`
+      let timeoutId: NodeJS.Timeout | null = null
+
+      const cleanup = () => {
+        if (timeoutId) clearTimeout(timeoutId)
+        window.removeEventListener('message', handler)
+        this.messageHandler = null
+      }
+
       const handler = (event: MessageEvent) => {
         if (event.source !== iframe.contentWindow) return
         const data = event.data as IframeMessage
         if (!data || data.requestId !== requestId) return
-        window.removeEventListener('message', handler)
+        cleanup()
         if (data.error) reject(new Error(data.error))
         else resolve(data.result as T)
       }
+
+      timeoutId = setTimeout(() => {
+        cleanup()
+        reject(new WalletAdapterError('Rabet iframe request timed out after 30 seconds', 'TIMEOUT'))
+      }, 30000)
+
       window.addEventListener('message', handler)
       this.messageHandler = handler
       iframe.contentWindow?.postMessage({ ...message, requestId }, '*')
