@@ -1,0 +1,56 @@
+{
+  "name": "@soroban-resurrect/types",
+  "version": "0.1.0",
+  "description": "Shared type definitions for Soroban Resurrect packages",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend",
+    "directory": "packages/types"
+  },
+  "homepage": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend#readme",
+  "bugs": "https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend/issues",
+  "keywords": [
+    "stellar",
+    "soroban",
+    "smart-contracts",
+    "state-restoration",
+    "types"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "build:watch": "tsup --watch",
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^12.0.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.0",
+    "typescript": "^5.5.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

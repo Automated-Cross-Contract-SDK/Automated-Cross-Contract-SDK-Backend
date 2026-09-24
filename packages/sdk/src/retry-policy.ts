@@ -132,6 +132,7 @@ export class CircuitBreaker implements RetryPolicy {
 
   private consecutiveFailures: number = 0
   private circuitOpenAt: number | null = null
+  private halfOpenProbeInFlight: boolean = false
 
   constructor(
     maxRetries: number = 3,
@@ -150,8 +151,13 @@ export class CircuitBreaker implements RetryPolicy {
     if (this.circuitOpenAt !== null) {
       const timeSinceOpen = Date.now() - this.circuitOpenAt
       if (timeSinceOpen > this.openCircuitTimeoutMs) {
-        // Half-open: allow one retry to test if service recovered
-        this.circuitOpenAt = null
+        // Half-open: check if a probe is already in-flight
+        if (this.halfOpenProbeInFlight) {
+          // A probe is already being tested, reject concurrent attempts
+          return false
+        }
+        // Allow this call to be the probe
+        this.halfOpenProbeInFlight = true
         this.consecutiveFailures = 0
       } else {
         // Circuit open: fail fast
@@ -165,6 +171,7 @@ export class CircuitBreaker implements RetryPolicy {
     // Open circuit if threshold reached
     if (this.consecutiveFailures >= this.failureThreshold) {
       this.circuitOpenAt = Date.now()
+      this.halfOpenProbeInFlight = false
       return false
     }
 
@@ -184,6 +191,7 @@ export class CircuitBreaker implements RetryPolicy {
   reset(): void {
     this.consecutiveFailures = 0
     this.circuitOpenAt = null
+    this.halfOpenProbeInFlight = false
   }
 }
 

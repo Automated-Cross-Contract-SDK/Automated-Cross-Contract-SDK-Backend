@@ -148,6 +148,67 @@ describe('FootprintCache', () => {
     })
   })
 
+  describe('onLedgerClose (ledger-aware TTL)', () => {
+    it('flushes entries older than 1 ledger', () => {
+      const xdr1 = 'xdr-ledger-5'
+      const xdr2 = 'xdr-ledger-6'
+      const xdr3 = 'xdr-no-sequence'
+      const keys = makeFootprintKeys(1)
+
+      // Cache entries at different ledger sequences
+      cache.set(xdr1, keys, 5)
+      cache.set(xdr2, keys, 6)
+      cache.set(xdr3, keys) // no sequence
+
+      expect(cache.getSize()).toBe(3)
+
+      // Ledger 7 closes
+      cache.onLedgerClose(7)
+
+      // Entries from ledger 5 should be flushed (5 <= 7 - 1 = 6)
+      expect(cache.has(xdr1)).toBe(false)
+      // Entry from ledger 6 should remain (6 > 6)
+      expect(cache.has(xdr2)).toBe(true)
+      // Entry without sequence should remain (undefined is kept)
+      expect(cache.has(xdr3)).toBe(true)
+    })
+
+    it('keeps entries from current and immediately prior ledger', () => {
+      const xdr1 = 'xdr-ledger-8'
+      const xdr2 = 'xdr-ledger-9'
+      const keys = makeFootprintKeys(1)
+
+      cache.set(xdr1, keys, 8)
+      cache.set(xdr2, keys, 9)
+
+      // Ledger 9 closes
+      cache.onLedgerClose(9)
+
+      // Entry from ledger 8 should remain (8 > 9 - 1 = 8)
+      expect(cache.has(xdr1)).toBe(true)
+      // Entry from ledger 9 should remain
+      expect(cache.has(xdr2)).toBe(true)
+    })
+
+    it('preserves existing time-based TTL independently', () => {
+      const xdr = 'xdr-ttl-test'
+      const keys = makeFootprintKeys(1)
+
+      // Cache without ledger sequence (relies on LRU/time-based eviction)
+      cache.set(xdr, keys)
+      expect(cache.has(xdr)).toBe(true)
+
+      // onLedgerClose should not affect entries without ledger sequence
+      cache.onLedgerClose(100)
+      expect(cache.has(xdr)).toBe(true)
+    })
+
+    it('does not throw with empty cache', () => {
+      expect(() => cache.onLedgerClose(5)).not.toThrow()
+      expect(cache.getSize()).toBe(0)
+    })
+  })
+
   describe('LRU eviction (via quick-lru)', () => {
     it('evicts entries when max size is exceeded', () => {
       for (let i = 0; i < 15; i++) {

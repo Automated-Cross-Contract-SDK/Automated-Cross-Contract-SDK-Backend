@@ -5,7 +5,7 @@
  * handling with priority restoration).
  */
 import { describe, it, expect, vi } from 'vitest'
-import { classifyLedgerKey, classifySacKey } from '../src/footprint-parser.js'
+import { classifyLedgerKey, classifySacKey, classifyDeferredKeys } from '../src/footprint-parser.js'
 import { xdr } from '@stellar/stellar-sdk'
 
 // ---------------------------------------------------------------------------
@@ -174,9 +174,20 @@ describe('classifySacKey', () => {
     expect(classifySacKey(unknownVec as unknown as xdr.ScVal)).toBeUndefined()
   })
 
-  it('returns undefined for non-SAC symbol keys', () => {
-    const randomSym = (xdr as any)._scvSymbol('RandomKey')
-    expect(classifySacKey(randomSym as unknown as xdr.ScVal)).toBeUndefined()
+  it('identifies Capped extension key (custom token metadata key)', () => {
+    const cappedScVal = (xdr as any)._scvSymbol('Capped')
+    expect(classifySacKey(cappedScVal as unknown as xdr.ScVal)).toBe('sacMetadata')
+  })
+
+  it('identifies Blocklist extension key (custom token metadata key)', () => {
+    const blocklistScVal = (xdr as any)._scvSymbol('Blocklist')
+    expect(classifySacKey(blocklistScVal as unknown as xdr.ScVal)).toBe('sacMetadata')
+  })
+
+  it('gracefully falls back to sacMetadata for unknown symbol keys', () => {
+    const unknownSym = (xdr as any)._scvSymbol('SomeCustomStorageKey')
+    // Unknown symbol keys should fall back to sacMetadata gracefully
+    expect(classifySacKey(unknownSym as unknown as xdr.ScVal)).toBe('sacMetadata')
   })
 })
 
@@ -246,7 +257,22 @@ describe('classifyLedgerKey — SAC ContractData entries (issue #47)', () => {
     const customKey = makeContractDataKey((xdr as any)._scvSymbol('CustomStorage'))
     const result = classifyLedgerKey(customKey)
     expect(result.keyType).toBe('contractData')
-    expect(result.sacKeyType).toBeUndefined()
+    // CustomStorage is not a standard SAC key, but gracefully falls back to sacMetadata
+    expect(result.sacKeyType).toBe('sacMetadata')
+  })
+
+  it('classifies Capped extension entry with sacKeyType=sacMetadata', () => {
+    const cappedKey = makeContractDataKey((xdr as any)._scvSymbol('Capped'))
+    const result = classifyLedgerKey(cappedKey)
+    expect(result.keyType).toBe('contractData')
+    expect(result.sacKeyType).toBe('sacMetadata')
+  })
+
+  it('classifies Blocklist extension entry with sacKeyType=sacMetadata', () => {
+    const blocklistKey = makeContractDataKey((xdr as any)._scvSymbol('Blocklist'))
+    const result = classifyLedgerKey(blocklistKey)
+    expect(result.keyType).toBe('contractData')
+    expect(result.sacKeyType).toBe('sacMetadata')
   })
 
   it('assigns restorePriority 2 to all contractData entries', () => {
@@ -316,5 +342,87 @@ describe('restoration priority ordering', () => {
       'contractData',
       'ttlEntry',
     ])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// classifyDeferredKeys deduplication tests (issue #228)
+// ---------------------------------------------------------------------------
+
+describe('classifyDeferredKeys — contractInstance deduplication', () => {
+  it('deduplicates 3 contractInstance keys across 2 distinct contracts', () => {
+    // Create 3 deferred contractInstance keys: 2 duplicates of contract A, 1 of contract B
+    const makeContractInstanceKey = (contractIdHex: string, baseIdx: number) => ({
+      key: (xdr as any)._makeLedgerKey('contractData', {
+        key: () => (xdr as any)._scvLedgerKeyContractInstance(),
+        contract: () => ({ contractId: () => Buffer.from(contractIdHex, 'hex') }),
+      }) as unknown as xdr.LedgerKey,
+      keyBase64: `instance-key-${contractIdHex}-${baseIdx}`,
+    })
+
+    const deferred = [
+      makeContractInstanceKey('cafebabe', 1), // Contract A, first occurrence
+      makeContractInstanceKey('cafebabe', 2), // Contract A, duplicate
+      makeContractInstanceKey('deadbeef', 1), // Contract B, unique
+    ]
+
+    const result = classifyDeferredKeys(deferred)
+
+    // Expect: only 2 keys remain (1 per contract), duplicates removed
+    expect(result).toHaveLength(2)
+    // Both should be contractInstance type
+    expect(result.every(k => k.keyType === 'contractInstance')).toBe(true)
+    // Should preserve the first occurrence of each contract
+    expect(result[0].contractId).toBe('cafebabe')
+    expect(result[1].contractId).toBe('deadbeef')
+    // restorePriority should remain 0 for all
+    expect(result.every(k => k.restorePriority === 0)).toBe(true)
+  })
+
+  it('preserves restorePriority ordering after deduplication', () => {
+    const makeKey = (contractIdHex: string, keyType: 'contractInstance' | 'contractCode' | 'contractData', idx: number) => {
+      if (keyType === 'contractInstance') {
+        return {
+          key: (xdr as any)._makeLedgerKey('contractData', {
+            key: () => (xdr as any)._scvLedgerKeyContractInstance(),
+            contract: () => ({ contractId: () => Buffer.from(contractIdHex, 'hex') }),
+          }) as unknown as xdr.LedgerKey,
+          keyBase64: `key-${keyType}-${contractIdHex}-${idx}`,
+        }
+      } else if (keyType === 'contractCode') {
+        return {
+          key: (xdr as any)._makeLedgerKey('contractCode', {
+            hash: () => Buffer.from(contractIdHex, 'hex'),
+          }) as unknown as xdr.LedgerKey,
+          keyBase64: `key-${keyType}-${contractIdHex}-${idx}`,
+        }
+      } else {
+        return {
+          key: (xdr as any)._makeLedgerKey('contractData', {
+            key: () => (xdr as any)._scvSymbol('Balance'),
+            contract: () => ({ contractId: () => Buffer.from(contractIdHex, 'hex') }),
+          }) as unknown as xdr.LedgerKey,
+          keyBase64: `key-${keyType}-${contractIdHex}-${idx}`,
+        }
+      }
+    }
+
+    const deferred = [
+      makeKey('cafebabe', 'contractData', 1),       // priority 2
+      makeKey('cafebabe', 'contractInstance', 1),   // priority 0 (first occurrence)
+      makeKey('cafebabe', 'contractInstance', 2),   // priority 0 (duplicate)
+      makeKey('deadbeef', 'contractCode', 1),       // priority 1
+    ]
+
+    const result = classifyDeferredKeys(deferred)
+
+    // After dedup and sort: instance (0), code (1), data (2)
+    expect(result).toHaveLength(3)
+    expect(result[0].keyType).toBe('contractInstance')
+    expect(result[0].restorePriority).toBe(0)
+    expect(result[1].keyType).toBe('contractCode')
+    expect(result[1].restorePriority).toBe(1)
+    expect(result[2].keyType).toBe('contractData')
+    expect(result[2].restorePriority).toBe(2)
   })
 })

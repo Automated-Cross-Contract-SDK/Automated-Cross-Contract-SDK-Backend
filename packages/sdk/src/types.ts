@@ -2,6 +2,7 @@ import { xdr } from '@stellar/stellar-sdk'
 import type { RetryPolicy } from './retry-policy.js'
 import type { SimulationCacheConfig } from './simulation-cache.js'
 import type { FootprintCacheConfig } from './footprint-cache.js'
+import type { TracingConfig } from './tracing.js'
 
 /**
  * SAC (Stellar Asset Contract) specific key types.
@@ -44,10 +45,12 @@ export interface ArchivedKey {
    * - `contractInstance` – the contract's own instance entry (new, issue #48)
    * - `contractData`     – generic contract data (includes SAC entries, issue #47)
    * - `contractCode`     – the contract's WASM bytecode entry
+   * - `liquidityPool`    – a liquidity pool entry
+   * - `claimableBalance` – a claimable balance entry
    * - `ttlEntry`         – a TTL / expiry ledger entry
    * - `unknown`          – unrecognised entry type
    */
-  keyType: 'contractInstance' | 'contractData' | 'contractCode' | 'ttlEntry' | 'unknown'
+  keyType: 'contractInstance' | 'contractData' | 'contractCode' | 'liquidityPool' | 'claimableBalance' | 'ttlEntry' | 'unknown'
   /**
    * SAC-specific sub-classification, only present when `keyType === 'contractData'`
    * and the entry belongs to a Stellar Asset Contract.
@@ -63,6 +66,8 @@ export interface ArchivedKey {
   restorePriority: RestorePriority
 }
 
+import type { Logger } from './logger.js'
+
 export interface SorobanResurrectConfig {
   /** Single RPC URL or an ordered list of fallback URLs */
   rpcUrl: string | string[]
@@ -71,10 +76,29 @@ export interface SorobanResurrectConfig {
   restoreFee?: string
   maxRestoreBatchSize?: number
   /**
+   * Maximum fee budget in stroops for a single restore batch.
+   * When set, batching stops adding entries once the estimated restore fee
+   * would exceed this budget. The limit is applied alongside `maxRestoreBatchSize`,
+   * with whichever constraint is hit first determining the actual batch boundary.
+   * Requires `dynamicFeeEstimation` to be enabled for accurate fee tracking.
+   * When omitted or undefined, batching uses only `maxRestoreBatchSize`.
+   */
+  maxRestoreFeeStroops?: string
+  /**
    * Timeout in milliseconds for RPC requests made by SorobanRpc.Server.
    * Defaults to the Stellar SDK default when not set.
    */
   timeout?: number
+  /**
+   * Structured logger used throughout the SDK. Any object providing `info`,
+   * `warn`, `error`, and `debug` methods can be used here.
+   */
+  logger?: Logger
+  /**
+   * Legacy callback kept for backwards compatibility.
+   *
+   * Prefer `logger` for new integrations. When both are present, `logger` wins.
+   */
   onLog?: (level: 'info' | 'warn' | 'error', message: string, data?: unknown) => void
   /**
    * When `true`, the SDK attempts to subscribe to transaction status updates
@@ -84,11 +108,12 @@ export interface SorobanResurrectConfig {
    */
   useWebSocket?: boolean
   /**
-   * When `true`, a mismatch between `networkPassphrase` and the passphrase
-   * reported by the RPC server's `getNetwork()` throws a `SorobanResurrectError`
-   * with code `NETWORK_ERROR` instead of only logging a warning.
+   * Network passphrase validation mode:
+   * - `false` or `undefined`: Log warning on mismatch, continue execution
+   * - `'warn'`: Log error-level warning on mismatch, continue execution
+   * - `true`: Throw `NETWORK_ERROR` on mismatch, halt execution
    */
-  strictNetworkValidation?: boolean
+  strictNetworkValidation?: boolean | 'warn'
   /**
    * Delay in milliseconds between polling attempts when waiting for a
    * transaction to reach a terminal status. Defaults to `1000`.
@@ -109,6 +134,58 @@ export interface SorobanResurrectConfig {
    * entries when a new ledger closes.
    */
   footprintCache?: FootprintCacheConfig
+  /**
+   * Enables W3C Trace Context (`traceparent` / `tracestate`) header propagation
+   * to Soroban RPC calls. Provide the incoming request headers (or an explicit
+   * parent context) and an optional span exporter to integrate with
+   * OpenTelemetry, Datadog, Jaeger or Zipkin.
+   */
+  tracing?: TracingConfig
+}
+
+/**
+ * A single ledger entry's state transition observed during a simulation diff.
+ */
+export interface LedgerEntryDiff {
+  /** The archived / inspected ledger key. */
+  key: ArchivedKey
+  /** Base64 XDR of the key, for stable identification and logging. */
+  keyBase64: string
+  /** Current on-chain `LedgerEntryData` XDR (base64), when the entry is still live. */
+  before?: string
+  /** Expected `LedgerEntryData` XDR (base64) after a restore, when known. */
+  after?: string
+  /**
+   * - `live`     — entry is present and not archived; no restore needed
+   * - `archived` — entry is archived and would be restored by the SDK
+   * - `restored` — entry was archived and a restore transaction was built for it
+   */
+  status: 'live' | 'archived' | 'restored'
+}
+
+export interface TtlChange {
+  /** Base64 XDR of the ledger key whose TTL changes. */
+  key: string
+  /** Current `liveUntilLedgerSeq`, or `0` when the entry is archived. */
+  oldTTL: number
+  /** Projected `liveUntilLedgerSeq` after restoration. */
+  newTTL: number
+}
+
+/**
+ * Before/after report of ledger-entry state produced by
+ * `SorobanResurrect.simulateDiff()`. Useful for debugging which entries are
+ * being restored and how their state / TTL changes.
+ */
+export interface SimulationDiff {
+  entries: LedgerEntryDiff[]
+  /** Sum of the byte size of every archived entry that would be restored. */
+  totalBytesRestored: number
+  ttlChanges: TtlChange[]
+  /** Ledger sequence the simulation was evaluated against, when reported by the RPC. */
+  latestLedger?: number
+  /** Whether any entry in the footprint needs restoration. */
+  needsRestoration: boolean
 }
 
 /**
@@ -267,6 +344,10 @@ export interface SorobanResurrectErrorContext {
   txHash?: string
   /** Archived ledger-key details that triggered the failure, when available. */
   archivedKeys?: Array<{ keyBase64: string; keyType: string; contractId?: string }>
+  /** Number of attempts made before exhausting retries. */
+  attempts?: number
+  /** The final underlying error that caused retry exhaustion. */
+  lastError?: unknown
 }
 
 export class SorobanResurrectError extends Error {
@@ -276,6 +357,10 @@ export class SorobanResurrectError extends Error {
   public txHash?: string
   /** Archived key details when detection/restore fails. */
   public archivedKeys?: Array<{ keyBase64: string; keyType: string; contractId?: string }>
+  /** Number of retry attempts made before exhaustion. */
+  public attempts?: number
+  /** The final underlying error from the last retry attempt. */
+  public lastError?: unknown
 
   constructor(
     message: string,
@@ -289,6 +374,8 @@ export class SorobanResurrectError extends Error {
       this.rpcUrl = context.rpcUrl
       this.txHash = context.txHash
       this.archivedKeys = context.archivedKeys
+      this.attempts = context.attempts
+      this.lastError = context.lastError
     }
   }
 }
