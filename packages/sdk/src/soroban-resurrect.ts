@@ -1874,15 +1874,18 @@ export class SorobanResurrect {
     maxPollAttempts: number,
   ): Promise<void> {
     const timeoutMs = maxPollAttempts * (this.config.pollIntervalMs ?? 1000)
+    const silentDropTimeoutMs = (this.config.pollIntervalMs ?? 1000) * 5
+    let silentDropLogged = false
 
     return new Promise<void>((resolve, reject) => {
       let settled = false
       let ws: WebSocket
 
-      const finish = (err?: SorobanResurrectError): void => {
+      const finish = (err?: SorobanResurrectError | Error): void => {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        clearTimeout(silentDropTimer)
         try { ws.close() } catch { /* ignore */ }
         if (err) reject(err)
         else resolve()
@@ -1894,6 +1897,14 @@ export class SorobanResurrect {
           'NETWORK_ERROR',
         ))
       }, timeoutMs)
+
+      const silentDropTimer = setTimeout(() => {
+        if (!settled && !silentDropLogged) {
+          silentDropLogged = true
+          this.log('warn', `WebSocket connection for ${hash} appears to have silently dropped, falling back to polling`)
+          finish(new Error(`Silent WebSocket drop detected for ${hash}`))
+        }
+      }, silentDropTimeoutMs)
 
       try {
         ws = new WebSocket(wsUrl)
@@ -1924,6 +1935,9 @@ export class SorobanResurrect {
         // Only handle transaction_status notifications for our hash
         if (msg.method !== 'transaction_status') return
         if (msg.params?.hash !== hash) return
+
+        // Clear the silent drop timer since we received a message
+        clearTimeout(silentDropTimer)
 
         const status = msg.params.status
         if (status === TRANSACTION_STATUS.SUCCESS) {
