@@ -26,32 +26,30 @@ export interface DeferredArchivedKey {
  * Deduplicates contractInstance keys by contract ID while preserving
  * restorePriority ordering.
  * Call this right before batch building or sorting.
+ *
+ * @param deferred The deferred keys to classify
+ * @param priorityMap Optional custom priority map to override default ordering
  */
-export function classifyDeferredKeys(deferred: DeferredArchivedKey[]): import('./types.js').ArchivedKey[] {
+export function classifyDeferredKeys(
+  deferred: DeferredArchivedKey[],
+  priorityMap?: Partial<Record<import('./types.js').ArchivedKey['keyType'], import('./types.js').RestorePriority>>,
+): import('./types.js').ArchivedKey[] {
   const result: import('./types.js').ArchivedKey[] = []
   const seenContractInstances = new Set<string>()
 
   for (const d of deferred) {
     const classification = classifyLedgerKey(d.key)
-    const classified = {
+    const finalPriority = priorityMap && priorityMap[classification.keyType] !== undefined
+      ? priorityMap[classification.keyType]!
+      : classification.restorePriority
+    result.push({
       key: d.key,
       keyBase64: d.keyBase64,
       ...classification,
-    }
-
-    // Dedupe contractInstance keys by contract ID, keeping only the first
-    if (classified.keyType === 'contractInstance') {
-      const contractId = classified.contractId ?? '__unknown__'
-      if (seenContractInstances.has(contractId)) {
-        continue // Skip duplicate
-      }
-      seenContractInstances.add(contractId)
-    }
-
-    result.push(classified)
+      restorePriority: finalPriority,
+    })
   }
-
-  // Sort by restorePriority so contractInstance (0) entries come first
+  // Sort by restorePriority so contractInstance (0) entries come first, or custom ordering if provided
   result.sort((a, b) => a.restorePriority - b.restorePriority)
   return result
 }

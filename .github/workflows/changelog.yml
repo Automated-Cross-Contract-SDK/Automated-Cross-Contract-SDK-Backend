@@ -1,0 +1,46 @@
+name: Changelog
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Generate CHANGELOG.md
+        run: >
+          npx -y conventional-changelog-cli
+          -p conventionalcommits
+          -i CHANGELOG.md
+          -s
+          -r 0
+
+      - name: Commit changelog
+        run: |
+          if git diff --quiet -- CHANGELOG.md; then
+            echo "No changelog changes."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B changelog-update
+          git add CHANGELOG.md
+          git commit -m "docs(changelog): update CHANGELOG.md"
+          git push -f origin changelog-update
+          gh pr create --fill --base main --head changelog-update --title "docs(changelog): update CHANGELOG.md" || \
+            gh pr edit changelog-update --title "docs(changelog): update CHANGELOG.md"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

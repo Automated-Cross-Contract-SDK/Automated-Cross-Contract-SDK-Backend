@@ -28,6 +28,15 @@ updates:
           - "react"
           - "react-dom"
           - "@types/react"
+      build:
+        patterns:
+          - "tsup"
+          - "tsx"
+          - "typescript"
+          - "vite"
+          - "@vitejs/*"
+          - "size-limit"
+          - "@size-limit/*"
 
   - package-ecosystem: github-actions
     directory: /

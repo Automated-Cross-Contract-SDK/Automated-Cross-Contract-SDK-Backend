@@ -74,7 +74,7 @@ describe('SorobanResurrect - fee-bump transaction handling', () => {
   describe('fee-bump use cases', () => {
     it('supports simulate-only mode with fee-bump', async () => {
       const instance = new SorobanResurrect({ ...defaultConfig, simulateOnly: true })
-      
+
       vi.spyOn(instance as any, 'submitSignedTransaction').mockResolvedValue('tx-hash')
 
       const signTx = vi.fn().mockResolvedValue('signed')
@@ -90,6 +90,22 @@ describe('SorobanResurrect - fee-bump transaction handling', () => {
       expect(result.simulateOnly).toBe(true)
       // Should not call sign in simulate-only mode
       expect(signTx).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('feeBumpSponsor configuration', () => {
+    it('accepts feeBumpSponsor in config', async () => {
+      const sponsorAddress = 'GBBD47UZQ2EOPZMQAAhirz35ABWKSQHV5AY4URGLRDUWRWYXRUKWN5QA'
+      const instance = new SorobanResurrect({
+        ...defaultConfig,
+        feeBumpSponsor: sponsorAddress,
+      })
+      expect((instance as any).config.feeBumpSponsor).toBe(sponsorAddress)
+    })
+
+    it('omitting feeBumpSponsor works correctly', async () => {
+      const instance = new SorobanResurrect(defaultConfig)
+      expect((instance as any).config.feeBumpSponsor).toBeUndefined()
     })
   })
 })
