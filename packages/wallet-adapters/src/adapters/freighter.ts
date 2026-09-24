@@ -138,7 +138,7 @@ export class FreighterAdapter implements SorobanWalletAdapter {
     const api = getFreighter()
     if (!api) return null
     try {
-      const allowed = await api.isAllowed?.()
+      const allowed = await this.checkIsAllowedWithRetry(api)
       if (allowed === false) {
         writeStorage(STORAGE_KEY, null)
         return null
@@ -148,6 +148,23 @@ export class FreighterAdapter implements SorobanWalletAdapter {
       writeStorage(STORAGE_KEY, null)
       return null
     }
+  }
+
+  private async checkIsAllowedWithRetry(api: FreighterApi, maxRetries: number = 3, baseDelay: number = 100): Promise<boolean | undefined> {
+    let lastError: unknown = null
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const allowed = await api.isAllowed?.()
+        return allowed
+      } catch (err) {
+        lastError = err
+        if (attempt < maxRetries - 1) {
+          const delay = baseDelay * (attempt + 1)
+          await new Promise(resolve => setTimeout(resolve, delay))
+        }
+      }
+    }
+    throw lastError
   }
 
   private attachListeners(api: FreighterApi): void {
