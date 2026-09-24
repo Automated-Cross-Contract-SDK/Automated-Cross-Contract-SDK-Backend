@@ -98,6 +98,13 @@ export class SorobanResurrect {
   /** Trace-propagation headers for the RPC call currently in flight. */
   private activeTraceHeaders: Record<string, string> = {}
 
+  private readonly startedAt = Date.now()
+  private networkPassphraseValid = true
+  private lastRestoreSuccess = false
+  private lastRestoreTimestamp?: number
+  private telemetry?: TelemetryReporter
+  private alertManager?: AlertManager
+
   constructor(config: SorobanResurrectConfig) {
     const legacyOnLog = config.onLog
     const resolvedLogger = config.logger ?? (legacyOnLog ? onLogToLogger(legacyOnLog) : NOOP_LOGGER)
@@ -113,6 +120,7 @@ export class SorobanResurrect {
       useWebSocket: false,
       pollIntervalMs: 1000,
       maxPollAttempts: 30,
+      debug: false,
       ...config,
     }
 
@@ -158,6 +166,7 @@ export class SorobanResurrect {
     try {
       const network = await this.server.getNetwork()
       if (network.passphrase !== this.config.networkPassphrase) {
+        this.networkPassphraseValid = false
         const rpcUrl = Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl
         const message = `Network passphrase mismatch: configured "${this.config.networkPassphrase}" but RPC server reports "${network.passphrase}"`
         if (this.config.strictNetworkValidation) {
@@ -210,6 +219,42 @@ export class SorobanResurrect {
 
   private log(level: 'info' | 'warn' | 'error' | 'debug', message: string, meta?: Record<string, unknown>): void {
     this.logger[level](message, meta)
+  }
+
+  /**
+   * Emits a verbose `debug`-level log through `onLog`, but only when the
+   * `debug` config option is enabled. Callers may pass a lazy `data` factory
+   * to avoid building expensive payloads when debugging is off.
+   */
+  private debug(message: string, data?: unknown | (() => unknown)): void {
+    if (!this.config.debug) return
+    this.log('debug', message, typeof data === 'function' ? (data as () => unknown)() : data)
+  }
+
+  /**
+   * Records the outcome of a restoration attempt for {@link getHealth} and
+   * feeds the configured telemetry reporter and alert manager.
+   */
+  private recordRestoreOutcome(
+    success: boolean,
+    latencyMs: number,
+    keys: ArchivedKey[],
+    batchSizes: number[],
+  ): void {
+    this.lastRestoreSuccess = success
+    this.lastRestoreTimestamp = Date.now()
+
+    this.alertManager?.recordRestore(success, latencyMs)
+
+    if (this.telemetry) {
+      const contractIds = [...new Set(keys.map(k => k.contractId).filter((id): id is string => !!id))]
+      void this.telemetry.report({
+        contractIdHashes: contractIds.map(hashContractId),
+        keyCount: keys.length,
+        batchSizes,
+        outcome: success ? 'success' : 'failure',
+      })
+    }
   }
 
   /**
@@ -270,6 +315,7 @@ export class SorobanResurrect {
     const policy = this.config.retryPolicy
 
     for (let attempt = 1; attempt <= policy.maxRetries + 1; attempt++) {
+      const startedAt = Date.now()
       try {
         span?.setAttribute('rpc.attempts', attempt)
         const result = await fn()
@@ -277,6 +323,8 @@ export class SorobanResurrect {
         if (policy.reset) {
           policy.reset()
         }
+        this.debug(`RPC ${context} succeeded in ${Date.now() - startedAt}ms (attempt ${attempt})`)
+        this.alertManager?.recordRpcCall(true)
         return result
       } catch (err) {
         const sorobanErr = err instanceof SorobanResurrectError
@@ -284,6 +332,8 @@ export class SorobanResurrect {
           : new SorobanResurrectError(String(err), 'NETWORK_ERROR', err)
 
         lastError = sorobanErr
+        this.debug(`RPC ${context} failed in ${Date.now() - startedAt}ms (attempt ${attempt}): ${sorobanErr.message}`, () => sorobanErr.stack)
+        this.alertManager?.recordRpcCall(false)
 
         if (attempt <= policy.maxRetries && policy.shouldRetry(sorobanErr, attempt)) {
           const delayMs = policy.getDelay(attempt)
@@ -2043,6 +2093,57 @@ export class SorobanResurrect {
    */
   getFailoverStatus(): RpcEndpointHealth[] {
     return this.failoverManager.getHealthStatus()
+  }
+
+  /**
+   * Runs a self-diagnostic probe verifying the SDK can reach its RPC endpoint
+   * and is configured correctly. Suitable for monitoring endpoints and
+   * container readiness probes.
+   *
+   * @param accountId Optional account to verify is accessible via the RPC
+   *   server. When omitted, `accountAccessible` mirrors `rpcConnected`.
+   */
+  async getHealth(accountId?: string): Promise<HealthCheckResult> {
+    const startedAt = Date.now()
+    let rpcConnected = false
+    try {
+      await this.server.getHealth()
+      rpcConnected = true
+    } catch (err) {
+      this.debug(`Health check: RPC probe failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    const rpcLatencyMs = Date.now() - startedAt
+
+    let accountAccessible = rpcConnected
+    if (rpcConnected && accountId) {
+      try {
+        await this.server.getAccount(accountId)
+        accountAccessible = true
+      } catch {
+        accountAccessible = false
+      }
+    }
+
+    let status: HealthCheckResult['status']
+    if (!rpcConnected) {
+      status = 'unhealthy'
+    } else if (!this.networkPassphraseValid || !accountAccessible) {
+      status = 'degraded'
+    } else {
+      status = 'healthy'
+    }
+
+    return {
+      status,
+      rpcConnected,
+      rpcLatencyMs,
+      networkPassphraseValid: this.networkPassphraseValid,
+      accountAccessible,
+      sdkVersion: VERSION,
+      uptimeMs: Date.now() - this.startedAt,
+      lastRestoreSuccess: this.lastRestoreSuccess,
+      lastRestoreTimestamp: this.lastRestoreTimestamp,
+    }
   }
 
   /**
