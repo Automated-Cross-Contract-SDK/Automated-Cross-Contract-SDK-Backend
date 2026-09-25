@@ -407,4 +407,413 @@ describe('MockRpcServer', () => {
       expect(result.status).toBe('SUCCESS')
     })
   })
+
+  describe('fixture recorder: capture getLedgerEntries', () => {
+    it('records and replays getLedgerEntries responses', async () => {
+      const recorder = mock.fixtures
+      recorder.startRecording()
+
+      const server = mock.getServer()
+      const key = makeMockLedgerKey('abc123')
+      const response = await server.getLedgerEntries(key)
+
+      const interactions = recorder.stopRecording()
+      expect(interactions).toHaveLength(1)
+      expect(interactions[0].method).toBe('getLedgerEntries')
+      expect(interactions[0].response).toBeDefined()
+    })
+
+    it('saves and loads fixture for getLedgerEntries', async () => {
+      const tmpFixturePath = '/tmp/test-get-ledger-entries.json'
+      const recorder = mock.fixtures
+
+      // Setup: Add entry to mock
+      const key = makeMockLedgerKey('def456')
+      mock.ledgerState.addEntry({
+        key,
+        keyBase64: mock.ledgerState.encodeKey(key),
+        data: 'archived-key-data-xdr',
+        lastLiveLedgerSeq: 100,
+        ttl: 100,
+        entryType: 'contractData',
+      })
+
+      // Record
+      recorder.startRecording()
+      const server = mock.getServer()
+      const response = await server.getLedgerEntries(key)
+      recorder.stopRecording()
+
+      // Save fixture
+      recorder.saveFixture(tmpFixturePath, 'archived-key-fixture', {
+        description: 'Fixture for archived contract data keys',
+        networkPassphrase: 'Test SDF Network ; September 2015',
+      })
+
+      // Verify file was created
+      const fs = require('node:fs')
+      expect(fs.existsSync(tmpFixturePath)).toBe(true)
+
+      // Cleanup
+      fs.unlinkSync(tmpFixturePath)
+    })
+
+    it('finds matching getLedgerEntries interaction in fixture', async () => {
+      const key1 = makeMockLedgerKey('key1')
+      const key2 = makeMockLedgerKey('key2')
+
+      const fixture = {
+        name: 'ledger-entries-fixture',
+        interactions: [
+          {
+            method: 'getLedgerEntries',
+            requestParams: [key1],
+            response: { entries: [{ key: key1, xdr: 'data1' }] },
+            networkCondition: 'healthy' as const,
+            delayMs: 0,
+          },
+          {
+            method: 'getLedgerEntries',
+            requestParams: [key2],
+            response: { entries: [{ key: key2, xdr: 'data2' }] },
+            networkCondition: 'healthy' as const,
+            delayMs: 0,
+          },
+        ],
+      }
+
+      const recorder = mock.fixtures
+      const found = recorder.findInteraction(fixture, 'getLedgerEntries', [key1])
+      expect(found).toBeDefined()
+      expect(found!.response).toEqual({ entries: [{ key: key1, xdr: 'data1' }] })
+    })
+
+    it('replays getLedgerEntries from fixture with network conditions', async () => {
+      const key = makeMockLedgerKey('replay-key')
+      const fixture = {
+        name: 'slow-ledger-entries',
+        interactions: [
+          {
+            method: 'getLedgerEntries',
+            requestParams: [key],
+            response: { entries: [{ key, xdr: 'replayed-data' }], latestLedger: 1000 },
+            networkCondition: 'slow' as const,
+            delayMs: 50,
+          },
+        ],
+      }
+
+      mock.loadFixture(fixture)
+      const server = mock.getServer()
+
+      const start = Date.now()
+      const result = await server.getLedgerEntries(key)
+      const elapsed = Date.now() - start
+
+      expect(result).toBeDefined()
+      expect((result as any).entries[0].xdr).toBe('replayed-data')
+      expect(elapsed).toBeGreaterThanOrEqual(40) // account for some jitter
+    })
+  })
+
+  describe('mock-rpc-server: simulate RPC errors (429/500/timeout)', () => {
+    it('simulates 429 (rate limit) error', async () => {
+      mock.setMethodCondition('getLedgerEntries', {
+        condition: 'error',
+        errorMessage: 'HTTP 429: Too Many Requests',
+      })
+
+      const server = mock.getServer()
+      const key = makeMockLedgerKey('rate-limited')
+
+      await expect(server.getLedgerEntries(key)).rejects.toThrow('HTTP 429: Too Many Requests')
+      expect(mock.getStats().errors).toBe(1)
+    })
+
+    it('simulates 500 (internal server error) error', async () => {
+      mock.setMethodCondition('simulateTransaction', {
+        condition: 'error',
+        errorMessage: 'HTTP 500: Internal Server Error',
+      })
+
+      const server = mock.getServer()
+
+      await expect(server.simulateTransaction({} as any)).rejects.toThrow('HTTP 500: Internal Server Error')
+      expect(mock.getStats().errors).toBe(1)
+    })
+
+    it('simulates timeout error across multiple methods', async () => {
+      mock.setNetworkCondition('timeout')
+
+      const server = mock.getServer()
+
+      // Test multiple methods timeout
+      await expect(server.getHealth()).rejects.toThrow('Simulated timeout')
+      await expect(server.getNetwork()).rejects.toThrow('Simulated timeout')
+      await expect(server.getAccount('GABC')).rejects.toThrow('Simulated timeout')
+
+      expect(mock.getStats().timeouts).toBe(3)
+    })
+
+    it('allows per-method error simulation while others work', async () => {
+      mock.setMethodCondition('simulateTransaction', {
+        condition: 'error',
+        errorMessage: 'Simulate failed',
+      })
+      mock.setNetworkCondition('healthy')
+
+      const server = mock.getServer()
+
+      // This should fail
+      await expect(server.simulateTransaction({} as any)).rejects.toThrow('Simulate failed')
+
+      // But this should work
+      const health = await server.getHealth()
+      expect(health.status).toBe('healthy')
+
+      expect(mock.getStats().errors).toBe(1)
+      expect(mock.getStats().totalCalls).toBe(2)
+    })
+
+    it('simulates intermittent errors with multiple retries', async () => {
+      const server = mock.getServer()
+      let callCount = 0
+
+      mock.setMethodOverride('getHealth', () => {
+        callCount++
+        if (callCount <= 2) {
+          throw new Error('HTTP 500: Service Unavailable')
+        }
+        return { status: 'healthy' }
+      })
+
+      // First two calls fail
+      await expect(server.getHealth()).rejects.toThrow('HTTP 500: Service Unavailable')
+      await expect(server.getHealth()).rejects.toThrow('HTTP 500: Service Unavailable')
+
+      // Third call succeeds
+      const result = await server.getHealth()
+      expect(result.status).toBe('healthy')
+    })
+
+    it('tracks error statistics across different error types', async () => {
+      const server = mock.getServer()
+
+      // Setup multiple error conditions
+      mock.setMethodCondition('getHealth', {
+        condition: 'error',
+        errorMessage: 'Health check failed',
+      })
+      mock.setMethodCondition('getNetwork', {
+        condition: 'timeout',
+      })
+
+      // Trigger errors
+      await expect(server.getHealth()).rejects.toThrow('Health check failed')
+      await expect(server.getNetwork()).rejects.toThrow('Simulated timeout')
+
+      const stats = mock.getStats()
+      expect(stats.errors).toBe(1)
+      expect(stats.timeouts).toBe(1)
+      expect(stats.totalCalls).toBe(2)
+    })
+
+    it('clears error conditions and resets to healthy', async () => {
+      mock.setNetworkCondition('error')
+      const server = mock.getServer()
+
+      await expect(server.getHealth()).rejects.toThrow()
+
+      // Reset conditions
+      mock.resetConditions()
+
+      const result = await server.getHealth()
+      expect(result.status).toBe('healthy')
+      expect(mock.getNetworkCondition()).toBe('healthy')
+    })
+  })
+
+  describe('sequence-manager: simulate ledger jumps and TTL expiry', () => {
+    it('allows scripted ledger advances to expire entries', () => {
+      const key = makeMockLedgerKey('expiring-key')
+      const ttl = 100
+
+      // Add entry at ledger 1000
+      mock.ledgerState.addEntry({
+        key,
+        keyBase64: mock.ledgerState.encodeKey(key),
+        data: 'xdr-data',
+        lastLiveLedgerSeq: 1000,
+        ttl,
+        entryType: 'contractData',
+      })
+
+      // Entry should be live
+      expect(mock.ledgerState.getLiveEntries([key])).toHaveLength(1)
+
+      // Jump ledger to expiry point (lastLive + ttl)
+      mock.ledgerState.setCurrentLedgerSeq(1100)
+      expect(mock.ledgerState.getArchivedCount()).toBe(1)
+      expect(mock.ledgerState.getLiveEntries([key])).toHaveLength(0)
+    })
+
+    it('supports multiple scripted ledger jumps in restore flow', () => {
+      const key1 = makeMockLedgerKey('entry1')
+      const key2 = makeMockLedgerKey('entry2')
+
+      // Add two entries with different TTLs
+      mock.ledgerState.addEntry({
+        key: key1,
+        keyBase64: mock.ledgerState.encodeKey(key1),
+        data: 'data1',
+        lastLiveLedgerSeq: 1000,
+        ttl: 50,
+        entryType: 'contractData',
+      })
+      mock.ledgerState.addEntry({
+        key: key2,
+        keyBase64: mock.ledgerState.encodeKey(key2),
+        data: 'data2',
+        lastLiveLedgerSeq: 1000,
+        ttl: 100,
+        entryType: 'contractData',
+      })
+
+      // Both live at 1000
+      expect(mock.ledgerState.getLiveEntries([key1, key2])).toHaveLength(2)
+
+      // Jump to 1050: key1 expires, key2 still live
+      mock.ledgerState.setCurrentLedgerSeq(1050)
+      expect(mock.ledgerState.getLiveEntries([key1, key2])).toHaveLength(1)
+
+      // Jump to 1100: both expired
+      mock.ledgerState.setCurrentLedgerSeq(1100)
+      expect(mock.ledgerState.getLiveEntries([key1, key2])).toHaveLength(0)
+      expect(mock.ledgerState.getArchivedCount()).toBe(2)
+    })
+
+    it('simulates offline restore flow using ledger jumps', async () => {
+      const key = makeMockLedgerKey('offline-restore')
+      const ttl = 100
+
+      // Initial state: entry is live
+      mock.ledgerState.addEntry({
+        key,
+        keyBase64: mock.ledgerState.encodeKey(key),
+        data: 'active-data',
+        lastLiveLedgerSeq: 1000,
+        ttl,
+        entryType: 'contractData',
+      })
+      mock.ledgerState.setCurrentLedgerSeq(1000)
+
+      const server = mock.getServer()
+      let entries = await server.getLedgerEntries(key)
+      expect((entries as any).entries).toHaveLength(1)
+
+      // Simulate offline passage of time: advance ledger past TTL
+      mock.ledgerState.setCurrentLedgerSeq(1150)
+
+      // Entry is now archived
+      entries = await server.getLedgerEntries(key)
+      expect((entries as any).entries).toHaveLength(0)
+
+      // Simulate restore: refresh the entry
+      mock.ledgerState.addEntry({
+        key,
+        keyBase64: mock.ledgerState.encodeKey(key),
+        data: 'refreshed-data',
+        lastLiveLedgerSeq: 1150,
+        ttl,
+        entryType: 'contractData',
+      })
+
+      // Entry is now live again
+      entries = await server.getLedgerEntries(key)
+      expect((entries as any).entries).toHaveLength(1)
+    })
+
+    it('tracks archived entries as ledger progresses', () => {
+      const keys = [
+        makeMockLedgerKey('k1'),
+        makeMockLedgerKey('k2'),
+        makeMockLedgerKey('k3'),
+      ]
+
+      // Add entries with staggered expiry
+      for (let i = 0; i < keys.length; i++) {
+        mock.ledgerState.addEntry({
+          key: keys[i],
+          keyBase64: mock.ledgerState.encodeKey(keys[i]),
+          data: `data${i}`,
+          lastLiveLedgerSeq: 1000,
+          ttl: 50 + i * 25, // TTLs: 50, 75, 100
+          entryType: 'contractData',
+        })
+      }
+
+      mock.ledgerState.setCurrentLedgerSeq(1000)
+      expect(mock.ledgerState.getArchivedCount()).toBe(0)
+
+      // After 1050: first expires
+      mock.ledgerState.setCurrentLedgerSeq(1050)
+      expect(mock.ledgerState.getArchivedCount()).toBe(1)
+
+      // After 1075: first two expire
+      mock.ledgerState.setCurrentLedgerSeq(1075)
+      expect(mock.ledgerState.getArchivedCount()).toBe(2)
+
+      // After 1100: all expire
+      mock.ledgerState.setCurrentLedgerSeq(1100)
+      expect(mock.ledgerState.getArchivedCount()).toBe(3)
+    })
+
+    it('supports archiveAll for integration tests', () => {
+      const keys = [makeMockLedgerKey('a'), makeMockLedgerKey('b')]
+
+      keys.forEach((key, i) => {
+        mock.ledgerState.addEntry({
+          key,
+          keyBase64: mock.ledgerState.encodeKey(key),
+          data: `d${i}`,
+          lastLiveLedgerSeq: 1000,
+          ttl: 4095360,
+          entryType: 'contractData',
+        })
+      })
+
+      // All live even with high TTL
+      expect(mock.ledgerState.getLiveEntries(keys)).toHaveLength(2)
+
+      // archiveAll forces expiry
+      mock.ledgerState.archiveAll()
+      expect(mock.ledgerState.getLiveEntries(keys)).toHaveLength(0)
+      expect(mock.ledgerState.getArchivedCount()).toBe(2)
+    })
+
+    it('handles edge case: entry at exact expiry boundary', () => {
+      const key = makeMockLedgerKey('boundary-entry')
+      const lastLive = 1000
+      const ttl = 100
+
+      mock.ledgerState.addEntry({
+        key,
+        keyBase64: mock.ledgerState.encodeKey(key),
+        data: 'boundary-data',
+        lastLiveLedgerSeq: lastLive,
+        ttl,
+        entryType: 'contractData',
+      })
+
+      const expiryLedger = lastLive + ttl // 1100
+
+      // At expiry ledger - 1: still live
+      mock.ledgerState.setCurrentLedgerSeq(expiryLedger - 1)
+      expect(mock.ledgerState.getLiveEntries([key])).toHaveLength(1)
+
+      // At expiry ledger: archived
+      mock.ledgerState.setCurrentLedgerSeq(expiryLedger)
+      expect(mock.ledgerState.getLiveEntries([key])).toHaveLength(0)
+    })
+  })
 })
