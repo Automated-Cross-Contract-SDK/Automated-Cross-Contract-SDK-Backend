@@ -23,6 +23,8 @@ function computeHash(signedXDR: string, networkPassphrase: string): string {
 
 export function useSorobanResurrect(options: UseSorobanResurrectOptions): SorobanResurrectStores {
   let client: SorobanResurrect | null = null
+  let connectionListeners: ((connected: boolean) => void)[] = []
+  let networkListeners: ((network: string) => void)[] = []
 
   const isChecking = writable(false)
   const isExecuting = writable(false)
@@ -131,6 +133,28 @@ export function useSorobanResurrect(options: UseSorobanResurrectOptions): Soroba
     archivedKeys.set([])
   }
 
+  function onConnectionChange(callback: (connected: boolean) => void) {
+    connectionListeners.push(callback)
+    return () => {
+      connectionListeners = connectionListeners.filter((cb) => cb !== callback)
+    }
+  }
+
+  function onNetworkChange(callback: (network: string) => void) {
+    networkListeners.push(callback)
+    return () => {
+      networkListeners = networkListeners.filter((cb) => cb !== callback)
+    }
+  }
+
+  function emitConnectionChange(connected: boolean) {
+    connectionListeners.forEach((callback) => callback(connected))
+  }
+
+  function emitNetworkChange(network: string) {
+    networkListeners.forEach((callback) => callback(network))
+  }
+
   return {
     isChecking: derived(isChecking, (v) => v),
     isExecuting: derived(isExecuting, (v) => v),
@@ -141,5 +165,7 @@ export function useSorobanResurrect(options: UseSorobanResurrectOptions): Soroba
     checkTransaction,
     executeWithRestore,
     reset,
+    onConnectionChange,
+    onNetworkChange,
   }
 }

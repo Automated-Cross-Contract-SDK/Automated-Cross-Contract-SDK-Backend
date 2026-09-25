@@ -1,4 +1,4 @@
-import { Injectable, signal, type Signal } from '@angular/core'
+import { Injectable, signal, type Signal, Provider, makeEnvironmentProviders } from '@angular/core'
 import { Transaction, TransactionBuilder } from '@stellar/stellar-sdk'
 import { SorobanResurrect, SorobanResurrectError } from '@soroban-resurrect/sdk'
 import type { SorobanResurrectConfig, ExecutionResult, ArchivedKey } from '@soroban-resurrect/sdk'
@@ -119,4 +119,17 @@ export class SorobanResurrectService {
     this._needsRestore.set(false)
     this._archivedKeys.set([])
   }
+}
+
+export function provideSorobanResurrect(config: SorobanResurrectConfig) {
+  return makeEnvironmentProviders([
+    {
+      provide: SorobanResurrectService,
+      useFactory: () => {
+        const service = new SorobanResurrectService()
+        service.configure(config)
+        return service
+      },
+    },
+  ])
 }
