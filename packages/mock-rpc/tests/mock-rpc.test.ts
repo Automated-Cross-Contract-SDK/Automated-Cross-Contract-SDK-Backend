@@ -515,4 +515,121 @@ describe('MockRpcServer', () => {
       expect(elapsed).toBeGreaterThanOrEqual(40) // account for some jitter
     })
   })
+
+  describe('mock-rpc-server: simulate RPC errors (429/500/timeout)', () => {
+    it('simulates 429 (rate limit) error', async () => {
+      mock.setMethodCondition('getLedgerEntries', {
+        condition: 'error',
+        errorMessage: 'HTTP 429: Too Many Requests',
+      })
+
+      const server = mock.getServer()
+      const key = makeMockLedgerKey('rate-limited')
+
+      await expect(server.getLedgerEntries(key)).rejects.toThrow('HTTP 429: Too Many Requests')
+      expect(mock.getStats().errors).toBe(1)
+    })
+
+    it('simulates 500 (internal server error) error', async () => {
+      mock.setMethodCondition('simulateTransaction', {
+        condition: 'error',
+        errorMessage: 'HTTP 500: Internal Server Error',
+      })
+
+      const server = mock.getServer()
+
+      await expect(server.simulateTransaction({} as any)).rejects.toThrow('HTTP 500: Internal Server Error')
+      expect(mock.getStats().errors).toBe(1)
+    })
+
+    it('simulates timeout error across multiple methods', async () => {
+      mock.setNetworkCondition('timeout')
+
+      const server = mock.getServer()
+
+      // Test multiple methods timeout
+      await expect(server.getHealth()).rejects.toThrow('Simulated timeout')
+      await expect(server.getNetwork()).rejects.toThrow('Simulated timeout')
+      await expect(server.getAccount('GABC')).rejects.toThrow('Simulated timeout')
+
+      expect(mock.getStats().timeouts).toBe(3)
+    })
+
+    it('allows per-method error simulation while others work', async () => {
+      mock.setMethodCondition('simulateTransaction', {
+        condition: 'error',
+        errorMessage: 'Simulate failed',
+      })
+      mock.setNetworkCondition('healthy')
+
+      const server = mock.getServer()
+
+      // This should fail
+      await expect(server.simulateTransaction({} as any)).rejects.toThrow('Simulate failed')
+
+      // But this should work
+      const health = await server.getHealth()
+      expect(health.status).toBe('healthy')
+
+      expect(mock.getStats().errors).toBe(1)
+      expect(mock.getStats().totalCalls).toBe(2)
+    })
+
+    it('simulates intermittent errors with multiple retries', async () => {
+      const server = mock.getServer()
+      let callCount = 0
+
+      mock.setMethodOverride('getHealth', () => {
+        callCount++
+        if (callCount <= 2) {
+          throw new Error('HTTP 500: Service Unavailable')
+        }
+        return { status: 'healthy' }
+      })
+
+      // First two calls fail
+      await expect(server.getHealth()).rejects.toThrow('HTTP 500: Service Unavailable')
+      await expect(server.getHealth()).rejects.toThrow('HTTP 500: Service Unavailable')
+
+      // Third call succeeds
+      const result = await server.getHealth()
+      expect(result.status).toBe('healthy')
+    })
+
+    it('tracks error statistics across different error types', async () => {
+      const server = mock.getServer()
+
+      // Setup multiple error conditions
+      mock.setMethodCondition('getHealth', {
+        condition: 'error',
+        errorMessage: 'Health check failed',
+      })
+      mock.setMethodCondition('getNetwork', {
+        condition: 'timeout',
+      })
+
+      // Trigger errors
+      await expect(server.getHealth()).rejects.toThrow('Health check failed')
+      await expect(server.getNetwork()).rejects.toThrow('Simulated timeout')
+
+      const stats = mock.getStats()
+      expect(stats.errors).toBe(1)
+      expect(stats.timeouts).toBe(1)
+      expect(stats.totalCalls).toBe(2)
+    })
+
+    it('clears error conditions and resets to healthy', async () => {
+      mock.setNetworkCondition('error')
+      const server = mock.getServer()
+
+      await expect(server.getHealth()).rejects.toThrow()
+
+      // Reset conditions
+      mock.resetConditions()
+
+      const result = await server.getHealth()
+      expect(result.status).toBe('healthy')
+      expect(mock.getNetworkCondition()).toBe('healthy')
+    })
+  })
 })
