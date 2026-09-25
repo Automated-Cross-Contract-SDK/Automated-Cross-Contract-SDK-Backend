@@ -407,4 +407,112 @@ describe('MockRpcServer', () => {
       expect(result.status).toBe('SUCCESS')
     })
   })
+
+  describe('fixture recorder: capture getLedgerEntries', () => {
+    it('records and replays getLedgerEntries responses', async () => {
+      const recorder = mock.fixtures
+      recorder.startRecording()
+
+      const server = mock.getServer()
+      const key = makeMockLedgerKey('abc123')
+      const response = await server.getLedgerEntries(key)
+
+      const interactions = recorder.stopRecording()
+      expect(interactions).toHaveLength(1)
+      expect(interactions[0].method).toBe('getLedgerEntries')
+      expect(interactions[0].response).toBeDefined()
+    })
+
+    it('saves and loads fixture for getLedgerEntries', async () => {
+      const tmpFixturePath = '/tmp/test-get-ledger-entries.json'
+      const recorder = mock.fixtures
+
+      // Setup: Add entry to mock
+      const key = makeMockLedgerKey('def456')
+      mock.ledgerState.addEntry({
+        key,
+        keyBase64: mock.ledgerState.encodeKey(key),
+        data: 'archived-key-data-xdr',
+        lastLiveLedgerSeq: 100,
+        ttl: 100,
+        entryType: 'contractData',
+      })
+
+      // Record
+      recorder.startRecording()
+      const server = mock.getServer()
+      const response = await server.getLedgerEntries(key)
+      recorder.stopRecording()
+
+      // Save fixture
+      recorder.saveFixture(tmpFixturePath, 'archived-key-fixture', {
+        description: 'Fixture for archived contract data keys',
+        networkPassphrase: 'Test SDF Network ; September 2015',
+      })
+
+      // Verify file was created
+      const fs = require('node:fs')
+      expect(fs.existsSync(tmpFixturePath)).toBe(true)
+
+      // Cleanup
+      fs.unlinkSync(tmpFixturePath)
+    })
+
+    it('finds matching getLedgerEntries interaction in fixture', async () => {
+      const key1 = makeMockLedgerKey('key1')
+      const key2 = makeMockLedgerKey('key2')
+
+      const fixture = {
+        name: 'ledger-entries-fixture',
+        interactions: [
+          {
+            method: 'getLedgerEntries',
+            requestParams: [key1],
+            response: { entries: [{ key: key1, xdr: 'data1' }] },
+            networkCondition: 'healthy' as const,
+            delayMs: 0,
+          },
+          {
+            method: 'getLedgerEntries',
+            requestParams: [key2],
+            response: { entries: [{ key: key2, xdr: 'data2' }] },
+            networkCondition: 'healthy' as const,
+            delayMs: 0,
+          },
+        ],
+      }
+
+      const recorder = mock.fixtures
+      const found = recorder.findInteraction(fixture, 'getLedgerEntries', [key1])
+      expect(found).toBeDefined()
+      expect(found!.response).toEqual({ entries: [{ key: key1, xdr: 'data1' }] })
+    })
+
+    it('replays getLedgerEntries from fixture with network conditions', async () => {
+      const key = makeMockLedgerKey('replay-key')
+      const fixture = {
+        name: 'slow-ledger-entries',
+        interactions: [
+          {
+            method: 'getLedgerEntries',
+            requestParams: [key],
+            response: { entries: [{ key, xdr: 'replayed-data' }], latestLedger: 1000 },
+            networkCondition: 'slow' as const,
+            delayMs: 50,
+          },
+        ],
+      }
+
+      mock.loadFixture(fixture)
+      const server = mock.getServer()
+
+      const start = Date.now()
+      const result = await server.getLedgerEntries(key)
+      const elapsed = Date.now() - start
+
+      expect(result).toBeDefined()
+      expect((result as any).entries[0].xdr).toBe('replayed-data')
+      expect(elapsed).toBeGreaterThanOrEqual(40) // account for some jitter
+    })
+  })
 })
