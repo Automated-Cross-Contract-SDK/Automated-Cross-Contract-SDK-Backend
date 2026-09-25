@@ -5,9 +5,9 @@
  * connecting over WebHID (falling back to WebUSB when unavailable).
  */
 
-import { TransactionBuilder } from '@stellar/stellar-sdk'
+import { Keypair, TransactionBuilder, xdr } from '@stellar/stellar-sdk'
 import type { SorobanWalletAdapter, SignTransactionOptions, WalletConnectionResult } from '../types.js'
-import { WalletAdapterError, loadOptionalWalletDependency, bytesToBase64 } from '../types.js'
+import { WalletAdapterError, loadOptionalWalletDependency } from '../types.js'
 
 const APP_MODULE_NAME = '@ledgerhq/hw-app-str'
 const WEBHID_MODULE_NAME = '@ledgerhq/hw-transport-webhid'
@@ -70,7 +70,7 @@ export class LedgerAdapter implements SorobanWalletAdapter {
     this.publicKey = null
   }
 
-  async signTransaction(xdr: string, opts?: SignTransactionOptions): Promise<string> {
+  async signTransaction(txXdr: string, opts?: SignTransactionOptions): Promise<string> {
     if (!opts?.networkPassphrase) {
       throw new WalletAdapterError('Ledger signing requires opts.networkPassphrase', 'INVALID_XDR')
     }
@@ -80,12 +80,13 @@ export class LedgerAdapter implements SorobanWalletAdapter {
 
     const app = await this.getApp()
     try {
-      const tx = TransactionBuilder.fromXDR(xdr, opts.networkPassphrase)
+      const tx = TransactionBuilder.fromXDR(txXdr, opts.networkPassphrase)
       const signatureBase = tx.signatureBase() as unknown as Uint8Array
       // hw-app-str streams the signature base to the device in APDU chunks
       // and prompts the user to review + approve the transaction on-screen.
       const { signature } = await app.signTransaction(this.derivationPath, signatureBase)
-      tx.addSignature(this.publicKey, bytesToBase64(signature))
+      const hint = Keypair.fromPublicKey(this.publicKey).signatureHint()
+      tx.signatures.push(new xdr.DecoratedSignature({ hint, signature }))
       return tx.toXDR()
     } catch (cause) {
       throw this.mapLedgerError(cause)
