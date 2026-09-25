@@ -28,6 +28,89 @@ installCryptoPolyfill()
 import { SorobanResurrectProvider, useSorobanResurrect } from '@soroban-resurrect/react-native'
 ```
 
+## Choosing a crypto provider
+
+| Criterion | `react-native-quick-crypto` | `expo-crypto` |
+|---|---|---|
+| **Use when** | Bare React Native (custom native build) | Expo-managed workflow (SDK 44+) |
+| **Expo Go** | ❌ needs custom dev client | ✅ supported |
+| **EAS Build** | ✅ with pod install / gradle | ✅ out of the box |
+| **SHA-256 digest** | ✅ full SubtleCrypto | ✅ expo-crypto ≥ 11.0.0 |
+| **Hermes** | ✅ RN ≥ 0.70 | ✅ RN ≥ 0.70 |
+
+Choose based on your build setup. Run the benchmark on a real device if you
+need to compare actual numbers for your target hardware.
+
+## Benchmark
+
+`scripts/benchmark-crypto.cjs` is a small micro-benchmark that measures
+`getRandomValues(32 bytes)` — the exact operation that `crypto.ts` wraps for
+the Soroban SDK. It is written in plain CommonJS so it runs in both
+**Hermes / React Native** and **Node.js** without any Node.js-only built-ins.
+
+### Running the benchmark
+
+**In Node.js / CI (no RN providers — for harness verification only):**
+
+```bash
+node packages/react-native/scripts/benchmark-crypto.cjs
+# or from inside the package:
+cd packages/react-native && npm run benchmark
+```
+
+Output when neither provider is installed (expected in CI):
+
+```
+=== crypto provider benchmark: getRandomValues ===
+operation : getRandomValues(32 bytes)
+iterations: 500 (+ 1 warm-up, discarded)
+timer     : Date.now() (~1 ms granularity)
+
+No providers available.
+react-native-quick-crypto and expo-crypto require a native
+React Native build. This environment (Node.js / CI) cannot
+run either provider. Run the benchmark on a device.
+
+--- provider selection ---
+...
+```
+
+> **Important:** Neither provider is available in Node.js / CI. The above
+> output confirms the harness works but produces **no comparison numbers**.
+> Only on-device results are meaningful.
+
+**On a React Native device or simulator (bare workflow):**
+
+```js
+// In a dev screen or debug menu:
+const { runBenchmark } = require('./scripts/benchmark-crypto.cjs')
+runBenchmark()
+// Check the Metro / Hermes console for results
+```
+
+**On a React Native device or simulator (Expo managed):**
+
+```js
+const { runBenchmark } = require('../../packages/react-native/scripts/benchmark-crypto.cjs')
+runBenchmark()
+```
+
+### What the benchmark measures
+
+| Operation | Payload | Why |
+|---|---|---|
+| `getRandomValues` | 32 bytes | The operation `crypto.ts` wraps; called by the Soroban SDK to seed libsodium |
+
+500 iterations with one warm-up call (discarded). Timer: `Date.now()` (~1 ms
+granularity) — available in both Hermes and Node.js.
+
+### Interpreting results
+
+- Results vary by device, OS, and build configuration.
+- Run multiple times and compare means; do not rely on a single run.
+- No performance winner is declared here — run the benchmark on your target
+  hardware and decide based on those numbers.
+
 ## DOM APIs replaced for React Native
 
 | Web/DOM API                     | React Native replacement                                   |
