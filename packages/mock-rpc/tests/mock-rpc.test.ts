@@ -632,4 +632,188 @@ describe('MockRpcServer', () => {
       expect(mock.getNetworkCondition()).toBe('healthy')
     })
   })
+
+  describe('sequence-manager: simulate ledger jumps and TTL expiry', () => {
+    it('allows scripted ledger advances to expire entries', () => {
+      const key = makeMockLedgerKey('expiring-key')
+      const ttl = 100
+
+      // Add entry at ledger 1000
+      mock.ledgerState.addEntry({
+        key,
+        keyBase64: mock.ledgerState.encodeKey(key),
+        data: 'xdr-data',
+        lastLiveLedgerSeq: 1000,
+        ttl,
+        entryType: 'contractData',
+      })
+
+      // Entry should be live
+      expect(mock.ledgerState.getLiveEntries([key])).toHaveLength(1)
+
+      // Jump ledger to expiry point (lastLive + ttl)
+      mock.ledgerState.setCurrentLedgerSeq(1100)
+      expect(mock.ledgerState.getArchivedCount()).toBe(1)
+      expect(mock.ledgerState.getLiveEntries([key])).toHaveLength(0)
+    })
+
+    it('supports multiple scripted ledger jumps in restore flow', () => {
+      const key1 = makeMockLedgerKey('entry1')
+      const key2 = makeMockLedgerKey('entry2')
+
+      // Add two entries with different TTLs
+      mock.ledgerState.addEntry({
+        key: key1,
+        keyBase64: mock.ledgerState.encodeKey(key1),
+        data: 'data1',
+        lastLiveLedgerSeq: 1000,
+        ttl: 50,
+        entryType: 'contractData',
+      })
+      mock.ledgerState.addEntry({
+        key: key2,
+        keyBase64: mock.ledgerState.encodeKey(key2),
+        data: 'data2',
+        lastLiveLedgerSeq: 1000,
+        ttl: 100,
+        entryType: 'contractData',
+      })
+
+      // Both live at 1000
+      expect(mock.ledgerState.getLiveEntries([key1, key2])).toHaveLength(2)
+
+      // Jump to 1050: key1 expires, key2 still live
+      mock.ledgerState.setCurrentLedgerSeq(1050)
+      expect(mock.ledgerState.getLiveEntries([key1, key2])).toHaveLength(1)
+
+      // Jump to 1100: both expired
+      mock.ledgerState.setCurrentLedgerSeq(1100)
+      expect(mock.ledgerState.getLiveEntries([key1, key2])).toHaveLength(0)
+      expect(mock.ledgerState.getArchivedCount()).toBe(2)
+    })
+
+    it('simulates offline restore flow using ledger jumps', async () => {
+      const key = makeMockLedgerKey('offline-restore')
+      const ttl = 100
+
+      // Initial state: entry is live
+      mock.ledgerState.addEntry({
+        key,
+        keyBase64: mock.ledgerState.encodeKey(key),
+        data: 'active-data',
+        lastLiveLedgerSeq: 1000,
+        ttl,
+        entryType: 'contractData',
+      })
+      mock.ledgerState.setCurrentLedgerSeq(1000)
+
+      const server = mock.getServer()
+      let entries = await server.getLedgerEntries(key)
+      expect((entries as any).entries).toHaveLength(1)
+
+      // Simulate offline passage of time: advance ledger past TTL
+      mock.ledgerState.setCurrentLedgerSeq(1150)
+
+      // Entry is now archived
+      entries = await server.getLedgerEntries(key)
+      expect((entries as any).entries).toHaveLength(0)
+
+      // Simulate restore: refresh the entry
+      mock.ledgerState.addEntry({
+        key,
+        keyBase64: mock.ledgerState.encodeKey(key),
+        data: 'refreshed-data',
+        lastLiveLedgerSeq: 1150,
+        ttl,
+        entryType: 'contractData',
+      })
+
+      // Entry is now live again
+      entries = await server.getLedgerEntries(key)
+      expect((entries as any).entries).toHaveLength(1)
+    })
+
+    it('tracks archived entries as ledger progresses', () => {
+      const keys = [
+        makeMockLedgerKey('k1'),
+        makeMockLedgerKey('k2'),
+        makeMockLedgerKey('k3'),
+      ]
+
+      // Add entries with staggered expiry
+      for (let i = 0; i < keys.length; i++) {
+        mock.ledgerState.addEntry({
+          key: keys[i],
+          keyBase64: mock.ledgerState.encodeKey(keys[i]),
+          data: `data${i}`,
+          lastLiveLedgerSeq: 1000,
+          ttl: 50 + i * 25, // TTLs: 50, 75, 100
+          entryType: 'contractData',
+        })
+      }
+
+      mock.ledgerState.setCurrentLedgerSeq(1000)
+      expect(mock.ledgerState.getArchivedCount()).toBe(0)
+
+      // After 1050: first expires
+      mock.ledgerState.setCurrentLedgerSeq(1050)
+      expect(mock.ledgerState.getArchivedCount()).toBe(1)
+
+      // After 1075: first two expire
+      mock.ledgerState.setCurrentLedgerSeq(1075)
+      expect(mock.ledgerState.getArchivedCount()).toBe(2)
+
+      // After 1100: all expire
+      mock.ledgerState.setCurrentLedgerSeq(1100)
+      expect(mock.ledgerState.getArchivedCount()).toBe(3)
+    })
+
+    it('supports archiveAll for integration tests', () => {
+      const keys = [makeMockLedgerKey('a'), makeMockLedgerKey('b')]
+
+      keys.forEach((key, i) => {
+        mock.ledgerState.addEntry({
+          key,
+          keyBase64: mock.ledgerState.encodeKey(key),
+          data: `d${i}`,
+          lastLiveLedgerSeq: 1000,
+          ttl: 4095360,
+          entryType: 'contractData',
+        })
+      })
+
+      // All live even with high TTL
+      expect(mock.ledgerState.getLiveEntries(keys)).toHaveLength(2)
+
+      // archiveAll forces expiry
+      mock.ledgerState.archiveAll()
+      expect(mock.ledgerState.getLiveEntries(keys)).toHaveLength(0)
+      expect(mock.ledgerState.getArchivedCount()).toBe(2)
+    })
+
+    it('handles edge case: entry at exact expiry boundary', () => {
+      const key = makeMockLedgerKey('boundary-entry')
+      const lastLive = 1000
+      const ttl = 100
+
+      mock.ledgerState.addEntry({
+        key,
+        keyBase64: mock.ledgerState.encodeKey(key),
+        data: 'boundary-data',
+        lastLiveLedgerSeq: lastLive,
+        ttl,
+        entryType: 'contractData',
+      })
+
+      const expiryLedger = lastLive + ttl // 1100
+
+      // At expiry ledger - 1: still live
+      mock.ledgerState.setCurrentLedgerSeq(expiryLedger - 1)
+      expect(mock.ledgerState.getLiveEntries([key])).toHaveLength(1)
+
+      // At expiry ledger: archived
+      mock.ledgerState.setCurrentLedgerSeq(expiryLedger)
+      expect(mock.ledgerState.getLiveEntries([key])).toHaveLength(0)
+    })
+  })
 })
