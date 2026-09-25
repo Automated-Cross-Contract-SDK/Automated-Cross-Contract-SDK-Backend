@@ -5,9 +5,12 @@ import { WalletContext } from './WalletContext.js'
 import { saveWalletSession, loadWalletSession, clearWalletSession, DEFAULT_STORAGE_KEY } from './storage.js'
 import type { WalletContextValue, WalletProviderProps } from './types.js'
 
+const DEFAULT_CONNECT_TIMEOUT_MS = 30000
+
 export function WalletProvider({
   wallets,
   sessionTimeoutMs,
+  connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
   storageKey = DEFAULT_STORAGE_KEY,
   autoReconnect = true,
   children,
@@ -18,6 +21,7 @@ export function WalletProvider({
   const [isConnecting, setIsConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const reconnectAttempted = useRef(false)
+  const connectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   const walletsById = useMemo(() => new Map(wallets.map((w) => [w.id, w] as const)), [wallets])
 
@@ -31,25 +35,41 @@ export function WalletProvider({
 
     setIsConnecting(true)
     setError(null)
+
+    if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current)
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      connectTimeoutRef.current = setTimeout(() => {
+        setIsConnecting(false)
+        setError('Connection timeout')
+        reject(new Error('Connection timeout'))
+      }, connectTimeoutMs)
+    })
+
     try {
-      const available = await wallet.isAvailable()
-      if (!available) {
-        throw new Error(`Wallet "${wallet.name}" is not available`)
-      }
-      const { publicKey: key } = await wallet.connect()
-      const now = Date.now()
-      setActiveWalletId(wallet.id)
-      setPublicKey(key)
-      setConnectedAt(now)
-      saveWalletSession({ walletId: wallet.id, publicKey: key, connectedAt: now }, storageKey)
+      const connectPromise = (async () => {
+        const available = await wallet.isAvailable()
+        if (!available) {
+          throw new Error(`Wallet "${wallet.name}" is not available`)
+        }
+        const { publicKey: key } = await wallet.connect()
+        const now = Date.now()
+        setActiveWalletId(wallet.id)
+        setPublicKey(key)
+        setConnectedAt(now)
+        saveWalletSession({ walletId: wallet.id, publicKey: key, connectedAt: now }, storageKey)
+      })()
+
+      await Promise.race([connectPromise, timeoutPromise])
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setError(message)
       throw err
     } finally {
+      if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current)
       setIsConnecting(false)
     }
-  }, [walletsById, storageKey])
+  }, [walletsById, storageKey, connectTimeoutMs])
 
   const connectWithFallback = useCallback(async (walletIds: string[]) => {
     let lastError: unknown = new Error('No wallets provided in fallback chain')
@@ -136,11 +156,12 @@ export function WalletProvider({
     publicKey,
     isConnecting,
     error,
+    connectTimeoutMs,
     connect,
     connectWithFallback,
     disconnect,
     switchWallet,
-  }), [wallets, activeWallet, publicKey, isConnecting, error, connect, connectWithFallback, disconnect, switchWallet])
+  }), [wallets, activeWallet, publicKey, isConnecting, error, connectTimeoutMs, connect, connectWithFallback, disconnect, switchWallet])
 
   return (
     <WalletContext.Provider value={value}>
