@@ -22,6 +22,20 @@ function computeHash(signedXDR: string, networkPassphrase: string): string {
 }
 
 export function useSorobanResurrect(options: UseSorobanResurrectOptions): UseSorobanResurrectReturn {
+  if (typeof window === 'undefined') {
+    return {
+      executeWithRestore: async () => { throw new Error('useSorobanResurrect cannot be called during SSR') },
+      checkTransaction: async () => { throw new Error('useSorobanResurrect cannot be called during SSR') },
+      isChecking: ref(false),
+      isExecuting: ref(false),
+      lastResult: ref(null),
+      error: ref(null),
+      needsRestore: ref(false),
+      archivedKeys: ref([]),
+      reset: () => {},
+    }
+  }
+
   const clientRef = shallowRef<SorobanResurrect | null>(null)
 
   const isChecking = ref(false)

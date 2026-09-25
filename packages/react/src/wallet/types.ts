@@ -32,6 +32,8 @@ export interface WalletProviderProps {
   wallets: WalletAdapter[]
   /** Auto-disconnect after this many ms of an established session. */
   sessionTimeoutMs?: number
+  /** Abort and reset pending state if connect takes longer than this. Defaults to 30000ms (30s). */
+  connectTimeoutMs?: number
   /** localStorage key used to persist the active session. Defaults to a namespaced key. */
   storageKey?: string
   /** Attempt to restore a persisted session on mount. Defaults to `true`. */
@@ -45,6 +47,7 @@ export interface WalletContextValue {
   publicKey: string | null
   isConnecting: boolean
   error: string | null
+  connectTimeoutMs: number
   /** Connect to a specific wallet by id. */
   connect(walletId: string): Promise<void>
   /** Try each wallet id in order, stopping at the first successful connection. */
