@@ -55,7 +55,7 @@ the Soroban SDK. It is written in plain CommonJS so it runs in both
 ```bash
 node packages/react-native/scripts/benchmark-crypto.cjs
 # or from inside the package:
-npm run benchmark -w packages/react-native
+cd packages/react-native && npm run benchmark
 ```
 
 Output when neither provider is installed (expected in CI):
