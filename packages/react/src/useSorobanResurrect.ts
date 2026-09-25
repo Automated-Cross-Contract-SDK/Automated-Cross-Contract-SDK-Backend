@@ -85,7 +85,7 @@ const IDLE_PROGRESS: RestoreProgress = {
 
 async function hashTxXDR(txXDR: string): Promise<string> {
   const cryptoObj = typeof globalThis !== 'undefined' ? (globalThis as any).crypto : undefined
-  if (cryptoObj?.subtle?.digest) {
+  if (cryptoObj?.subtle?.digest && typeof TextEncoder !== 'undefined') {
     const encoder = new TextEncoder()
     const buffer = await cryptoObj.subtle.digest('SHA-256', encoder.encode(txXDR))
     return Array.from(new Uint8Array(buffer)).map((byte: number) => byte.toString(16).padStart(2, '0')).join('')
