@@ -17,6 +17,23 @@ export type RestorationAction =
   | { type: typeof RESTORATION_ERROR; payload: { error: string } }
   | { type: typeof RESTORATION_RESET }
 
+export const restorationActions = {
+  restoreStart: (): RestorationAction => ({ type: RESTORATION_CHECKING }),
+  restoreBatch: (archivedKeys: ArchivedKey[]): RestorationAction => ({
+    type: RESTORATION_NEEDS_RESTORE,
+    payload: { archivedKeys },
+  }),
+  restoreComplete: (result: ExecutionResult): RestorationAction => ({
+    type: RESTORATION_RESTORED,
+    payload: { result },
+  }),
+  restorationError: (error: string): RestorationAction => ({
+    type: RESTORATION_ERROR,
+    payload: { error },
+  }),
+  reset: (): RestorationAction => ({ type: RESTORATION_RESET }),
+}
+
 function eventToAction(event: RestorationEvent): RestorationAction {
   switch (event.type) {
     case 'checking':
