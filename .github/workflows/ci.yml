@@ -91,9 +91,8 @@ jobs:
           cache: npm
 
       - name: Install Stellar CLI
-        run: |
-          curl -sL https://soroban.stellar.org/cli | bash
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+        # Pinned crates.io release (checksum-verified by cargo via --locked); no piped installer.
+        run: cargo install --locked stellar-cli --version 22.8.2
 
       - name: Deploy test contract to testnet
         id: deploy
@@ -109,9 +108,9 @@ jobs:
             exit 0
           fi
 
-          CONTRACT_ID=$(soroban contract deploy \
+          CONTRACT_ID=$(stellar contract deploy \
             --wasm "$WASM_PATH" \
-            --source "${{ secrets.TEST_DEPLOYER_SECRET }}" \
+            --source "$TEST_DEPLOYER_SECRET" \
             --network "$NETWORK" \
             --rpc-url https://soroban-testnet.stellar.org)
 
@@ -162,7 +161,7 @@ jobs:
           SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
           SOROBAN_NETWORK_PASSPHRASE: 'Test SDF Network ; September 2015'
           TEST_ACCOUNT_SECRET: ${{ secrets.TEST_ACCOUNT_SECRET }}
-          DEPLOYED_CONTRACT_ID: ${{ steps.deploy.outputs.contract_id }}
+          DEPLOYED_CONTRACT_ID: ${{ needs.deploy-test-contracts.outputs.test-contract-id }}
 
       - name: Post failure comment on PR
         if: failure() && github.event_name == 'pull_request'
@@ -194,9 +193,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Stellar CLI
-        run: |
-          curl -sL https://soroban.stellar.org/cli | bash
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+        # Pinned crates.io release (checksum-verified by cargo via --locked); no piped installer.
+        run: cargo install --locked stellar-cli --version 22.8.2
 
       - name: Cleanup test contract (optional best-effort)
         continue-on-error: true
