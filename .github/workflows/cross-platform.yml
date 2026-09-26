@@ -36,6 +36,8 @@ jobs:
       # Unit tests
       - run: npm run test
 
+      - run: npm run typecheck
+
       # TypeScript compilation
       - run: npm run typecheck -w packages/sdk
       - run: npm run typecheck -w packages/react
