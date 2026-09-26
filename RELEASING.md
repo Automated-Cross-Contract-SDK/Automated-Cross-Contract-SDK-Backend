@@ -41,3 +41,11 @@ packed workspace tarballs. Verify a downloaded tarball with:
 ```bash
 gh attestation verify <package>.tgz --repo Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend
 ```
+
+## Release checklist automation
+
+Releases are cut by `.github/workflows/release.yml` (semantic-release: version
+bump, changelog, publish, tag, GitHub release notes). Before releasing,
+`.github/workflows/release-checklist.yml` (manual or on release-config PRs)
+validates workspace metadata, rejects unsupported `workspace:` ranges, builds,
+and runs `semantic-release --dry-run` to preview the version and notes.
