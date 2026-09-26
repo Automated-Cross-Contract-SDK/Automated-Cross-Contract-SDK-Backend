@@ -67,18 +67,46 @@ export async function initWasm(): Promise<boolean> {
     try {
       // Dynamic import of the wasm-pack generated module
       const mod = await import('../pkg/footprint_parser_wasm.js')
-      await mod.default() // Initialize WASM
+      if (typeof mod.default === 'function') await mod.default() // Initialize WASM
       wasmModule = mod
       return true
-    } catch {
+    } catch (err) {
+      // Import or instantiate failed (CSP, missing pkg, bad bytes, ...):
+      // stay on the JS parser instead of surfacing the error.
+      wasmModule = null
       console.warn(
-        '[footprint-parser-wasm] WASM module failed to load, falling back to TypeScript',
+        '[footprint-parser-wasm] WASM init failed, falling back to TypeScript:',
+        err instanceof Error ? err.message : err,
       )
       return false
     }
   })()
 
   return wasmInitPromise
+}
+
+// ---------------------------------------------------------------------------
+// JS fallback helpers
+// ---------------------------------------------------------------------------
+
+function toWasmKeys(result: {
+  readOnly: { toXDR(f: 'base64'): string }[]
+  readWrite: { toXDR(f: 'base64'): string }[]
+  all: { toXDR(f: 'base64'): string }[]
+}): WasmFootprintKeys {
+  return {
+    readOnlyCount: result.readOnly.length,
+    readWriteCount: result.readWrite.length,
+    totalCount: result.all.length,
+    keysBase64: result.all.map(k => k.toXDR('base64')),
+  }
+}
+
+async function classifyWithJs(keyXdrBase64: string): Promise<WasmKeyClassification> {
+  const { classifyLedgerKey } = await import('@soroban-resurrect/sdk')
+  const { xdr } = await import('@stellar/stellar-sdk')
+  const c = classifyLedgerKey(xdr.LedgerKey.fromXDR(keyXdrBase64, 'base64'))
+  return { keyBase64: keyXdrBase64, ...c } as WasmKeyClassification
 }
 
 // ---------------------------------------------------------------------------
@@ -97,15 +125,13 @@ export async function extractFootprintKeys(
     return JSON.parse(json) as WasmFootprintKeys
   }
 
-  // Fallback: use the TypeScript implementation
-  const { extractKeysFromFootprint, encodeLedgerKey } = await import(
-    '@soroban-resurrect/sdk'
+  // Fallback: decode with the TypeScript implementation
+  const { extractKeysFromFootprint } = await import('@soroban-resurrect/sdk')
+  const { xdr } = await import('@stellar/stellar-sdk')
+  const result = extractKeysFromFootprint(
+    xdr.LedgerFootprint.fromXDR(footprintXdrBase64, 'base64'),
   )
-  // We need a real footprint object here — caller must provide it
-  throw new Error(
-    'WASM not available and fallback requires a LedgerFootprint object. ' +
-    'Use @soroban-resurrect/sdk directly for TypeScript parsing.',
-  )
+  return toWasmKeys(result)
 }
 
 /**
@@ -120,15 +146,8 @@ export async function classifyKey(
     return JSON.parse(json) as WasmKeyClassification
   }
 
-  // Fallback
-  const { classifyLedgerKey, encodeLedgerKey } = await import(
-    '@soroban-resurrect/sdk'
-  )
-  // Need the real LedgerKey object — this is a convenience wrapper
-  throw new Error(
-    'WASM not available and fallback requires a LedgerKey object. ' +
-    'Use @soroban-resurrect/sdk directly for TypeScript classification.',
-  )
+  // Fallback: decode with the TypeScript implementation
+  return classifyWithJs(keyXdrBase64)
 }
 
 /**
@@ -143,12 +162,8 @@ export async function classifyKeysBatch(
     return JSON.parse(json) as WasmKeyClassification[]
   }
 
-  // Fallback
-  const { classifyLedgerKey } = await import('@soroban-resurrect/sdk')
-  throw new Error(
-    'WASM not available and fallback requires LedgerKey objects. ' +
-    'Use @soroban-resurrect/sdk directly for TypeScript classification.',
-  )
+  // Fallback: classify one by one with the TypeScript implementation
+  return Promise.all(keysBase64.map(classifyWithJs))
 }
 
 /**
@@ -171,10 +186,5 @@ export async function extractFootprintFromTxXdr(
   if (!result) {
     throw new Error('Failed to parse transaction XDR')
   }
-  return {
-    readOnlyCount: result.readOnly.length,
-    readWriteCount: result.readWrite.length,
-    totalCount: result.all.length,
-    keysBase64: result.all.map(k => k.toXDR('base64')),
-  }
+  return toWasmKeys(result)
 }
