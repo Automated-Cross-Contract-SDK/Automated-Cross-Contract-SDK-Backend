@@ -4,7 +4,7 @@ import {
   FixedDelay,
   JitterBackoff,
   CircuitBreaker,
-} from '../src/retry-policy.js'
+} from '@soroban-resurrect/rpc'
 import { SorobanResurrectError } from '../src/types.js'
 
 describe('Retry Policy Cookbook (Issue #300)', () => {

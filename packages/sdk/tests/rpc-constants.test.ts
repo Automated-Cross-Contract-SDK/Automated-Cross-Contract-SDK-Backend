@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { TRANSACTION_STATUS } from '../src/constants.js'
+import { TRANSACTION_STATUS } from '@soroban-resurrect/utils'
 
 describe('TRANSACTION_STATUS constants', () => {
   it('has correct string values for all transaction statuses', () => {

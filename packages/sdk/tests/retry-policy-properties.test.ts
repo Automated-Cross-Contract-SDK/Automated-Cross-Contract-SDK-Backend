@@ -6,7 +6,7 @@ import {
   JitterBackoff,
   CircuitBreaker,
   type RetryPolicy,
-} from '../src/retry-policy.js'
+} from '@soroban-resurrect/rpc'
 import { SorobanResurrectError } from '../src/types.js'
 
 // Arbitraries for property-based testing
