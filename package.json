@@ -15,7 +15,13 @@
     "packages/react",
     "packages/wallet-adapters",
     "packages/mock-rpc",
-    "packages/example"
+    "packages/example",
+    "packages/footprint-parser-wasm",
+    "packages/angular",
+    "packages/vue",
+    "packages/svelte",
+    "packages/next",
+    "packages/react-native"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
