@@ -1,0 +1,58 @@
+name: Release checklist
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run semantic-release in dry-run mode only
+        type: boolean
+        default: true
+  pull_request:
+    branches: [main]
+    paths:
+      - package.json
+      - .releaserc*
+      - .github/workflows/release*.yml
+
+permissions:
+  contents: read
+
+jobs:
+  checklist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      - name: Verify workspace versions are consistent
+        run: |
+          node -e "
+          const fs=require('fs');
+          const root=JSON.parse(fs.readFileSync('package.json','utf8'));
+          const bad=[];
+          for(const w of root.workspaces){
+            const f=w+'/package.json'; if(!fs.existsSync(f)){bad.push(f+' missing');continue}
+            const p=JSON.parse(fs.readFileSync(f,'utf8'));
+            if(!p.name||!p.version) bad.push(f+' missing name/version');
+          }
+          if(bad.length){console.error(bad.join('\n'));process.exit(1)}
+          console.log('workspace metadata ok');
+          "
+
+      - name: No workspace protocol in manifests
+        run: "! grep -rn '\"workspace:' --include=package.json packages package.json"
+
+      - run: npm run build
+
+      - name: Semantic-release dry run (version bump, changelog, notes)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release --dry-run --no-ci
