@@ -117,3 +117,39 @@ export function onLogToLogger(
     debug(_msg, _meta): void { /* debug not supported by the legacy callback */ },
   }
 }
+
+/**
+ * Creates a logger that emits one JSON object per line with stable fields
+ * (`timestamp`, `level`, `component`, `message`, plus any `meta` fields under
+ * `meta`), suitable for log ingestion pipelines. Output goes through `write`
+ * (default: `console.log`).
+ *
+ * @example
+ * ```ts
+ * const resurrect = new SorobanResurrect({ logger: jsonLogger() });
+ * ```
+ */
+export function jsonLogger(write: (line: string) => void = (l) => console.log(l)): Logger {
+  const emit = (level: string, message: string, meta?: Record<string, unknown>): void => {
+    const record: Record<string, unknown> = {
+      timestamp: new Date().toISOString(),
+      level,
+      component: 'soroban-resurrect',
+      message,
+    }
+    if (meta && Object.keys(meta).length > 0) record.meta = meta
+    let line: string
+    try {
+      line = JSON.stringify(record)
+    } catch {
+      line = JSON.stringify({ ...record, meta: '[unserializable]' })
+    }
+    write(line)
+  }
+  return {
+    info: (m, meta) => emit('info', m, meta),
+    warn: (m, meta) => emit('warn', m, meta),
+    error: (m, meta) => emit('error', m, meta),
+    debug: (m, meta) => emit('debug', m, meta),
+  }
+}
