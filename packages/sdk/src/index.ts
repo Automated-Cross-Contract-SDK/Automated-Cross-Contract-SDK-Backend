@@ -4,6 +4,7 @@ export { SorobanResurrect } from '@soroban-resurrect/core'
 export {
   NOOP_LOGGER,
   consoleLogger,
+  jsonLogger,
   onLogToLogger,
 } from './logger.js'
 export type { Logger } from './logger.js'
