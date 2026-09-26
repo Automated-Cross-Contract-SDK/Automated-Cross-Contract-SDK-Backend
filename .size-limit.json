@@ -2,13 +2,31 @@
   {
     "name": "@soroban-resurrect/sdk",
     "path": "packages/sdk/dist/index.js",
-    "limit": "50 KB",
+    "limit": "60 KB",
     "gzip": true
   },
   {
     "name": "@soroban-resurrect/react",
     "path": "packages/react/dist/index.js",
-    "limit": "65 KB",
+    "limit": "15 KB",
+    "gzip": true
+  },
+  {
+    "name": "@soroban-resurrect/vue",
+    "path": "packages/vue/dist/index.js",
+    "limit": "15 KB",
+    "gzip": true
+  },
+  {
+    "name": "@soroban-resurrect/svelte",
+    "path": "packages/svelte/dist/index.js",
+    "limit": "15 KB",
+    "gzip": true
+  },
+  {
+    "name": "@soroban-resurrect/wallet-adapters",
+    "path": "packages/wallet-adapters/dist/index.js",
+    "limit": "15 KB",
     "gzip": true
   },
   {
