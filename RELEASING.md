@@ -30,3 +30,14 @@ Enable two-factor authentication for publishing on the npm org/packages
 npm audit signatures        # verifies registry signatures and provenance
 npm view <pkg> --json | jq '.dist.attestations'
 ```
+
+## SBOM and artifact attestation
+
+`.github/workflows/sbom-attestation.yml` runs when a GitHub Release is
+published. It generates a CycloneDX SBOM (`sbom.cdx.json`), attaches it to the
+release, and creates GitHub build-provenance and SBOM attestations for the
+packed workspace tarballs. Verify a downloaded tarball with:
+
+```bash
+gh attestation verify <package>.tgz --repo Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend
+```
