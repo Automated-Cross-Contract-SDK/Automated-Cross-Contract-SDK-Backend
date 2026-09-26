@@ -120,3 +120,20 @@ This project follows Semantic Versioning (SemVer):
 - Performance improvements
 - Typing fixes
 - Documentation corrections
+
+## Regenerating `package-lock.json`
+
+The repository uses npm workspaces, and `package-lock.json` must stay in sync with
+the root `package.json` `workspaces` list and every `packages/*/package.json`.
+After adding, removing, or renaming a workspace package, or changing any
+dependency range, regenerate the lockfile from the repository root:
+
+```bash
+rm -f package-lock.json
+npm install --package-lock-only
+```
+
+Commit the resulting `package-lock.json` together with the manifest change.
+Internal packages must be referenced by a semver range matching the workspace
+version (for example `^0.1.0`), not the `workspace:*` protocol, which npm does
+not support.
