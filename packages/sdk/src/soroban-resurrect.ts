@@ -176,7 +176,7 @@ export class SorobanResurrect {
       if (network.passphrase !== this.config.networkPassphrase) {
         this.networkPassphraseValid = false
         const rpcUrl = Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl
-        const message = `Network passphrase mismatch: configured "${this.config.networkPassphrase}" but RPC server reports "${network.passphrase}"`
+        const message = `Network passphrase mismatch: configured "${this.config.networkPassphrase}" but RPC server reports "${network.passphrase}". Fix: set networkPassphrase to match the RPC endpoint (e.g. Networks.TESTNET / Networks.PUBLIC) or point rpcUrl at the correct network.`
         if (this.config.strictNetworkValidation === true) {
           throw new SorobanResurrectError(message, 'NETWORK_ERROR', undefined, { rpcUrl })
         }
@@ -478,7 +478,7 @@ export class SorobanResurrect {
       }
     }
     throw new SorobanResurrectError(
-      `Operation failed after ${MAX_RETRIES} retries: ${context}`,
+      `Operation failed after ${MAX_RETRIES} retries: ${context}. Fix: check the RPC endpoint is reachable, or configure additional rpcUrl fallbacks.`,
       'NETWORK_ERROR',
       lastError,
       {
@@ -507,7 +507,7 @@ export class SorobanResurrect {
         tx = TransactionBuilder.fromXDR(txXDR, this.config.networkPassphrase)
       } catch (err) {
         throw new SorobanResurrectError(
-          'Invalid transaction XDR',
+          'Invalid transaction XDR. Fix: pass a base64-encoded transaction envelope built for the configured networkPassphrase.',
           'INVALID_XDR',
           err,
           { rpcUrl: this.config.rpcUrl },
@@ -519,7 +519,7 @@ export class SorobanResurrect {
 
       if (isFeeBumpTx(tx)) {
         throw new SorobanResurrectError(
-          'Fee bump transactions are not supported',
+          'Fee bump transactions are not supported. Fix: pass the inner transaction and apply the fee bump after restoration.',
           'INVALID_XDR',
           undefined,
           { rpcUrl: this.config.rpcUrl },
@@ -545,7 +545,7 @@ export class SorobanResurrect {
       if (SorobanRpc.Api.isSimulationError(simResult)) {
         this.sdkMetrics?.recordRpcError('simulation')
         throw new SorobanResurrectError(
-          `Simulation error (rpcUrl=${this.config.rpcUrl}): ${simResult.error}`,
+          `Simulation error (rpcUrl=${this.config.rpcUrl}): ${simResult.error}. Fix: verify the contract ID, function arguments and source account, then retry.`,
           'SIMULATION_FAILED',
           simResult,
           { rpcUrl: this.config.rpcUrl },
@@ -609,7 +609,7 @@ export class SorobanResurrect {
           keyType: 'unknown' as const,
         }))
         throw new SorobanResurrectError(
-          `Failed to query ${keys.all.length} ledger entries (rpcUrl=${this.config.rpcUrl}): ${err instanceof Error ? err.message : String(err)}`,
+          `Failed to query ${keys.all.length} ledger entries (rpcUrl=${this.config.rpcUrl}): ${err instanceof Error ? err.message : String(err)}. Fix: check the RPC endpoint is reachable and supports getLedgerEntries.`,
           'ARCHIVE_DETECTION_FAILED',
           err,
           { rpcUrl: this.config.rpcUrl, archivedKeys: keyContext },
@@ -673,13 +673,13 @@ export class SorobanResurrect {
     try {
       tx = TransactionBuilder.fromXDR(txXDR, this.config.networkPassphrase)
     } catch (err) {
-      throw new SorobanResurrectError('Invalid transaction XDR', 'INVALID_XDR', err, {
+      throw new SorobanResurrectError('Invalid transaction XDR. Fix: pass a base64-encoded transaction envelope built for the configured networkPassphrase.', 'INVALID_XDR', err, {
         rpcUrl: this.config.rpcUrl,
       })
     }
     if (isFeeBumpTx(tx)) {
       throw new SorobanResurrectError(
-        'Fee bump transactions are not supported',
+        'Fee bump transactions are not supported. Fix: pass the inner transaction and apply the fee bump after restoration.',
         'INVALID_XDR',
         undefined,
         { rpcUrl: this.config.rpcUrl },
@@ -813,7 +813,7 @@ export class SorobanResurrect {
   ): Promise<RestoreTransactionResult> {
     if (archivedKeys.length === 0) {
       throw new SorobanResurrectError(
-        'No archived keys to restore',
+        'No archived keys to restore. Fix: call detectArchived()/simulate first and pass the archived keys it returns.',
         'INVALID_XDR',
         undefined,
         { rpcUrl: this.config.rpcUrl },
@@ -849,7 +849,7 @@ export class SorobanResurrect {
     sourceAccountID: string,
   ): Promise<RestoreBatchResult[]> {
     if (archivedKeys.length === 0) {
-      throw new SorobanResurrectError('No archived keys to restore', 'INVALID_XDR')
+      throw new SorobanResurrectError('No archived keys to restore. Fix: call detectArchived()/simulate first and pass the archived keys it returns.', 'INVALID_XDR')
     }
 
     // Classify keys on demand before batch building (deferred from simulation)
@@ -1106,7 +1106,7 @@ export class SorobanResurrect {
     sourceAccountID: string,
   ): Promise<RestoreBatchResult[]> {
     if (archivedKeys.length === 0) {
-      throw new SorobanResurrectError('No archived keys to restore', 'INVALID_XDR')
+      throw new SorobanResurrectError('No archived keys to restore. Fix: call detectArchived()/simulate first and pass the archived keys it returns.', 'INVALID_XDR')
     }
 
     // Classify keys on demand before batch building (deferred from simulation)
