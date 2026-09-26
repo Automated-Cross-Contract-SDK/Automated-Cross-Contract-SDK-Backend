@@ -1,7 +1,7 @@
 import { xdr } from '@stellar/stellar-sdk'
-import type { RetryPolicy } from './retry-policy.js'
-import type { SimulationCacheConfig } from './simulation-cache.js'
-import type { FootprintCacheConfig } from './footprint-cache.js'
+import type { RetryPolicy } from '@soroban-resurrect/rpc'
+import type { SimulationCacheConfig } from '@soroban-resurrect/rpc'
+import type { FootprintCacheConfig } from '@soroban-resurrect/rpc'
 import type { TracingConfig } from './tracing.js'
 
 /**
@@ -269,12 +269,7 @@ export interface ConcurrentRestoreResult {
   concurrencyUsed?: number
 }
 
-export interface RpcEndpointHealth {
-  url: string
-  healthy: boolean
-  lastCheck: number
-  latencyMs: number
-}
+export type { RpcEndpointHealth } from '@soroban-resurrect/types'
 
 export interface FeeBumpMetadata {
   isFeeBump: boolean

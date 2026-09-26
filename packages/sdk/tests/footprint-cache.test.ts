@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { FootprintCache } from '../src/footprint-cache.js'
+import { FootprintCache } from '@soroban-resurrect/rpc'
 import type { FootprintKeys } from '../src/footprint-parser.js'
 import { xdr } from '@stellar/stellar-sdk'
 

@@ -5,7 +5,7 @@ import {
   JitterBackoff,
   CircuitBreaker,
   DEFAULT_RETRY_POLICY,
-} from '../src/retry-policy.js'
+} from '@soroban-resurrect/rpc'
 import { SorobanResurrectError } from '../src/types.js'
 
 describe('RetryPolicy implementations', () => {

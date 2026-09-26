@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { RpcFailoverManager } from '../src/rpc-failover.js'
+import { RpcFailoverManager } from '@soroban-resurrect/rpc'
 
 describe('RpcFailoverManager', () => {
   const testUrls = ['https://rpc1.example.com', 'https://rpc2.example.com', 'https://rpc3.example.com']
