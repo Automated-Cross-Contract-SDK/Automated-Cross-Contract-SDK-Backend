@@ -162,7 +162,7 @@ jobs:
           SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
           SOROBAN_NETWORK_PASSPHRASE: 'Test SDF Network ; September 2015'
           TEST_ACCOUNT_SECRET: ${{ secrets.TEST_ACCOUNT_SECRET }}
-          DEPLOYED_CONTRACT_ID: ${{ steps.deploy.outputs.contract_id }}
+          DEPLOYED_CONTRACT_ID: ${{ needs.deploy-test-contracts.outputs.test-contract-id }}
 
       - name: Post failure comment on PR
         if: failure() && github.event_name == 'pull_request'
