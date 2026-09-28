@@ -1,0 +1,45 @@
+name: Mutation Testing
+
+on:
+  schedule:
+    # Weekly, Sunday 03:00 UTC
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  footprint-parser:
+    runs-on: ubuntu-latest
+    name: Stryker (footprint-parser)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w packages/types
+      - name: Run mutation tests
+        run: npm run test:mutation -w packages/footprint-parser
+      - name: Report survivors
+        if: always()
+        run: |
+          f=packages/footprint-parser/reports/mutation/mutation.json
+          [ -f "$f" ] || exit 0
+          {
+            echo "### Surviving mutants (footprint-parser)"
+            node -e '
+              const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+              for (const [file, d] of Object.entries(r.files))
+                for (const m of d.mutants.filter(m => m.status === "Survived"))
+                  console.log(`- ${file}:${m.location.start.line} ${m.mutatorName}`);
+            ' "$f"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-report
+          path: packages/footprint-parser/reports/mutation
