@@ -14,6 +14,20 @@ export type SorobanResurrectErrorCode =
   | 'ABORTED'
 
 /**
+ * Options-object form for constructing a {@link SorobanResurrectError}.
+ *
+ * Preferred over the positional form because `context` no longer sits behind
+ * an optional `cause`, so call sites can attach `rpcUrl`/`txHash` without
+ * passing `undefined` explicitly.
+ */
+export interface SorobanResurrectErrorOptions {
+  message: string
+  code: SorobanResurrectErrorCode
+  cause?: unknown
+  context?: SorobanResurrectErrorContext
+}
+
+/**
  * Main error class for SorobanResurrect operations
  * 
  * This error class provides structured error information with context
@@ -27,18 +41,37 @@ export class SorobanResurrectError extends Error {
   /** Archived key details when detection/restore fails. */
   public archivedKeys?: Array<{ keyBase64: string; keyType: string; contractId?: string }>
 
+  public code: SorobanResurrectErrorCode
+  public cause?: unknown
+
+  constructor(options: SorobanResurrectErrorOptions)
   constructor(
     message: string,
-    public code: SorobanResurrectErrorCode,
-    public cause?: unknown,
+    code: SorobanResurrectErrorCode,
+    cause?: unknown,
+    context?: SorobanResurrectErrorContext,
+  )
+  constructor(
+    messageOrOptions: string | SorobanResurrectErrorOptions,
+    code?: SorobanResurrectErrorCode,
+    cause?: unknown,
     context?: SorobanResurrectErrorContext,
   ) {
-    super(message)
+    const options: SorobanResurrectErrorOptions =
+      typeof messageOrOptions === 'string'
+        ? { message: messageOrOptions, code: code as SorobanResurrectErrorCode, cause, context }
+        : messageOrOptions
+
+    super(options.message)
     this.name = 'SorobanResurrectError'
-    if (context) {
-      this.rpcUrl = context.rpcUrl
-      this.txHash = context.txHash
-      this.archivedKeys = context.archivedKeys
+    this.code = options.code
+    this.cause = options.cause
+
+    const ctx = options.context
+    if (ctx) {
+      this.rpcUrl = ctx.rpcUrl
+      this.txHash = ctx.txHash
+      this.archivedKeys = ctx.archivedKeys
     }
     
     // Maintain proper prototype chain for instanceof checks
@@ -50,12 +83,24 @@ export class SorobanResurrectError extends Error {
  * Helper function to create a SorobanResurrectError with proper context
  */
 export function createSorobanResurrectError(
+  options: SorobanResurrectErrorOptions,
+): SorobanResurrectError
+export function createSorobanResurrectError(
   message: string,
   code: SorobanResurrectErrorCode,
   cause?: unknown,
   context?: SorobanResurrectErrorContext,
+): SorobanResurrectError
+export function createSorobanResurrectError(
+  messageOrOptions: string | SorobanResurrectErrorOptions,
+  code?: SorobanResurrectErrorCode,
+  cause?: unknown,
+  context?: SorobanResurrectErrorContext,
 ): SorobanResurrectError {
-  return new SorobanResurrectError(message, code, cause, context)
+  if (typeof messageOrOptions === 'string') {
+    return new SorobanResurrectError(messageOrOptions, code as SorobanResurrectErrorCode, cause, context)
+  }
+  return new SorobanResurrectError(messageOrOptions)
 }
 
 /**
