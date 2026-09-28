@@ -40,11 +40,25 @@ export function installCryptoPolyfill(provider: RandomValuesProvider): void {
  * installCryptoPolyfill(quickCryptoProvider())
  * ```
  */
-export function quickCryptoProvider(): RandomValuesProvider {
+/**
+ * Metro-provided CommonJS `require`, looked up on globalThis so ESM builds
+ * contain no bare `require(` call. Pass the module explicitly
+ * (`quickCryptoProvider(await import('react-native-quick-crypto'))`) to avoid it.
+ */
+function syncRequire<T>(name: string): T {
+  const req = (globalThis as { require?: (n: string) => unknown }).require
+  if (typeof req !== 'function') {
+    throw new Error(
+      `Cannot load "${name}" synchronously in an ESM build. Fix: import it yourself and pass it in, e.g. provider(await import('${name}')).`,
+    )
+  }
+  return req(name) as T
+}
+
+export function quickCryptoProvider(mod?: { QuickCrypto: { getRandomValues: <T extends ArrayBufferView>(a: T) => T } }): RandomValuesProvider {
   // Imported lazily/dynamically by consumers so this package has no hard
   // dependency on `react-native-quick-crypto` being installed.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { QuickCrypto } = require('react-native-quick-crypto')
+  const { QuickCrypto } = mod ?? syncRequire<{ QuickCrypto: any }>('react-native-quick-crypto')
   return {
     getRandomValues: <T extends ArrayBufferView>(array: T) => QuickCrypto.getRandomValues(array),
   }
@@ -61,9 +75,8 @@ export function quickCryptoProvider(): RandomValuesProvider {
  * installCryptoPolyfill(expoCryptoProvider())
  * ```
  */
-export function expoCryptoProvider(): RandomValuesProvider {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const ExpoCrypto = require('expo-crypto')
+export function expoCryptoProvider(mod?: { getRandomValues: <T extends ArrayBufferView>(a: T) => T }): RandomValuesProvider {
+  const ExpoCrypto = mod ?? syncRequire<{ getRandomValues: any }>('expo-crypto')
   return {
     getRandomValues: <T extends ArrayBufferView>(array: T) => ExpoCrypto.getRandomValues(array),
   }

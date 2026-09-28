@@ -51,15 +51,16 @@
     "test:property": "vitest run tests/property",
     "test:fuzz": "jazzer tests/fuzz/xdr-parsing.fuzz.ts --fuzz_function=fuzz -- -max_total_time=60",
     "typecheck": "tsc --noEmit",
+    "test:types": "tsd --typings dist/index.d.ts --files test-d/index.test-d.ts",
     "repl": "node --experimental-repl-await --require tsx/cjs ./src/repl.ts"
   },
   "dependencies": {
-    "@soroban-resurrect/types": "workspace:*",
-    "@soroban-resurrect/errors": "workspace:*",
-    "@soroban-resurrect/footprint-parser": "workspace:*",
-    "@soroban-resurrect/rpc": "workspace:*",
-    "@soroban-resurrect/utils": "workspace:*",
-    "@soroban-resurrect/core": "workspace:*",
+    "@soroban-resurrect/types": "^0.1.0",
+    "@soroban-resurrect/errors": "^0.1.0",
+    "@soroban-resurrect/footprint-parser": "^0.1.0",
+    "@soroban-resurrect/rpc": "^0.1.0",
+    "@soroban-resurrect/utils": "^0.1.0",
+    "@soroban-resurrect/core": "^0.1.0",
     "@stellar/stellar-sdk": "^12.0.0"
   },
   "peerDependencies": {
@@ -102,6 +103,7 @@
     "@jazzer.js/core": "^2.1.0",
     "@vitest/coverage-v8": "^2.0.0",
     "fast-check": "^3.19.0",
+    "tsd": "^0.31.2",
     "tsup": "^8.3.0",
     "tsx": "^4.19.0",
     "vitest": "^2.0.0"
