@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef, useMemo } from 'react'
+import { useState, useCallback, useRef, useMemo, useContext } from 'react'
 import { TransactionBuilder, Transaction } from '@stellar/stellar-sdk'
 import { SorobanResurrect, SorobanResurrectError } from '@soroban-resurrect/sdk'
 import type { SorobanResurrectConfig, ExecutionResult, ArchivedKey } from '@soroban-resurrect/sdk'
@@ -10,6 +10,7 @@ import type {
   SigningStrategy,
   TransactionRecord,
 } from './types.js'
+import { SorobanResurrectContext } from './SorobanResurrectContext.js'
 
 const DEFAULT_HISTORY_STORAGE_KEY = 'soroban-resurrect:history'
 
@@ -98,9 +99,27 @@ async function hashTxXDR(txXDR: string): Promise<string> {
   return (hash >>> 0).toString(16).padStart(8, '0')
 }
 
+/**
+ * Derive a stable string key from the primitive connection-relevant config
+ * fields. Two renders that pass identical primitives (even via a fresh options
+ * object literal) produce the same key, so the client is not rebuilt.
+ */
+function deriveConfigKey(options: UseSorobanResurrectOptions<any>): string {
+  const rpcUrls = Array.isArray(options.rpcUrl) ? options.rpcUrl.join(',') : options.rpcUrl
+  return [
+    rpcUrls,
+    options.networkPassphrase,
+    options.allowHttp ?? '',
+    options.timeout ?? '',
+    options.pollIntervalMs ?? '',
+    options.maxPollAttempts ?? '',
+  ].join('|')
+}
+
 export function useSorobanResurrect<TSigner extends SigningStrategy = SigningStrategy>(
   options: UseSorobanResurrectOptions<TSigner>,
 ): UseSorobanResurrectReturn<TSigner> {
+  const contextClient = useContext(SorobanResurrectContext)
   const clientRef = useRef<SorobanResurrect | null>(null)
   const simulationCacheRef = useRef<Map<string, SimulationCacheEntry>>(new Map())
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -144,8 +163,24 @@ export function useSorobanResurrect<TSigner extends SigningStrategy = SigningStr
     [preFlightEnabled],
   )
 
-  // Memoize the config object so SorobanResurrect is only re-instantiated when
-  // connection-relevant options actually change.
+  // Stable key derived from primitive config fields. A fresh options object
+  // literal with identical primitives yields the same key, so the client is
+  // not torn down/rebuilt on every render.
+  const configKey = useMemo(
+    () => deriveConfigKey(options),
+    [
+      options.rpcUrl,
+      options.networkPassphrase,
+      options.allowHttp,
+      options.timeout,
+      options.pollIntervalMs,
+      options.maxPollAttempts,
+    ],
+  )
+
+  // Memoize the config object keyed by the stable config key so
+  // SorobanResurrect is only re-instantiated when connection-relevant
+  // primitives actually change.
   const config = useMemo<SorobanResurrectConfig>(
     () => ({
       rpcUrl: options.rpcUrl,
@@ -156,16 +191,19 @@ export function useSorobanResurrect<TSigner extends SigningStrategy = SigningStr
       maxPollAttempts: options.maxPollAttempts,
       onLog,
     }),
-    [options.rpcUrl, options.networkPassphrase, options.allowHttp, options.timeout, options.pollIntervalMs, options.maxPollAttempts, onLog],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [configKey, onLog],
   )
 
-  // Re-instantiate SorobanResurrect only when the memoized config changes
+  // Re-instantiate SorobanResurrect only when the memoized config changes.
+  // Prefer a client supplied via context when the provider is used.
   const getClient = useCallback((): SorobanResurrect => {
+    if (contextClient) return contextClient
     if (!clientRef.current) {
       clientRef.current = new SorobanResurrect(config)
     }
     return clientRef.current
-  }, [config])
+  }, [config, contextClient])
 
   // When config changes (rpcUrl, passphrase, etc.) we need a fresh client instance
   const prevConfigRef = useRef<SorobanResurrectConfig | null>(null)
@@ -228,194 +266,6 @@ export function useSorobanResurrect<TSigner extends SigningStrategy = SigningStr
     }
   }, [getClient, options])
 
-  const abort = useCallback(() => {
-    abortControllerRef.current?.abort()
-  }, [])
+  const abort = useCallback((
 
-  const executeWithRestore = useCallback(async (
-    txXDR: string,
-    signTransaction?: (xdr: string) => Promise<string>,
-    { forceRefresh = false }: { forceRefresh?: boolean } = {},
-  ): Promise<ExecutionResult> => {
-    const sign = signTransaction ?? resolveSigner(options.signingStrategy)
-    if (!sign) {
-      throw new Error(
-        'executeWithRestore requires a signTransaction argument or a signingStrategy option',
-      )
-    }
-
-    const startedAt = Date.now()
-    setIsExecuting(true)
-    setError(null)
-    setProgress({ ...IDLE_PROGRESS, status: 'checking' })
-
-    const client = getClient()
-    let listeners: Array<[string, (...args: any[]) => void]> = []
-    const addListener = (event: string, listener: (...args: any[]) => void) => {
-      listeners.push([event, listener])
-      ;(client as any).on(event, listener)
-    }
-    const removeListeners = () => {
-      for (const [event, listener] of listeners) (client as any).off(event, listener)
-      listeners = []
-    }
-
-    try {
-      const simulation = await getCachedSimulation(txXDR, forceRefresh)
-      throwIfAborted()
-
-      if (!simulation.needsRestoration) {
-        const signedXDR = await sign(txXDR)
-        const hash = computeHash(signedXDR, options.networkPassphrase)
-        const result: ExecutionResult = {
-          success: true,
-          originalTxHash: hash,
-          entriesRestored: 0,
-        }
-        setLastResult(result)
-        setProgress(p => ({ ...p, status: 'done' }))
-        options.preFlight?.onRestoreComplete?.(result)
-        addHistoryRecord({
-          id: generateId(),
-          originalTxHash: result.originalTxHash,
-          archivedKeys: [],
-          status: 'success',
-          timestamp: startedAt,
-          durationMs: Date.now() - startedAt,
-        })
-        return result
-      }
-
-      setNeedsRestore(true)
-      setArchivedKeys(simulation.archivedKeys)
-      options.preFlight?.onRestoreNeeded?.(simulation.archivedKeys)
-
-      setProgress({
-        status: 'restoring',
-        currentBatch: 0,
-        totalBatches: 0,
-        keysRestored: 0,
-        totalKeys: simulation.archivedKeys.length,
-      })
-
-      if (optimisticEnabled) {
-        setLastResult({
-          success: true,
-          entriesRestored: simulation.archivedKeys.length,
-        })
-        setIsOptimistic(true)
-      }
-
-      const batchStartTime = Date.now()
-      addListener('restore:batch:complete', (batchIndex: number, totalBatches: number) => {
-        const completed = batchIndex + 1
-        const elapsed = Date.now() - batchStartTime
-        const avgPerBatch = elapsed / completed
-        const remainingBatches = Math.max(totalBatches - completed, 0)
-        setProgress(p => ({
-          ...p,
-          currentBatch: completed,
-          totalBatches,
-          estimatedTimeRemainingMs: Math.round(avgPerBatch * remainingBatches),
-        }))
-      })
-      addListener('restore:complete', (result: { keysRestored: number }) => {
-        setProgress(p => ({ ...p, keysRestored: result.keysRestored }))
-      })
-      addListener('original:start', () => {
-        setProgress(p => ({ ...p, status: 'submitting', estimatedTimeRemainingMs: 0 }))
-      })
-
-      const accountID = parseSource(txXDR, options.networkPassphrase)
-      const restoreTx = await client.buildRestoreTransaction(
-        simulation.archivedKeys,
-        accountID,
-      )
-      throwIfAborted()
-
-      const result = await client.executeRestoreThenOriginal(
-        restoreTx.transactionXDR,
-        txXDR,
-        async (xdr: string) => {
-          const signed = await sign(xdr)
-          return signed
-        },
-      )
-      throwIfAborted()
-
-      setLastResult(result)
-      setIsOptimistic(false)
-      setProgress(p => ({ ...p, status: 'done', keysRestored: restoreTx.keysRestored }))
-      options.preFlight?.onRestoreComplete?.(result)
-      addHistoryRecord({
-        id: generateId(),
-        originalTxHash: result.originalTxHash,
-        restoreTxHash: result.restoreTxHash,
-        archivedKeys: simulation.archivedKeys,
-        status: result.success ? 'success' : 'failed',
-        error: result.error,
-        timestamp: startedAt,
-        durationMs: Date.now() - startedAt,
-      })
-      return result
-    } catch (err) {
-      const aborted = err instanceof SorobanResurrectError && err.code === 'ABORTED'
-      const message = err instanceof Error ? err.message : String(err)
-      setError(message)
-      setProgress(p => ({ ...p, status: 'error' }))
-
-      if (optimisticEnabled) {
-        setLastResult(prevLastResult)
-        setIsOptimistic(false)
-      }
-      if (aborted) {
-        setNeedsRestore(prevNeedsRestore)
-        setArchivedKeys(prevArchivedKeys)
-      }
-
-      const error = err instanceof Error ? err : new Error(message)
-      options.onError?.(error)
-      options.preFlight?.onError?.(error)
-      addHistoryRecord({
-        id: generateId(),
-        archivedKeys,
-        status: 'failed',
-        error: message,
-        timestamp: startedAt,
-        durationMs: Date.now() - startedAt,
-      })
-      if (err instanceof SorobanResurrectError) throw err
-      throw new SorobanResurrectError(message, 'ORIGINAL_TX_FAILED', err)
-    } finally {
-      removeListeners()
-      if (abortControllerRef.current === controller) abortControllerRef.current = null
-      setIsExecuting(false)
-    }
-  }, [getClient, options, addHistoryRecord, archivedKeys])
-
-  const reset = useCallback(() => {
-    setIsChecking(false)
-    setIsExecuting(false)
-    setLastResult(null)
-    setError(null)
-    setNeedsRestore(false)
-    setArchivedKeys([])
-    setIsOptimistic(false)
-    setProgress(IDLE_PROGRESS)
-  }, [])
-
-  return {
-    executeWithRestore,
-    checkTransaction,
-    isChecking,
-    isExecuting,
-    lastResult,
-    error,
-    needsRestore,
-    archivedKeys,
-    reset,
-    signer: options.signingStrategy,
-    history,
-    clearHistory,
-  }
-}
+/* … truncated 5950 chars — edit only what you need near the top … */
