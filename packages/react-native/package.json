@@ -45,7 +45,8 @@
     "build:watch": "tsup --watch",
     "prepublishOnly": "npm run build",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "benchmark": "node scripts/benchmark-crypto.cjs"
   },
   "peerDependencies": {
     "@soroban-resurrect/react": "^0.1.0",
