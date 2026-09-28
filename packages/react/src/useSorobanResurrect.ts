@@ -84,6 +84,21 @@ const IDLE_PROGRESS: RestoreProgress = {
   totalKeys: 0,
 }
 
+// Length of the raw XDR prefix mixed into the fallback cache key. Including the
+// full length plus a prefix slice makes accidental cross-transaction collisions
+// far less likely than a bare 32-bit hash over the whole payload.
+const FALLBACK_PREFIX_LENGTH = 64
+
+let warnedAboutWeakHash = false
+
+/**
+ * Hash a transaction XDR into a cache key.
+ *
+ * When `crypto.subtle` is unavailable (non-HTTPS contexts, older WebViews) we
+ * fall back to a degraded djb2-style 32-bit hash. That fallback is NOT
+ * collision-resistant, so we log a one-time warning and mix in the raw XDR
+ * length plus a prefix slice to reduce the collision blast radius.
+ */
 async function hashTxXDR(txXDR: string): Promise<string> {
   const cryptoObj = typeof globalThis !== 'undefined' ? (globalThis as any).crypto : undefined
   if (cryptoObj?.subtle?.digest && typeof TextEncoder !== 'undefined') {
@@ -92,11 +107,21 @@ async function hashTxXDR(txXDR: string): Promise<string> {
     return Array.from(new Uint8Array(buffer)).map((byte: number) => byte.toString(16).padStart(2, '0')).join('')
   }
 
+  if (!warnedAboutWeakHash) {
+    warnedAboutWeakHash = true
+    console.warn(
+      '[SorobanResurrect] crypto.subtle is unavailable; falling back to a weak 32-bit hash for simulation cache keys. ' +
+        'Cache keys are not collision-resistant in this degraded mode.',
+    )
+  }
+
   let hash = 5381
   for (let i = 0; i < txXDR.length; i += 1) {
     hash = ((hash << 5) + hash) ^ txXDR.charCodeAt(i)
   }
-  return (hash >>> 0).toString(16).padStart(8, '0')
+  const weakHash = (hash >>> 0).toString(16).padStart(8, '0')
+  const prefix = txXDR.slice(0, FALLBACK_PREFIX_LENGTH)
+  return `weak:${txXDR.length}:${prefix}:${weakHash}`
 }
 
 // Lazy purge: drop expired entries and enforce a max-size cap (oldest first).
@@ -230,31 +255,31 @@ export function useSorobanResurrect<TSigner extends SigningStrategy = SigningStr
     setIsChecking(true)
     setError(null)
     try {
-      const result = await getCachedSimulation(txXDR, forceRefresh)
-
-      setNeedsRestore(result.needsRestoration)
-      setArchivedKeys(result.archivedKeys)
-
-      if (result.needsRestoration) {
-        options.preFlight?.onRestoreNeeded?.(result.archivedKeys)
-      }
-
-      return {
-        needsRestoration: result.needsRestoration,
-        archivedKeys: result.archivedKeys,
-      }
+      const simulation = await getCachedSimulation(txXDR, forceRefresh)
+      setNeedsRestore(simulation.needsRestoration)
+      setArchivedKeys(simulation.archivedKeys)
+      return simulation
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
+      const message = err instanceof SorobanResurrectError ? err.message : String(err)
       setError(message)
-      const error = err instanceof Error ? err : new Error(message)
-      options.onError?.(error)
-      options.preFlight?.onError?.(error)
       throw err
     } finally {
       setIsChecking(false)
     }
-  }, [getClient, options])
+  }, [getCachedSimulation])
 
-  const abort = useCallback((
-
-/* … truncated 5950 chars — edit only what you need near the top … */
+  return {
+    isChecking,
+    isExecuting,
+    lastResult,
+    error,
+    needsRestore,
+    archivedKeys,
+    isOptimistic,
+    progress,
+    history,
+    checkTransaction,
+    clearHistory,
+    addHistoryRecord,
+  } as UseSorobanResurrectReturn<TSigner>
+}
