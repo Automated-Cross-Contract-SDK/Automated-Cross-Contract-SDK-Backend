@@ -12,6 +12,7 @@ import type {
 } from './types.js'
 
 const DEFAULT_HISTORY_STORAGE_KEY = 'soroban-resurrect:history'
+const DEFAULT_MAX_HISTORY_RECORDS = 50
 
 function resolveSigner(strategy: SigningStrategy | undefined): ((xdr: string) => Promise<string>) | undefined {
   if (!strategy) return undefined
@@ -158,20 +159,27 @@ export function useSorobanResurrect<TSigner extends SigningStrategy = SigningStr
   const historyStorageKey = options.persistHistory
     ? (typeof options.persistHistory === 'string' ? options.persistHistory : DEFAULT_HISTORY_STORAGE_KEY)
     : undefined
+  const maxHistoryRecords = options.maxHistoryRecords ?? DEFAULT_MAX_HISTORY_RECORDS
   const [history, setHistory] = useState<TransactionRecord[]>(() => loadHistory(historyStorageKey))
+
+  // Persist history as a side effect of state changes rather than inside the
+  // setState updater. This avoids double-writes under StrictMode and prevents
+  // concurrent updaters from clobbering each other's localStorage writes.
+  useEffect(() => {
+    saveHistory(historyStorageKey, history)
+  }, [historyStorageKey, history])
 
   const addHistoryRecord = useCallback((record: TransactionRecord) => {
     setHistory((prev) => {
       const next = [...prev, record]
-      saveHistory(historyStorageKey, next)
-      return next
+      // Enforce the cap by dropping the oldest records when exceeded.
+      return next.length > maxHistoryRecords ? next.slice(next.length - maxHistoryRecords) : next
     })
-  }, [historyStorageKey])
+  }, [maxHistoryRecords])
 
   const clearHistory = useCallback(() => {
     setHistory([])
-    saveHistory(historyStorageKey, [])
-  }, [historyStorageKey])
+  }, [])
 
   // Stabilize onLog so it doesn't trigger config re-memoization when options change
   const preFlightEnabled = options.preFlight?.enabled ?? true
@@ -216,70 +224,6 @@ export function useSorobanResurrect<TSigner extends SigningStrategy = SigningStr
     simulationCacheRef.current.clear()
   }
 
-  // Clear the simulation cache on unmount so entries don't outlive the component.
-  useEffect(() => {
-    const cache = simulationCacheRef.current
-    return () => {
-      cache.clear()
-    }
-  }, [])
+  // Clear the simulation cache on unmoun
 
-  const getCachedSimulation = useCallback(async (txXDR: string, forceRefresh = false) => {
-    const cacheKey = await hashTxXDR(txXDR)
-    const now = Date.now()
-    sweepCache(simulationCacheRef.current, now)
-    if (!forceRefresh) {
-      const cached = simulationCacheRef.current.get(cacheKey)
-      if (cached && cached.expiresAt > now) {
-        return cached.simulation
-      }
-    }
-
-    const client = getClient()
-    const simulation = await client.simulate(txXDR)
-    simulationCacheRef.current.set(cacheKey, {
-      simulation: {
-        needsRestoration: simulation.needsRestoration,
-        archivedKeys: simulation.archivedKeys,
-      },
-      expiresAt: Date.now() + CACHE_TTL_MS,
-    })
-    sweepCache(simulationCacheRef.current, Date.now())
-    return simulation
-  }, [getClient])
-
-  const checkTransaction = useCallback(async (
-    txXDR: string,
-    { forceRefresh = false }: { forceRefresh?: boolean } = {},
-  ) => {
-    setIsChecking(true)
-    setError(null)
-    try {
-      const simulation = await getCachedSimulation(txXDR, forceRefresh)
-      setNeedsRestore(simulation.needsRestoration)
-      setArchivedKeys(simulation.archivedKeys)
-      return simulation
-    } catch (err) {
-      const message = err instanceof SorobanResurrectError ? err.message : String(err)
-      setError(message)
-      throw err
-    } finally {
-      setIsChecking(false)
-    }
-  }, [getCachedSimulation])
-
-  return {
-    isChecking,
-    isExecuting,
-    lastResult,
-    error,
-    needsRestore,
-    archivedKeys,
-    isOptimistic,
-    progress,
-    history,
-    checkTransaction,
-    clearHistory,
-    addHistoryRecord,
-  } as UseSorobanResurrectReturn<TSigner>
-}
+/* … truncated 1829 chars — edit only what you need near the top … */
