@@ -191,9 +191,10 @@ export interface ConcurrentRestoreResult {
 
 export interface RpcEndpointHealth {
   url: string
-  healthy: boolean
-  lastCheck: number
-  latencyMs: number
+  isHealthy: boolean
+  consecutiveFailures: number
+  consecutiveSuccesses: number
+  lastChecked: number | null
 }
 
 export interface FeeBumpMetadata {
@@ -315,6 +316,8 @@ export interface RpcFailoverConfig {
   maxFailuresBeforeFallback: number
   /** How many consecutive successes before restoring a previously unhealthy endpoint */
   successThresholdToRestore: number
+  /** How long (ms) to prefer the last-known-healthy endpoint before rotating (0 = disabled) */
+  stickyDurationMs?: number
 }
 
 export interface RetryPolicy {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { SimulationCache } from '../src/simulation-cache.js'
+import { SimulationCache } from '@soroban-resurrect/rpc'
 import { SimulationCheckResult } from '../src/types.js'
 
 describe('SimulationCache', () => {
