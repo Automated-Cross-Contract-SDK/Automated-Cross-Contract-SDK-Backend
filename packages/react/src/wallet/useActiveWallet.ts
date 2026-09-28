@@ -1,7 +1,8 @@
 'use client'
 
-import { useContext } from 'react'
+import { useContext, useEffect } from 'react'
 import { WalletContext } from './WalletContext.js'
+import { DEFAULT_STORAGE_KEY, loadWalletSession } from './storage.js'
 import type { WalletAdapter } from './types.js'
 
 export interface UseActiveWalletReturn {
@@ -19,6 +20,22 @@ export interface UseActiveWalletReturn {
 export function useActiveWallet(): UseActiveWalletReturn {
   const ctx = useContext(WalletContext)
   if (!ctx) throw new Error('useActiveWallet must be used within a WalletProvider')
+
+  const { syncFromStorage } = ctx
+
+  // Keep the active wallet in sync across tabs: when another tab writes the
+  // persisted session, re-read it and update this tab's state.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== DEFAULT_STORAGE_KEY) return
+      syncFromStorage(loadWalletSession())
+    }
+
+    window.addEventListener('storage', handleStorage)
+    return () => window.removeEventListener('storage', handleStorage)
+  }, [syncFromStorage])
 
   return {
     wallet: ctx.activeWallet,
