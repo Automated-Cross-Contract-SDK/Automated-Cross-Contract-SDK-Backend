@@ -103,7 +103,9 @@ For experimentation and rapid prototyping, use the interactive REPL with pre-imp
 npm run repl
 ```
 
-This launches Node.js with the `--experimental-repl-await` flag, giving you access to:
+This launches Node.js with the `--experimental-repl-await` flag and loads the
+TypeScript entrypoint through the ESM `tsx` loader (`--import tsx`), giving you
+access to:
 
 - `SorobanResurrect` — main SDK class
 - `extractKeysFromFootprint` — extract keys from transaction footprints

@@ -52,7 +52,7 @@
     "test:fuzz": "jazzer tests/fuzz/xdr-parsing.fuzz.ts --fuzz_function=fuzz -- -max_total_time=60",
     "typecheck": "tsc --noEmit",
     "test:types": "tsd --typings dist/index.d.ts --files test-d/index.test-d.ts",
-    "repl": "node --experimental-repl-await --require tsx/cjs ./src/repl.ts"
+    "repl": "node --experimental-repl-await --import tsx ./src/repl.ts"
   },
   "dependencies": {
     "@soroban-resurrect/types": "^0.1.0",
