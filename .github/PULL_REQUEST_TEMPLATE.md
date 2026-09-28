@@ -12,8 +12,7 @@ Closes #(issue)
 
 ## Testing
 
-- [ ] SDK tests pass (`npm run test -w packages/sdk`)
-- [ ] React tests pass (`npm run test -w packages/react`)
+- [ ] All package tests pass (`npm run test`)
 - [ ] Build succeeds (`npm run build`)
 
 ## Checklist

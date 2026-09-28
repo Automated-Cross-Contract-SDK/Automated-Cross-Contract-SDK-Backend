@@ -33,6 +33,7 @@ jobs:
 
       - run: npm run test
 
+      - run: npm run lint
       - run: npx tsc --noEmit -p packages/sdk/tsconfig.json
       - run: npx tsc --noEmit -p packages/react/tsconfig.json
 
