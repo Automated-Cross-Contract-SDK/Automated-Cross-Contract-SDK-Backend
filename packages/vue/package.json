@@ -23,9 +23,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsup",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "build": "tsup"
   },
   "peerDependencies": {
     "@soroban-resurrect/sdk": "^0.1.0",
