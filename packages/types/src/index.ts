@@ -72,7 +72,7 @@ export interface SorobanResurrectConfig {
    * Defaults to the Stellar SDK default when not set.
    */
   timeout?: number
-  onLog?: (level: 'info' | 'warn' | 'error', message: string, data?: unknown) => void
+  onLog?: (level: 'debug' | 'info' | 'warn' | 'error', message: string, data?: unknown) => void
   /**
    * When `true`, the SDK attempts to subscribe to transaction status updates
    * via WebSocket instead of polling with `getTransaction`. If the server does

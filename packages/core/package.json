@@ -40,6 +40,8 @@
     "build": "tsup",
     "build:watch": "tsup --watch",
     "prepublishOnly": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -52,7 +54,8 @@
   },
   "devDependencies": {
     "tsup": "^8.3.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
   },
   "publishConfig": {
     "access": "public",
