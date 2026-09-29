@@ -72,6 +72,12 @@ export interface SorobanResurrectConfig {
    * Defaults to the Stellar SDK default when not set.
    */
   timeout?: number
+  /**
+   * Validity window, in seconds, applied to restore/original transactions via
+   * `TransactionBuilder.setTimeout`. Soroban RPC expects an explicit validity
+   * window rather than `[0, 0]` time bounds. Defaults to `60`.
+   */
+  txValiditySeconds?: number
   onLog?: (level: 'info' | 'warn' | 'error', message: string, data?: unknown) => void
   /**
    * When `true`, the SDK attempts to subscribe to transaction status updates
@@ -233,162 +239,4 @@ export interface FailedRestoreState {
   /** The source account that was used for the original restore attempt. */
   sourceAccountID: string
   /**
-   * Batches that were not successfully submitted (status !== 'success').
-   * These are the exact `RestoreBatchResult` objects that need to be retried.
-   */
-  failedBatches: RestoreBatchResult[]
-  /**
-   * Keys that remain unrestored — flattened from all failed batches.
-   * Useful for reporting and logging purposes.
-   */
-  failedKeys: ArchivedKey[]
-  /** Zero-based index of the first batch that failed. */
-  failedBatchIndex: number
-  /** Number of entries that were successfully restored before the failure. */
-  partialEntriesRestored: number
-}
-
-export interface PreFlightConfig {
-  enabled: boolean
-  onRestoreNeeded?: (keys: ArchivedKey[]) => void
-  onRestoreComplete?: (result: ExecutionResult) => void
-  onError?: (error: Error) => void
-}
-
-/**
- * Extra context attached to every SorobanResurrectError for easier debugging.
- */
-export interface SorobanResurrectErrorContext {
-  /** The RPC endpoint that was being used when the error occurred. */
-  rpcUrl?: string
-  /** The transaction hash involved in the failing operation, when available. */
-  txHash?: string
-  /** Archived ledger-key details that triggered the failure, when available. */
-  archivedKeys?: Array<{ keyBase64: string; keyType: string; contractId?: string }>
-}
-
-/**
- * Event map for all transaction lifecycle events emitted by SorobanResurrect.
- */
-export interface SorobanResurrectEvents {
-  /** Fired when key restoration begins, before any batch is submitted. */
-  'restore:start': (keys: ArchivedKey[]) => void
-  /** Fired after each individual restore batch transaction is confirmed. */
-  'restore:batch:complete': (batchIndex: number, totalBatches: number) => void
-  /** Fired once all restore batches have been confirmed successfully. */
-  'restore:complete': (result: RestoreTransactionResult) => void
-  /** Fired just before the original (user) transaction is submitted. */
-  'original:start': () => void
-  /** Fired once the original transaction is confirmed on-chain. */
-  'original:complete': (hash: string) => void
-  /** Fired whenever a SorobanResurrectError is thrown during execution. */
-  'error': (error: SorobanResurrectErrorBase) => void
-}
-
-/**
- * Base error class for SorobanResurrect - will be extended in errors package
- */
-export interface SorobanResurrectErrorBase {
-  message: string
-  code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR' | 'ABORTED'
-  cause?: unknown
-  rpcUrl?: string
-  txHash?: string
-  archivedKeys?: Array<{ keyBase64: string; keyType: string; contractId?: string }>
-}
-
-// Configuration interfaces for cache and retry policies
-export interface SimulationCacheConfig {
-  enabled: boolean
-  maxSize: number
-  ttlMs: number
-}
-
-export interface FootprintCacheConfig {
-  /** Maximum number of cached entries (default: 500). */
-  maxSize: number
-}
-
-export interface RpcFailoverConfig {
-  /** How often (ms) to run background health checks */
-  healthCheckIntervalMs: number
-  /** How many consecutive failures before marking an endpoint unhealthy */
-  maxFailuresBeforeFallback: number
-  /** How many consecutive successes before restoring a previously unhealthy endpoint */
-  successThresholdToRestore: number
-  /** How long (ms) to prefer the last-known-healthy endpoint before rotating (0 = disabled) */
-  stickyDurationMs?: number
-}
-
-export interface RetryPolicy {
-  /** Maximum number of retry attempts */
-  maxRetries: number
-
-  /**
-   * Determine if an error should be retried
-   * @param error The error that occurred
-   * @param attempt The attempt number (1-indexed)
-   * @returns true if the operation should be retried, false otherwise
-   */
-  shouldRetry(error: SorobanResurrectErrorBase, attempt: number): boolean
-
-  /**
-   * Get the delay in milliseconds before the next retry attempt
-   * @param attempt The attempt number (1-indexed)
-   * @returns Delay in milliseconds
-   */
-  getDelay(attempt: number): number
-
-  /**
-   * Reset any internal state (used by CircuitBreaker)
-   */
-  reset?(): void
-}
-
-export interface CacheStatistics {
-  hits: number
-  misses: number
-  evictions: number
-  size: number
-  hitRate: number
-}
-
-export interface FootprintCacheStatistics {
-  hits: number
-  misses: number
-  size: number
-  hitRate: number
-}
-
-export interface SimulationCacheConfig {
-  enabled: boolean
-  maxSize: number
-  ttlMs: number
-}
-
-export interface SimulationCacheStatistics {
-  hits: number
-  misses: number
-  evictions: number
-  size: number
-  hitRate: number
-}
-
-// Version negotiation types
-export interface ProtocolSupport {
-  version: string
-  supported: boolean
-}
-
-export interface ServerVersionInfo {
-  version: string
-  protocolVersion?: string
-  capabilities?: string[]
-}
-
-export interface XdrEncodingOptions {
-  /** Force base64 encoding instead of hex */
-  base64?: boolean
-  /** Include XDR type information */
-  includeType?: boolean
-}
+   * Batches that were not successfully su
