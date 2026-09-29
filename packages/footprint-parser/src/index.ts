@@ -229,41 +229,74 @@ export function encodeLedgerKey(key: xdr.LedgerKey): string {
 }
 
 /**
- * Parse a transaction XDR and extract footprint keys using the full-object
- * approach (loads entire XDR into memory). Suitable for smaller transactions.
- *
- * For large transactions (>1MB), prefer `extractFootprintFromTransactionStreaming`
- * which processes the XDR incrementally.
+ * Parse a transaction XDR and extract footprint keys using the full
+ * stellar-sdk decoder. This materializes the entire `TransactionEnvelope`
+ * (all operations, signatures, and Soroban data) before reading the
+ * footprint. Use this when you need the full envelope anyway; for
+ * footprint-only extraction prefer `extractFootprintShallow`.
  */
-export function extractFootprintFromTransaction(txXDR: string, networkPassphrase: string): FootprintKeys | null {
+export function extractFootprintFromTransaction(xdrString: string): FootprintKeys | null {
   try {
-    const tx = TransactionBuilder.fromXDR(txXDR, networkPassphrase)
-    if (!('sorobanData' in tx)) return null
-    const sorobanData = (tx as any).sorobanData as xdr.SorobanTransactionData | undefined
-    if (!sorobanData) return null
-    const resources = sorobanData.resources()
-    const footprint = resources.footprint()
-    if (!footprint) return null
-    return extractKeysFromFootprint(footprint)
+    const envelope = xdr.TransactionEnvelope.fromXDR(xdrString, 'base64')
+    return extractFootprintFromEnvelope(envelope)
   } catch {
     return null
   }
 }
 
-// ---------------------------------------------------------------------------
-// Incremental / streaming XDR parsing (Task 2)
-// ---------------------------------------------------------------------------
+/**
+ * Extract footprint keys from an already-decoded `TransactionEnvelope`.
+ * Shared by both the full and shallow extraction paths.
+ */
+export function extractFootprintFromEnvelope(
+  envelope: xdr.TransactionEnvelope,
+): FootprintKeys | null {
+  try {
+    const tx = envelope.v1().tx()
+    const ext = tx.ext()
+    if (ext.switch().value !== 1) return null
+    const sorobanData = ext.sorobanData()
+    if (!sorobanData) return null
+    return extractKeysFromFootprint(sorobanData.resources().footprint())
+  } catch {
+    return null
+  }
+}
 
 /**
- * Streaming footprint parser that processes large Soroban transaction XDR
- * incrementally rather than loading the entire buffer into memory.
+ * Extract footprint keys from a base64-encoded transaction XDR.
  *
- * Motivation: Some Soroban transactions can be several MB in size. Loading
- * the entire XDR into a single buffer can cause high memory usage. This
- * function decodes only the envelope wrapper + soroban data portion and
- * discards unneeded parsed entries (signatures, operations, etc.).
+ * NOTE: This is **not** a streaming/incremental parser. It decodes the full
+ * `TransactionEnvelope` via stellar-sdk (materializing all operations and
+ * signatures) and then reads the Soroban footprint. The name is kept for
+ * backwards compatibility; new code should call `extractFootprintShallow`
+ * to make the non-streaming behavior explicit.
  *
- * Target: <50MB peak memory for any transaction size.
+ * @deprecated Use `extractFootprintShallow` — this function is a full parse,
+ * not a streaming one.
+ */
+export function extractFootprintFromTransactionStreaming(
+  xdrString: string,
+): FootprintKeys | null {
+  return extractFootprintShallow(xdrString)
+}
+
+/**
+ * Extract footprint keys from a base64-encoded transaction XDR without
+ * building a `Transaction` object.
  *
- * The function:
- *  1. Decode
+ * This is a **shallow** parse: it decodes the full `TransactionEnvelope`
+ * (stellar-sdk materializes all operations and signatures) and then reads
+ * only the Soroban footprint. It is cheaper than the full `Transaction`
+ * path because it skips `TransactionBuilder`/`Transaction` construction,
+ * but it is **not** incremental and does not reduce peak memory below a
+ * full envelope decode.
+ */
+export function extractFootprintShallow(xdrString: string): FootprintKeys | null {
+  try {
+    const envelope = xdr.TransactionEnvelope.fromXDR(xdrString, 'base64')
+    return extractFootprintFromEnvelope(envelope)
+  } catch {
+    return null
+  }
+}
