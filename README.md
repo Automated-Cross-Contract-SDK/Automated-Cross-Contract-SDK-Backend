@@ -131,3 +131,6 @@ npm run test -w packages/sdk --if-present # integration tests via vitest config
 
 <!-- handsoff-issue-408 -->
 - #408: [core] Failover wiring is dead code: getServer() never consults failoverManager, recordSuccess/recordFailure never called
+
+<!-- handsoff-issue-409 -->
+- #409: [types] SimulationCacheConfig declared twice — duplicate interface in packages/types/src/index.ts
