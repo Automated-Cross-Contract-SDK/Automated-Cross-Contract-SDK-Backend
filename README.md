@@ -131,3 +131,6 @@ npm run test -w packages/sdk --if-present # integration tests via vitest config
 
 <!-- handsoff-issue-435 -->
 - #435: [core] Split soroban-resurrect.ts (1766 lines) into focused modules
+
+<!-- handsoff-issue-436 -->
+- #436: [core] Events: SorobanResurrectEvents map exists but event names are stringly-typed at emit sites — no compile-time safety
