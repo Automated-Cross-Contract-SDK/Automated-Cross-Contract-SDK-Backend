@@ -10,11 +10,43 @@ Soroban archives "Persistent" data once its TTL rent expires. If a front-end or 
 
 ## Packages
 
-| Package | Description |
-|---------|-------------|
-| `@soroban-resurrect/sdk` | Core SDK — intercepts simulations, detects archived keys, builds restore transactions |
-| `@soroban-resurrect/mock-rpc` | Lightweight mock RPC server — deterministic unit testing, fixture recording/replay, network simulation |
-| `@soroban-resurrect/react` | React hooks & context provider for dApp integration |
+The monorepo ships a modular set of packages. `@soroban-resurrect/sdk` is now a compatibility façade over the modular packages — new code should depend on the focused packages directly, and existing code can migrate via `@soroban-resurrect/compat`.
+
+### Core
+
+| Package | Description | Status |
+|---------|-------------|--------|
+| `@soroban-resurrect/sdk` | Compatibility façade — intercepts simulations, detects archived keys, builds restore transactions | Stable |
+| `@soroban-resurrect/core` | Framework-agnostic restoration engine (detection + restore transaction building) | Stable |
+| `@soroban-resurrect/types` | Shared TypeScript types for the restoration pipeline | Stable |
+| `@soroban-resurrect/errors` | Typed error classes and error codes | Stable |
+| `@soroban-resurrect/rpc` | Soroban RPC client wrapper used across packages | Stable |
+| `@soroban-resurrect/utils` | Shared helpers (XDR, encoding, TTL math) | Stable |
+| `@soroban-resurrect/footprint-parser` | Parses transaction footprints to find archived ledger keys | Stable |
+| `@soroban-resurrect/footprint-parser-wasm` | WASM-accelerated footprint parser | Experimental |
+| `@soroban-resurrect/compat` | Migration shim for projects moving off the monolithic SDK | Stable |
+| `@soroban-resurrect/wallet-adapters` | Adapters for common Stellar wallets | Experimental |
+
+### Framework bindings
+
+| Package | Description | Status |
+|---------|-------------|--------|
+| `@soroban-resurrect/react` | React hooks & context provider for dApp integration | Stable |
+| `@soroban-resurrect/next` | Next.js integration (client/server helpers) | Stable |
+| `@soroban-resurrect/react-native` | React Native bindings | Experimental |
+| `@soroban-resurrect/angular` | Angular service & module bindings | Experimental |
+| `@soroban-resurrect/vue` | Vue composables & plugin | Experimental |
+| `@soroban-resurrect/svelte` | Svelte stores & helpers | Experimental |
+
+### Tooling
+
+| Package | Description | Status |
+|---------|-------------|--------|
+| `@soroban-resurrect/mock-rpc` | Lightweight mock RPC server — deterministic unit testing, fixture recording/replay, network simulation | Stable |
+| `@soroban-resurrect/cli` | Command-line tooling for restoration workflows | Experimental |
+| `@soroban-resurrect/devtools-extension` | Browser DevTools extension for inspecting restoration activity | Experimental |
+| `@soroban-resurrect/vscode-extension` | VS Code extension for Soroban-Resurrect projects | Experimental |
+| `@soroban-resurrect/example` | Example dApp demonstrating end-to-end restoration | Experimental |
 
 [![CI](https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend/actions/workflows/ci.yml/badge.svg)](https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend/actions/workflows/ci.yml)
 [![Integration Tests](https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend/actions/workflows/ci.yml/badge.svg?event=schedule)](https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend/actions/workflows/ci.yml)
@@ -74,6 +106,15 @@ if (needsRestoration) {
     signTransaction,
   )
 }
+```
+
+## Migrating from the monolithic SDK
+
+`@soroban-resurrect/sdk` remains available as a compatibility façade, but new projects should depend on the focused packages (`core`, `rpc`, `footprint-parser`, framework bindings). Existing projects can adopt the modular packages incrementally via `@soroban-resurrect/compat`, which re-exports the legacy surface while delegating to the modular implementation.
+
+```ts
+// Legacy import — still works, now backed by the modular packages
+import { SorobanResurrect } from '@soroban-resurrect/compat'
 ```
 
 ## Architecture
