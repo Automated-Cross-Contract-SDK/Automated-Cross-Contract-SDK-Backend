@@ -7,6 +7,12 @@ on:
       - 'packages/sdk/src/**'
       - 'packages/sdk/scripts/**'
       - 'packages/footprint-parser-wasm/**'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/sdk/src/**'
+      - 'packages/sdk/scripts/**'
+      - 'packages/footprint-parser-wasm/**'
 
 concurrency:
   group: benchmark-${{ github.ref }}
@@ -30,31 +36,43 @@ jobs:
 
       - run: npm run build
 
-      - name: Fetch base branch for comparison
-        run: |
-          git fetch origin ${{ github.base.ref }}
-          git checkout origin/${{ github.base.ref }}
-          cd packages/sdk
-          npx tsx scripts/benchmark.ts
-          cp benchmark-results.json benchmark-results-base.json
+      # On main, run benchmarks and store the result as the baseline artifact.
+      # The baseline is kept as a workflow artifact (not a committed JSON file)
+      # so it never causes merge conflicts.
+      - name: Run benchmarks (baseline)
+        if: github.event_name == 'push'
+        working-directory: packages/sdk
+        run: npx tsx scripts/benchmark.ts
 
-      - name: Checkout PR branch
-        run: |
-          git checkout ${{ github.event.pull_request.head.sha }}
+      - name: Upload baseline artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-baseline
+          path: packages/sdk/benchmark-results.json
+          retention-days: 90
 
-      - name: Install dependencies
-        run: npm ci
-
-      - run: npm run build
+      # On PRs, download the latest baseline from main and compare against it.
+      - name: Download baseline artifact
+        if: github.event_name == 'pull_request'
+        uses: dawidd6/action-download-artifact@v6
+        continue-on-error: true
+        with:
+          workflow: benchmark.yml
+          branch: main
+          name: benchmark-baseline
+          path: packages/sdk
+          search_artifacts: true
 
       - name: Run benchmarks & compare
         id: benchmarks
+        if: github.event_name == 'pull_request'
         working-directory: packages/sdk
         run: npx tsx scripts/benchmark.ts --compare
 
       # Comment benchmark results on the PR
       - name: Comment benchmark results on PR
-        if: always()
+        if: github.event_name == 'pull_request' && always()
         uses: actions/github-script@v7
         with:
           script: |
@@ -123,7 +141,7 @@ jobs:
 
       # Fail CI if performance regressions are detected
       - name: Check for regressions
-        if: steps.benchmarks.outcome == 'failure'
+        if: github.event_name == 'pull_request' && steps.benchmarks.outcome == 'failure'
         run: |
           echo "❌ Performance regression detected! See benchmark comment above."
           exit 1
