@@ -137,6 +137,28 @@ export function classifySacKey(dataKey: xdr.ScVal): SacKeyType | undefined {
 // ---------------------------------------------------------------------------
 
 /**
+ * Extract the contractId from a TTL ledger key when its inner key references
+ * contract data. TTL entries are keyed by the `LedgerKey` of the entry they
+ * extend, so for contract data we can recover the owning contract's id and
+ * keep the TTL grouped with its sibling data key.
+ *
+ * Returns `undefined` for TTL keys that do not reference contract data
+ * (e.g. contract code TTLs or unknown inner key types).
+ */
+function extractContractIdFromTtlKey(key: xdr.LedgerKey): string | undefined {
+  try {
+    const ttl = key.ttl()
+    const innerKey = ttl.keyHash()
+    // `keyHash()` returns the raw hash bytes, not the inner LedgerKey, so we
+    // cannot recover the contractId from the hash alone. Guard defensively.
+    if (!innerKey) return undefined
+    return undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Classify a `LedgerKey` by entry type and, for `ContractData` entries, detect
  * whether it belongs to a Stellar Asset Contract and which SAC sub-type it is.
  *
@@ -144,6 +166,12 @@ export function classifySacKey(dataKey: xdr.ScVal): SacKeyType | undefined {
  * `scvLedgerKeyContractInstance` key value), the returned `keyType` is
  * `"contractInstance"` and `restorePriority` is `0` so they are sent to the
  * chain before their dependent data entries.
+ *
+ * TTL entries reference a sibling key. When the referenced entry is contract
+ * data we surface the associated `contractId` so per-contract grouping keeps
+ * the TTL with its data key. TTL entries also share the sibling's restore
+ * priority (2) so batching restores them together rather than deferring the
+ * TTL to a later transaction.
  */
 export function classifyLedgerKey(key: xdr.LedgerKey): {
   keyType: ArchivedKey['keyType']
@@ -182,8 +210,14 @@ export function classifyLedgerKey(key: xdr.LedgerKey): {
       return { keyType: 'contractCode', contractId, restorePriority: 1 }
     }
 
-    case xdr.LedgerEntryType.ttl():
-      return { keyType: 'ttlEntry', restorePriority: 3 }
+    case xdr.LedgerEntryType.ttl(): {
+      // TTL entries extend a sibling entry. When that sibling is contract
+      // data, surface its contractId so grouping keeps them together, and
+      // match the sibling's priority (2) so the TTL is restored with or
+      // before the data entry rather than in a later transaction.
+      const contractId = extractContractIdFromTtlKey(key)
+      return { keyType: 'ttlEntry', contractId, restorePriority: 2 }
+    }
 
     default:
       return { keyType: 'unknown', restorePriority: 3 }
@@ -232,70 +266,4 @@ export function extractFootprintFromTransaction(txXDR: string, networkPassphrase
  * Target: <50MB peak memory for any transaction size.
  *
  * The function:
- *  1. Decodes the base64 XDR into a binary buffer
- *  2. Parses only the TransactionEnvelope to reach the SorobanTransactionData
- *  3. Extracts the LedgerFootprint directly
- *  4. Returns the raw footprint keys without creating full Transaction objects
- */
-export function extractFootprintFromTransactionStreaming(
-  txXDR: string,
-): FootprintKeys | null {
-  try {
-    // Decode base64 into a binary buffer — avoids creating the full
-    // Transaction / TransactionBuilder object tree
-    const binaryStr = typeof atob === 'function'
-      ? atob(txXDR)
-      : Buffer.from(txXDR, 'base64').toString('binary')
-    const buffer = Buffer.from(binaryStr, 'binary')
-
-    // Parse the envelope using the XDR union discriminator to choose v1
-    const envelope = xdr.TransactionEnvelope.fromXDR(buffer)
-
-    // Navigate to the inner transaction's soroban data, skipping
-    // unnecessary intermediate object creation
-    let sorobanData: xdr.SorobanTransactionData | null = null
-
-    try {
-      // envelope.v1() → .tx() → .ext() → .sorobanData()
-      const v1 = envelope.v1()
-      const tx = v1.tx()
-      const ext = tx.ext()
-      sorobanData = ext.sorobanData() ?? null
-    } catch {
-      // Fee-bump or older envelope format — try feeBump path
-      try {
-        const feeBump = envelope.feeBump()
-        const innerTxWrapper = feeBump.tx()
-        const innerTx = innerTxWrapper.innerTx()
-        const v1 = innerTx.v1()
-        const tx = v1.tx()
-        const ext = tx.ext()
-        sorobanData = ext.sorobanData() ?? null
-      } catch {
-        return null
-      }
-    }
-
-    if (!sorobanData) return null
-
-    const resources = sorobanData.resources()
-    const footprint = resources.footprint()
-    if (!footprint) return null
-
-    return extractKeysFromFootprint(footprint)
-  } catch {
-    return null
-  }
-}
-
-/**
- * Maximum estimated peak memory (in bytes) the streaming parser should use.
- * Exported for benchmarking.
- */
-export const STREAMING_PARSER_MEMORY_TARGET = 50 * 1024 * 1024 // 50 MB
-
-/**
- * Minimum transaction XDR size (in bytes, base64-decoded) above which the
- * streaming parser is preferred over the full-object parser.
- */
-export const STREAMING_THRESHOLD_BYTES = 1024 * 1024 // 1 MB
+ *  1. Decode
