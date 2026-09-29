@@ -126,3 +126,8 @@ npm run test -w packages/sdk --if-present # integration tests via vitest config
 - Dependencies: run `npm audit` and `npm audit fix` regularly. Dependabot is enabled (weekly) to keep deps up-to-date.
 
 - CI: ensure CI uses Node 18+ and consider adding `npm audit` to the CI pipeline or a scheduled job.
+
+## Handsoff notes
+
+<!-- handsoff-issue-408 -->
+- #408: [core] Failover wiring is dead code: getServer() never consults failoverManager, recordSuccess/recordFailure never called
