@@ -11,6 +11,7 @@
 import type {
   SorobanWalletAdapter,
   SignTransactionOptions,
+  WalletCapabilities,
   WalletConnectionResult,
   WalletConnectionStatus,
   ConnectionStatusListener,
@@ -49,6 +50,8 @@ function writeStorage(key: string, value: string | null): void {
 export class FreighterAdapter implements SorobanWalletAdapter {
   readonly id = 'freighter'
   readonly name = 'Freighter'
+  readonly priority = 10
+  readonly capabilities: WalletCapabilities = { supportsSoroban: true, supportsSignedTxNote: false }
 
   private address: string | null = null
   private connectionListeners = new Set<ConnectionStatusListener>()

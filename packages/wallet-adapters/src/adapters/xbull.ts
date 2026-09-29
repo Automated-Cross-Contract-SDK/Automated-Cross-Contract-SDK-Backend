@@ -7,7 +7,12 @@
  * https://docs.xbull.app
  */
 
-import type { SorobanWalletAdapter, SignTransactionOptions, WalletConnectionResult } from '../types.js'
+import type {
+  SorobanWalletAdapter,
+  SignTransactionOptions,
+  WalletCapabilities,
+  WalletConnectionResult,
+} from '../types.js'
 import { WalletAdapterError, mapCommonWalletError } from '../types.js'
 
 /** Configuration for xBull adapter. */
@@ -42,6 +47,8 @@ function getXBullV1(): XBullSdkV1 | undefined {
 export class XBullAdapter implements SorobanWalletAdapter {
   readonly id = 'xbull'
   readonly name = 'xBull'
+  readonly priority = 20
+  readonly capabilities: WalletCapabilities = { supportsSoroban: true, supportsSignedTxNote: false }
 
   private publicKey: string | null = null
   private useV2: boolean

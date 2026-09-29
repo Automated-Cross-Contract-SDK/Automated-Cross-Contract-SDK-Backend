@@ -31,11 +31,57 @@ export interface WalletNetworkChange {
 export type ConnectionStatusListener = (status: WalletConnectionStatus, result?: WalletConnectionResult) => void
 export type NetworkChangeListener = (change: WalletNetworkChange) => void
 
+/** Capabilities a wallet advertises so dApps can filter before connecting. */
+export interface WalletCapabilities {
+  /** Whether the wallet can sign Soroban (smart-contract) transactions. */
+  supportsSoroban: boolean
+  /** Whether the wallet can return a human-readable note alongside a signed transaction. */
+  supportsSignedTxNote: boolean
+}
+
+/**
+ * Conservative fallback for adapters that do not declare capabilities.
+ * `supportsSoroban` defaults to `false` so a dApp that needs Soroban support
+ * never silently picks an adapter that has not opted in.
+ */
+export const DEFAULT_WALLET_CAPABILITIES: WalletCapabilities = {
+  supportsSoroban: false,
+  supportsSignedTxNote: false,
+}
+
+/**
+ * Fallback detection priority for adapters that do not declare one. Built-in
+ * adapters use lower values (10-60) and sort ahead of anything unlisted.
+ */
+export const DEFAULT_ADAPTER_PRIORITY = 1000
+
+/** Resolved adapter metadata used for deterministic detection and UI listing. */
+export interface WalletDescriptor {
+  id: string
+  name: string
+  icon?: string
+  /** Stable ordering key: lower is offered first. */
+  priority: number
+  /** Capabilities merged over `DEFAULT_WALLET_CAPABILITIES`. */
+  capabilities: WalletCapabilities
+}
+
 /** Adapter contract implemented by each supported wallet integration. */
 export interface SorobanWalletAdapter {
   readonly id: string
   readonly name: string
   readonly icon?: string
+  /**
+   * Stable detection priority. Lower values are detected and offered first;
+   * defaults to `DEFAULT_ADAPTER_PRIORITY` when omitted.
+   */
+  readonly priority?: number
+  /**
+   * Features this adapter supports, surfaced on `WalletDescriptor` so dApps can
+   * filter (e.g. only wallets that `supportsSoroban`). Merged over
+   * `DEFAULT_WALLET_CAPABILITIES`.
+   */
+  readonly capabilities?: Partial<WalletCapabilities>
   /** Whether this wallet's runtime (extension, bridge, hardware transport) is detectable in the current environment. */
   isAvailable(): Promise<boolean>
   connect(): Promise<WalletConnectionResult>

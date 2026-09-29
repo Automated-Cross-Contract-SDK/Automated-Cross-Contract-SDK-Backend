@@ -8,7 +8,12 @@
  * https://albedo.link/docs
  */
 
-import type { SorobanWalletAdapter, SignTransactionOptions, WalletConnectionResult } from '../types.js'
+import type {
+  SorobanWalletAdapter,
+  SignTransactionOptions,
+  WalletCapabilities,
+  WalletConnectionResult,
+} from '../types.js'
 import { mapCommonWalletError, loadOptionalWalletDependency } from '../types.js'
 
 const MODULE_NAME = 'albedo-wallet-sdk'
@@ -44,6 +49,8 @@ function toAlbedoNetwork(networkPassphrase?: string): 'testnet' | 'public' | und
 export class AlbedoAdapter implements SorobanWalletAdapter {
   readonly id = 'albedo'
   readonly name = 'Albedo'
+  readonly priority = 30
+  readonly capabilities: WalletCapabilities = { supportsSoroban: true, supportsSignedTxNote: false }
 
   private publicKey: string | null = null
   private client: AlbedoClient | null = null

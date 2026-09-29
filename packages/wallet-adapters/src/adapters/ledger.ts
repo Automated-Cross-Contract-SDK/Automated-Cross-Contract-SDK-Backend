@@ -6,7 +6,12 @@
  */
 
 import { Keypair, TransactionBuilder, xdr } from '@stellar/stellar-sdk'
-import type { SorobanWalletAdapter, SignTransactionOptions, WalletConnectionResult } from '../types.js'
+import type {
+  SorobanWalletAdapter,
+  SignTransactionOptions,
+  WalletCapabilities,
+  WalletConnectionResult,
+} from '../types.js'
 import { WalletAdapterError, loadOptionalWalletDependency } from '../types.js'
 
 const APP_MODULE_NAME = '@ledgerhq/hw-app-str'
@@ -33,6 +38,8 @@ export interface LedgerAdapterConfig {
 export class LedgerAdapter implements SorobanWalletAdapter {
   readonly id = 'ledger'
   readonly name = 'Ledger'
+  readonly priority = 60
+  readonly capabilities: WalletCapabilities = { supportsSoroban: true, supportsSignedTxNote: false }
 
   private readonly derivationPath: string
   private transport: LedgerTransport | null = null

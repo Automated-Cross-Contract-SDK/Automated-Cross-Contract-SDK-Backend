@@ -6,7 +6,12 @@
  * https://github.com/Lobstrco/lobstr-signer-extension
  */
 
-import type { SorobanWalletAdapter, SignTransactionOptions, WalletConnectionResult } from '../types.js'
+import type {
+  SorobanWalletAdapter,
+  SignTransactionOptions,
+  WalletCapabilities,
+  WalletConnectionResult,
+} from '../types.js'
 import { WalletAdapterError, mapCommonWalletError } from '../types.js'
 
 interface LobstrApi {
@@ -22,6 +27,8 @@ function getLobstr(): LobstrApi | undefined {
 export class LobstrAdapter implements SorobanWalletAdapter {
   readonly id = 'lobstr'
   readonly name = 'LOBSTR'
+  readonly priority = 50
+  readonly capabilities: WalletCapabilities = { supportsSoroban: true, supportsSignedTxNote: false }
 
   private publicKey: string | null = null
 
