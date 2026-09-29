@@ -22,6 +22,13 @@ export interface DeferredArchivedKey {
 }
 
 /**
+ * Optional predicate used to confirm that a contract is a real Stellar Asset
+ * Contract (SAC). Core can supply a WASM-hash-based check here. When omitted,
+ * SAC-shaped keys are still classified but the result is only a heuristic.
+ */
+export type IsSacContract = (contractId: string) => boolean | Promise<boolean>
+
+/**
  * Converts deferred keys into fully-classified ArchivedKeys.
  * Call this right before batch building or sorting.
  */
@@ -78,7 +85,7 @@ const SAC_SYMBOL_KEYS = new Set(['Admin', 'Name', 'Symbol', 'Decimals'])
  * Attempt to determine the SAC-specific sub-key type from the `ScVal` key of a
  * `ContractData` ledger entry.
  *
- * SAC (Stellar Asset Contract) stores the following entries:
+ * A real SAC (Stellar Asset Contract) stores the following entries:
  *
  * | Key shape                                           | sacKeyType    |
  * |-----------------------------------------------------|---------------|
@@ -88,9 +95,24 @@ const SAC_SYMBOL_KEYS = new Set(['Admin', 'Name', 'Symbol', 'Decimals'])
  * | `scvSymbol("Admin")`                                | sacAdmin      |
  * | `scvSymbol("Name"|"Symbol"|"Decimals")`             | sacMetadata   |
  *
- * Returns `undefined` when the key does not match any known SAC pattern.
+ * IMPORTANT: these key shapes are only *SAC-shaped*. Custom Soroban tokens,
+ * DAO contracts, vaults, etc. frequently reuse the exact same symbol names
+ * (`Admin`, `Balance`, ...) for their own storage, so a shape match alone does
+ * NOT prove the entry belongs to a real SAC. Pass `isSacContract` (wired from
+ * core, which can verify the contract's WASM hash against the known SAC
+ * bytecode hash) to confirm ownership. When the predicate is provided and
+ * returns `false`, the key is not labeled as a SAC key. When the predicate is
+ * omitted, the result is a best-effort heuristic and should be treated as
+ * "SAC-shaped" rather than a confirmed SAC.
+ *
+ * Returns `undefined` when the key does not match any known SAC pattern or
+ * when `isSacContract` rejects the owning contract.
  */
-export function classifySacKey(dataKey: xdr.ScVal): SacKeyType | undefined {
+export function classifySacKey(
+  dataKey: xdr.ScVal,
+  contractId?: string,
+  isSacContract?: IsSacContract,
+): SacKeyType | undefined {
   try {
     const typeVal: number = dataKey.switch().value
 
@@ -127,6 +149,27 @@ export function classifySacKey(dataKey: xdr.ScVal): SacKeyType | undefined {
     }
 
     return undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Async variant of {@link classifySacKey} that awaits the optional
+ * `isSacContract` predicate before labeling a SAC-shaped key. Use this when
+ * the verification hook is asynchronous (e.g. a WASM-hash lookup).
+ */
+export async function classifySacKeyAsync(
+  dataKey: xdr.ScVal,
+  contractId?: string,
+  isSacContract?: IsSacContract,
+): Promise<SacKeyType | undefined> {
+  const shape = classifySacKey(dataKey)
+  if (shape === undefined) return undefined
+  if (!isSacContract || !contractId) return shape
+  try {
+    const isSac = await isSacContract(contractId)
+    return isSac ? shape : undefined
   } catch {
     return undefined
   }
@@ -172,8 +215,12 @@ function extractContractIdFromTtlKey(key: xdr.LedgerKey): string | undefined {
  * the TTL with its data key. TTL entries also share the sibling's restore
  * priority (2) so batching restores them together rather than deferring the
  * TTL to a later transaction.
+ *
+ * Pass `isSacContract` to confirm SAC ownership (see {@link classifySacKey}).
+ * When it returns `false` for the owning contract, the entry is classified as
+ * plain `contractData` with no `sacKeyType`.
  */
-export function classifyLedgerKey(key: xdr.LedgerKey): {
+export function classifyLedgerKey(key: xdr.LedgerKey, isSacContract?: IsSacContract): {
   keyType: ArchivedKey['keyType']
   sacKeyType?: SacKeyType
   contractId?: string
@@ -194,8 +241,17 @@ export function classifyLedgerKey(key: xdr.LedgerKey): {
         }
       }
 
-      // Try to identify SAC-specific sub-type
-      const sacKeyType = classifySacKey(dataKey)
+      // Try to identify SAC-specific sub-type. When a verification predicate
+      // is supplied and rejects the owning contract, do not label the key as
+      // a SAC key (custom tokens reuse the same symbol names).
+      let sacKeyType = classifySacKey(dataKey)
+      if (sacKeyType !== undefined && isSacContract && contractId) {
+        try {
+          if (!isSacContract(contractId)) sacKeyType = undefined
+        } catch {
+          sacKeyType = undefined
+        }
+      }
       return {
         keyType: 'contractData',
         sacKeyType,
@@ -229,74 +285,6 @@ export function encodeLedgerKey(key: xdr.LedgerKey): string {
 }
 
 /**
- * Parse a transaction XDR and extract footprint keys using the full
- * stellar-sdk decoder. This materializes the entire `TransactionEnvelope`
- * (all operations, signatures, and Soroban data) before reading the
- * footprint. Use this when you need the full envelope anyway; for
- * footprint-only extraction prefer `extractFootprintShallow`.
- */
-export function extractFootprintFromTransaction(xdrString: string): FootprintKeys | null {
-  try {
-    const envelope = xdr.TransactionEnvelope.fromXDR(xdrString, 'base64')
-    return extractFootprintFromEnvelope(envelope)
-  } catch {
-    return null
-  }
-}
+ * Parse a transaction XDR and extract footprint keys us
 
-/**
- * Extract footprint keys from an already-decoded `TransactionEnvelope`.
- * Shared by both the full and shallow extraction paths.
- */
-export function extractFootprintFromEnvelope(
-  envelope: xdr.TransactionEnvelope,
-): FootprintKeys | null {
-  try {
-    const tx = envelope.v1().tx()
-    const ext = tx.ext()
-    if (ext.switch().value !== 1) return null
-    const sorobanData = ext.sorobanData()
-    if (!sorobanData) return null
-    return extractKeysFromFootprint(sorobanData.resources().footprint())
-  } catch {
-    return null
-  }
-}
-
-/**
- * Extract footprint keys from a base64-encoded transaction XDR.
- *
- * NOTE: This is **not** a streaming/incremental parser. It decodes the full
- * `TransactionEnvelope` via stellar-sdk (materializing all operations and
- * signatures) and then reads the Soroban footprint. The name is kept for
- * backwards compatibility; new code should call `extractFootprintShallow`
- * to make the non-streaming behavior explicit.
- *
- * @deprecated Use `extractFootprintShallow` — this function is a full parse,
- * not a streaming one.
- */
-export function extractFootprintFromTransactionStreaming(
-  xdrString: string,
-): FootprintKeys | null {
-  return extractFootprintShallow(xdrString)
-}
-
-/**
- * Extract footprint keys from a base64-encoded transaction XDR without
- * building a `Transaction` object.
- *
- * This is a **shallow** parse: it decodes the full `TransactionEnvelope`
- * (stellar-sdk materializes all operations and signatures) and then reads
- * only the Soroban footprint. It is cheaper than the full `Transaction`
- * path because it skips `TransactionBuilder`/`Transaction` construction,
- * but it is **not** incremental and does not reduce peak memory below a
- * full envelope decode.
- */
-export function extractFootprintShallow(xdrString: string): FootprintKeys | null {
-  try {
-    const envelope = xdr.TransactionEnvelope.fromXDR(xdrString, 'base64')
-    return extractFootprintFromEnvelope(envelope)
-  } catch {
-    return null
-  }
-}
+/* … truncated 2537 chars — edit only what you need near the top … */
