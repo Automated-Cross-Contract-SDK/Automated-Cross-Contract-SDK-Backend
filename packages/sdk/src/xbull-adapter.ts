@@ -3,6 +3,8 @@
  *
  * Integrates xBull via the `@xbull/wallet-connect` SDK, which communicates
  * with the xBull extension/mobile app over its own postMessage bridge.
+ *
+ * @deprecated use @soroban-resurrect/wallet-adapters
  */
 
 import type { SorobanWalletAdapter, SignTransactionOptions, WalletConnectionResult } from './wallet-adapter.js'
@@ -20,6 +22,9 @@ interface XBullModule {
   default: new () => XBullClient
 }
 
+/**
+ * @deprecated use @soroban-resurrect/wallet-adapters
+ */
 export class XBullAdapter implements SorobanWalletAdapter {
   readonly id = 'xbull'
   readonly name = 'xBull'
