@@ -14,3 +14,14 @@ export const DEFAULT_MAX_CONCURRENCY = 5
  * shown in `simulateDiff()`. Override per-call with `simulateDiff(xdr, src, { restoredTtlLedgers })`.
  */
 export const RESTORED_ENTRY_TTL_LEDGERS = 4096
+
+/**
+ * Canonical source of truth for the restore tuning constants shared across the
+ * SDK and core packages. `MAX_XDR_SIZE_BYTES` and `DEFAULT_RESTORE_FEE` are
+ * declared above and re-exported here so consumers can import the whole tuning
+ * surface from a single module without redeclaring the literals.
+ */
+export const RESTORE_TUNING = {
+  MAX_XDR_SIZE_BYTES,
+  DEFAULT_RESTORE_FEE,
+} as const

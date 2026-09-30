@@ -1,5 +1,7 @@
 // Spanish locale messages for SorobanResurrectError
-export const es = {
+import type { SorobanResurrectErrorCode } from '../errors';
+
+export const es: Partial<Record<SorobanResurrectErrorCode, string>> = {
   'ERR_INVALID_XDR': 'Formato XDR inválido: {0}',
   'ERR_KEY_NOT_FOUND': 'Clave no encontrada en el libro mayor: {0}',
   'ERR_SIMULATION_FAILED': 'Simulación fallida: {0}',

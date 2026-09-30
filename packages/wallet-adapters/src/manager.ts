@@ -22,6 +22,14 @@ export interface WalletManagerConfig {
   priority?: string[]
 }
 
+/** Default time to wait for an adapter's connect() to settle before rejecting with CONNECTION_TIMEOUT. */
+export const DEFAULT_CONNECT_TIMEOUT_MS = 120_000
+
+export interface ConnectOptions {
+  /** Milliseconds to wait for the adapter to settle before rejecting with CONNECTION_TIMEOUT. Defaults to 120000. */
+  timeoutMs?: number
+}
+
 /** Sorts adapters by a priority list of ids; unlisted adapters keep their relative order, placed after listed ones. */
 function orderByPriority(adapters: SorobanWalletAdapter[], priority?: string[]): SorobanWalletAdapter[] {
   if (!priority || priority.length === 0) return adapters
@@ -55,14 +63,16 @@ export class WalletManager {
     return this.adapters.filter((_, index) => flags[index])
   }
 
-  async connect(id: string): Promise<WalletConnectionResult> {
+  async connect(id: string, options: ConnectOptions = {}): Promise<WalletConnectionResult> {
     const adapter = this.adapters.find((candidate) => candidate.id === id)
     if (!adapter) throw new WalletAdapterError(`No wallet adapter registered with id "${id}"`, 'NOT_INSTALLED')
+
+    const timeoutMs = options.timeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
 
     this.detachFromActive()
     this.emitStatus('connecting')
     try {
-      const result = await adapter.connect()
+      const result = await this.withTimeout(adapter, timeoutMs)
       this.active = adapter
       this.attachToActive(adapter)
       this.emitStatus('connected', result)
@@ -71,6 +81,48 @@ export class WalletManager {
       this.emitStatus('error')
       throw cause
     }
+  }
+
+  /**
+   * Awaits the adapter's connect() but rejects with a typed CONNECTION_TIMEOUT
+   * error if it does not settle within `timeoutMs`. On timeout the adapter is
+   * asked to clean up (close iframes/popups) via its optional disconnect().
+   */
+  private withTimeout(adapter: SorobanWalletAdapter, timeoutMs: number): Promise<WalletConnectionResult> {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return adapter.connect()
+
+    return new Promise<WalletConnectionResult>((resolve, reject) => {
+      let settled = false
+      const timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        // Best-effort cleanup of adapter resources (iframes/popups).
+        Promise.resolve()
+          .then(() => adapter.disconnect())
+          .catch(() => undefined)
+        reject(
+          new WalletAdapterError(
+            `Wallet adapter "${adapter.id}" did not settle within ${timeoutMs}ms`,
+            'CONNECTION_TIMEOUT',
+          ),
+        )
+      }, timeoutMs)
+
+      adapter.connect().then(
+        (result) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve(result)
+        },
+        (cause) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          reject(cause)
+        },
+      )
+    })
   }
 
   async disconnect(): Promise<void> {

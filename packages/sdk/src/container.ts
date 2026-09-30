@@ -4,6 +4,14 @@
  * Supports constructor-based injection via a simple bind/resolve API that is
  * entirely runtime-level (no TypeScript decorators, no reflect-metadata).
  *
+ * ## Lifetimes
+ *
+ * Every binding is **singleton by default**: the first `resolve()` creates the
+ * instance and caches it, and every subsequent `resolve()` for the same key
+ * returns that same instance. There is currently no transient/per-resolve
+ * scope — if you need a fresh instance on every resolve, bind a factory that
+ * constructs a new value each time (see `BindingBuilder.toFactory`).
+ *
  * @example
  * ```ts
  * const container = new Container();
@@ -28,6 +36,10 @@ type Binding<T> =
 /**
  * Opaque token used to identify a dependency binding.
  * Use class constructors directly or create named tokens via `Token.for()`.
+ *
+ * Tokens are compared by reference, so a token created with `Token.for('x')`
+ * is only equal to itself — keep a single shared instance (e.g. a module-level
+ * constant) rather than recreating it at each call site.
  */
 export class Token<T = unknown> {
   readonly description: string
@@ -52,6 +64,11 @@ type BindingKey<T = unknown> = Constructor<T> | Token<T>
 
 /**
  * Fluent binding builder returned by `container.bind(key)`.
+ *
+ * All three terminal methods (`to`, `toFactory`, `toValue`) register a
+ * **singleton** binding: the resolved value is cached after the first
+ * `resolve()` and reused for the lifetime of the container (or until the key
+ * is re-bound or unbound).
  */
 export class BindingBuilder<T> {
   private readonly container: Container
@@ -62,19 +79,36 @@ export class BindingBuilder<T> {
     this.key = key
   }
 
-  /** Bind to a concrete class that the container will instantiate. */
+  /**
+   * Bind to a concrete class that the container will instantiate.
+   *
+   * The class is constructed with zero arguments on first resolve and the
+   * resulting instance is cached (singleton).
+   */
   to(impl: Constructor<T>): Container {
     this.container['_register'](this.key, { kind: 'class', impl })
     return this.container
   }
 
-  /** Bind to a factory function. */
+  /**
+   * Bind to a factory function.
+   *
+   * The factory is invoked once, on first resolve, and its return value is
+   * cached (singleton). To get a fresh instance on every resolve, have the
+   * factory itself return a new object — but note the container still caches
+   * the first result, so use `toValue`/`toFactory` with a fresh child
+   * container if you truly need per-resolve semantics.
+   */
   toFactory(factory: Factory<T>): Container {
     this.container['_register'](this.key, { kind: 'factory', factory })
     return this.container
   }
 
-  /** Bind to a pre-built instance (singleton value). */
+  /**
+   * Bind to a pre-built instance (singleton value).
+   *
+   * The provided value is returned as-is on every resolve.
+   */
   toValue(value: T): Container {
     this.container['_register'](this.key, { kind: 'value', value })
     return this.container
@@ -145,6 +179,10 @@ export class Container {
    * 2. Registered binding (this container, then parent)
    * 3. Direct class instantiation with zero arguments (fallback)
    *
+   * Lifetime: bindings are **singleton**. The first successful resolve caches
+   * the instance; later resolves return the same object. Re-binding the key
+   * (via `bind(...).to(...)`) or calling `unbind`/`reset` evicts the cache.
+   *
    * @throws {ContainerError} when the token cannot be resolved and is not a
    *   constructor that can be called with no arguments.
    */
@@ -204,6 +242,11 @@ export class Container {
   /**
    * Create a child container that inherits all bindings from this container.
    * The child can override bindings locally without affecting the parent.
+   *
+   * Singletons are **not** shared with the parent: a binding resolved in the
+   * child is cached in the child, and a binding resolved in the parent is
+   * cached in the parent. Overriding a key in the child does not evict the
+   * parent's cached singleton.
    */
   createChild(): Container {
     return new Container(this)
@@ -221,6 +264,14 @@ export class Container {
 
 /**
  * Error thrown when the container cannot resolve a dependency.
+ *
+ * Cases:
+ * - A class key with no registered binding whose zero-argument construction
+ *   throws (e.g. it requires constructor arguments).
+ * - A `Token` key with no registered binding.
+ *
+ * The offending key is available on `error.key`, and the underlying
+ * construction error (when applicable) on `error.cause`.
  */
 export class ContainerError extends Error {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

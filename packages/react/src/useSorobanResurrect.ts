@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef, useMemo, useEffect } from 'react'
+import { useState, useCallback, useRef, useMemo, useContext } from 'react'
 import { TransactionBuilder, Transaction } from '@stellar/stellar-sdk'
 import { SorobanResurrect, SorobanResurrectError } from '@soroban-resurrect/sdk'
 import type { SorobanResurrectConfig, ExecutionResult, ArchivedKey } from '@soroban-resurrect/sdk'
@@ -10,6 +10,7 @@ import type {
   SigningStrategy,
   TransactionRecord,
 } from './types.js'
+import { SorobanResurrectContext } from './SorobanResurrectContext.js'
 
 const DEFAULT_HISTORY_STORAGE_KEY = 'soroban-resurrect:history'
 const DEFAULT_MAX_HISTORY_RECORDS = 50
@@ -140,9 +141,27 @@ function sweepCache(cache: Map<string, SimulationCacheEntry>, now: number): void
   }
 }
 
+/**
+ * Derive a stable string key from the primitive connection-relevant config
+ * fields. Two renders that pass identical primitives (even via a fresh options
+ * object literal) produce the same key, so the client is not rebuilt.
+ */
+function deriveConfigKey(options: UseSorobanResurrectOptions<any>): string {
+  const rpcUrls = Array.isArray(options.rpcUrl) ? options.rpcUrl.join(',') : options.rpcUrl
+  return [
+    rpcUrls,
+    options.networkPassphrase,
+    options.allowHttp ?? '',
+    options.timeout ?? '',
+    options.pollIntervalMs ?? '',
+    options.maxPollAttempts ?? '',
+  ].join('|')
+}
+
 export function useSorobanResurrect<TSigner extends SigningStrategy = SigningStrategy>(
   options: UseSorobanResurrectOptions<TSigner>,
 ): UseSorobanResurrectReturn<TSigner> {
+  const contextClient = useContext(SorobanResurrectContext)
   const clientRef = useRef<SorobanResurrect | null>(null)
   const simulationCacheRef = useRef<Map<string, SimulationCacheEntry>>(new Map())
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -193,8 +212,24 @@ export function useSorobanResurrect<TSigner extends SigningStrategy = SigningStr
     [preFlightEnabled],
   )
 
-  // Memoize the config object so SorobanResurrect is only re-instantiated when
-  // connection-relevant options actually change.
+  // Stable key derived from primitive config fields. A fresh options object
+  // literal with identical primitives yields the same key, so the client is
+  // not torn down/rebuilt on every render.
+  const configKey = useMemo(
+    () => deriveConfigKey(options),
+    [
+      options.rpcUrl,
+      options.networkPassphrase,
+      options.allowHttp,
+      options.timeout,
+      options.pollIntervalMs,
+      options.maxPollAttempts,
+    ],
+  )
+
+  // Memoize the config object keyed by the stable config key so
+  // SorobanResurrect is only re-instantiated when connection-relevant
+  // primitives actually change.
   const config = useMemo<SorobanResurrectConfig>(
     () => ({
       rpcUrl: options.rpcUrl,
@@ -205,16 +240,19 @@ export function useSorobanResurrect<TSigner extends SigningStrategy = SigningStr
       maxPollAttempts: options.maxPollAttempts,
       onLog,
     }),
-    [options.rpcUrl, options.networkPassphrase, options.allowHttp, options.timeout, options.pollIntervalMs, options.maxPollAttempts, onLog],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [configKey, onLog],
   )
 
-  // Re-instantiate SorobanResurrect only when the memoized config changes
+  // Re-instantiate SorobanResurrect only when the memoized config changes.
+  // Prefer a client supplied via context when the provider is used.
   const getClient = useCallback((): SorobanResurrect => {
+    if (contextClient) return contextClient
     if (!clientRef.current) {
       clientRef.current = new SorobanResurrect(config)
     }
     return clientRef.current
-  }, [config])
+  }, [config, contextClient])
 
   // When config changes (rpcUrl, passphrase, etc.) we need a fresh client instance
   const prevConfigRef = useRef<SorobanResurrectConfig | null>(null)
@@ -224,6 +262,59 @@ export function useSorobanResurrect<TSigner extends SigningStrategy = SigningStr
     simulationCacheRef.current.clear()
   }
 
-  // Clear the simulation cache on unmoun
+  const getCachedSimulation = useCallback(async (txXDR: string, forceRefresh = false) => {
+    const cacheKey = await hashTxXDR(txXDR)
+    if (!forceRefresh) {
+      const cached = simulationCacheRef.current.get(cacheKey)
+      if (cached && cached.expiresAt > Date.now()) {
+        return cached.simulation
+      }
+    }
 
-/* … truncated 1829 chars — edit only what you need near the top … */
+    const client = getClient()
+    const simulation = await client.simulate(txXDR)
+    simulationCacheRef.current.set(cacheKey, {
+      simulation: {
+        needsRestoration: simulation.needsRestoration,
+        archivedKeys: simulation.archivedKeys,
+      },
+      expiresAt: Date.now() + CACHE_TTL_MS,
+    })
+    return simulation
+  }, [getClient])
+
+  const checkTransaction = useCallback(async (
+    txXDR: string,
+    { forceRefresh = false }: { forceRefresh?: boolean } = {},
+  ) => {
+    setIsChecking(true)
+    setError(null)
+    try {
+      const result = await getCachedSimulation(txXDR, forceRefresh)
+
+      setNeedsRestore(result.needsRestoration)
+      setArchivedKeys(result.archivedKeys)
+
+      if (result.needsRestoration) {
+        options.preFlight?.onRestoreNeeded?.(result.archivedKeys)
+      }
+
+      return {
+        needsRestoration: result.needsRestoration,
+        archivedKeys: result.archivedKeys,
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
+      const error = err instanceof Error ? err : new Error(message)
+      options.onError?.(error)
+      options.preFlight?.onError?.(error)
+      throw err
+    } finally {
+      setIsChecking(false)
+    }
+  }, [getClient, options])
+
+  const abort = useCallback((
+
+/* … truncated 5950 chars — edit only what you need near the top … */

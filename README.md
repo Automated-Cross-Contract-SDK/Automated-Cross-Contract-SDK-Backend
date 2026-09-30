@@ -129,5 +129,5 @@ npm run test -w packages/sdk --if-present # integration tests via vitest config
 
 ## Handsoff notes
 
-<!-- handsoff-issue-415 -->
-- #415: [core] wsWaitForTransaction: WebSocket 'error' before 'open' can leave promise unsettled (no onclose fallback)
+<!-- handsoff-issue-438 -->
+- #438: [react] Progress events not wired: IDLE_PROGRESS exists but restore:batch:complete is never mapped to setProgress
