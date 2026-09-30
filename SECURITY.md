@@ -2,17 +2,16 @@
 
 ## Supported Versions
 
-We follow semantic versioning (major.minor.patch). Security updates are provided for:
+We follow semantic versioning (major.minor.patch). The project is currently pre-1.0 (`0.1.x`), and per the pre-1.0 policy in `GOVERNANCE.md` §7.4, breaking changes bump the minor version. Security updates are provided for:
 
-- Current major version: Latest patch releases
-- Previous major version: Critical security fixes only
+- Current release line: Latest patch releases
+- Older release lines: Critical security fixes only
 - End-of-life versions: No longer receive updates
 
 | Version | Status             |
 |---------|------------------|
-| 2.x     | ✅ Supported      |
-| 1.x     | ⚠️ Limited Support |
-| < 1.0   | ❌ End of Life    |
+| 0.1.x   | ✅ Supported      |
+| < 0.1.0 | ❌ End of Life    |
 
 ## Reporting a Vulnerability
 
