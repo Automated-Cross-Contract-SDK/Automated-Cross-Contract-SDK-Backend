@@ -16,6 +16,7 @@ export type {
   SigningStrategy,
   SignOptions,
   TransactionRecord,
+  RestoreProgress,
 } from './types.js'
 export type { SorobanResurrectProviderProps } from './SorobanResurrectProvider.js'
 
@@ -37,4 +38,3 @@ export type {
   WalletProviderProps,
   WalletContextValue,
 } from './wallet/types.js'
-
