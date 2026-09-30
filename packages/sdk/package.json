@@ -52,7 +52,7 @@
     "test:fuzz": "jazzer tests/fuzz/xdr-parsing.fuzz.ts --fuzz_function=fuzz -- -max_total_time=60",
     "typecheck": "tsc --noEmit",
     "test:types": "tsd --typings dist/index.d.ts --files test-d/index.test-d.ts",
-    "repl": "node --experimental-repl-await --require tsx/cjs ./src/repl.ts"
+    "repl": "node --experimental-repl-await --import tsx ./src/repl.ts"
   },
   "dependencies": {
     "@soroban-resurrect/types": "^0.1.0",
@@ -62,42 +62,6 @@
     "@soroban-resurrect/utils": "^0.1.0",
     "@soroban-resurrect/core": "^0.1.0",
     "@stellar/stellar-sdk": "^12.0.0"
-  },
-  "peerDependencies": {
-    "@ledgerhq/hw-app-str": "^6.29.0",
-    "@ledgerhq/hw-transport-webhid": "^6.29.0",
-    "@ledgerhq/hw-transport-webusb": "^6.29.0",
-    "@walletconnect/core": "^2.11.0",
-    "@walletconnect/modal": "^2.6.0",
-    "@walletconnect/web3wallet": "^1.11.0",
-    "@xbull/wallet-connect": "^1.0.0",
-    "lobstr-wallet-sdk": "^1.0.0"
-  },
-  "peerDependenciesMeta": {
-    "@xbull/wallet-connect": {
-      "optional": true
-    },
-    "lobstr-wallet-sdk": {
-      "optional": true
-    },
-    "@walletconnect/core": {
-      "optional": true
-    },
-    "@walletconnect/web3wallet": {
-      "optional": true
-    },
-    "@walletconnect/modal": {
-      "optional": true
-    },
-    "@ledgerhq/hw-app-str": {
-      "optional": true
-    },
-    "@ledgerhq/hw-transport-webhid": {
-      "optional": true
-    },
-    "@ledgerhq/hw-transport-webusb": {
-      "optional": true
-    }
   },
   "devDependencies": {
     "@jazzer.js/core": "^2.1.0",

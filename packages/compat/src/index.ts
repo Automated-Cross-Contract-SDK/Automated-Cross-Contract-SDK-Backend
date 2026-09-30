@@ -70,8 +70,6 @@ export type {
   FootprintCacheStatistics,
 } from '@soroban-resurrect/types'
 
-export { FeatureFlags } from '@soroban-resurrect/types'
-
 export {
   ExponentialBackoff,
   FixedDelay,

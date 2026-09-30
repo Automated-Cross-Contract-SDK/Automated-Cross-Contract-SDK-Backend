@@ -37,6 +37,7 @@
     "size": "size-limit",
     "clean": "rm -rf packages/*/dist",
     "example": "npm run dev -w packages/example",
+    "licenses:sync": "node scripts/sync-licenses.mjs",
     "release": "semantic-release",
     "release:dry-run": "semantic-release --dry-run",
     "prepare": "husky"

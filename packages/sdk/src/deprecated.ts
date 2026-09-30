@@ -1,8 +1,15 @@
 /**
  * Deprecated exports with runtime warnings
- * 
- * This module provides deprecated exports that emit runtime warnings
- * when imported. These will be removed in v1.0.0.
+ *
+ * This module is the single, documented deprecation surface for the SDK.
+ * Importing from `@soroban-resurrect/sdk` is deprecated: import from the
+ * specific packages instead (e.g. `@soroban-resurrect/core`,
+ * `@soroban-resurrect/footprint-parser`, etc.).
+ *
+ * It is re-exported from the package entry point (`src/index.ts`) so that
+ * consumers relying on the legacy aggregate import keep working while the
+ * runtime warning guides them to the modular packages. These exports will be
+ * removed in v1.0.0.
  */
 
 import { deprecate } from '@soroban-resurrect/utils'
