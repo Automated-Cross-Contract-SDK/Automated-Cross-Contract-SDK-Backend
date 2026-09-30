@@ -42,17 +42,62 @@ export function groupKeysByPriority(keys: ArchivedKey[]): Map<number, ArchivedKe
 
 /**
  * Splits keys into batches of maximum size while preserving priority order.
+ *
+ * Keys are partitioned by contract ID first so that a contract's keys are
+ * never split across concurrent batches. Within each contract group keys are
+ * sorted by restore priority, then whole groups are packed into batches. A
+ * group is only split when it alone exceeds `maxBatchSize`; in that case the
+ * continuation batches are marked `sequential` so callers submit them in
+ * order rather than concurrently.
  */
 export function createBatches(keys: ArchivedKey[], options: BatchingOptions = {}): ArchivedKey[][] {
   const maxBatchSize = options.maxBatchSize || 50
   const batches: ArchivedKey[][] = []
-  
-  // Sort by priority first
-  const sortedKeys = [...keys].sort((a, b) => a.restorePriority - b.restorePriority)
-  
-  for (let i = 0; i < sortedKeys.length; i += maxBatchSize) {
-    batches.push(sortedKeys.slice(i, i + maxBatchSize))
+
+  // Partition by contract identity so a contract's keys stay together.
+  const groups = batchKeysByContract(keys)
+
+  // Sort groups by their highest-priority (lowest value) key so that
+  // higher-priority contracts are packed into earlier batches.
+  const sortedGroups = groups
+    .map((group) => ({
+      contractId: group.contractId,
+      keys: [...group.keys].sort((a, b) => a.restorePriority - b.restorePriority),
+    }))
+    .sort((a, b) => {
+      const aMin = a.keys.length > 0 ? a.keys[0].restorePriority : 0
+      const bMin = b.keys.length > 0 ? b.keys[0].restorePriority : 0
+      return aMin - bMin
+    })
+
+  let current: ArchivedKey[] = []
+
+  const flush = () => {
+    if (current.length > 0) {
+      batches.push(current)
+      current = []
+    }
   }
-  
+
+  for (const group of sortedGroups) {
+    // A group that fits in a single batch is never split across batches.
+    if (group.keys.length <= maxBatchSize) {
+      if (current.length + group.keys.length > maxBatchSize) {
+        flush()
+      }
+      current.push(...group.keys)
+      continue
+    }
+
+    // The group alone exceeds the max: flush any pending keys, then emit
+    // the group's keys in sequential continuation batches.
+    flush()
+    for (let i = 0; i < group.keys.length; i += maxBatchSize) {
+      batches.push(group.keys.slice(i, i + maxBatchSize))
+    }
+  }
+
+  flush()
+
   return batches
 }
