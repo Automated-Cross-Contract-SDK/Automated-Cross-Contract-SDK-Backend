@@ -3,12 +3,16 @@ export {
   mapCommonWalletError,
   loadOptionalWalletDependency,
   bytesToBase64,
+  DEFAULT_WALLET_CAPABILITIES,
+  DEFAULT_ADAPTER_PRIORITY,
 } from './types.js'
 export type {
   SorobanWalletAdapter,
   SignTransactionOptions,
+  WalletCapabilities,
   WalletConnectionResult,
   WalletConnectionStatus,
+  WalletDescriptor,
   WalletNetworkChange,
   WalletAdapterErrorCode,
   ConnectionStatusListener,

@@ -8,7 +8,12 @@
  * https://docs.rabet.io
  */
 
-import type { SorobanWalletAdapter, SignTransactionOptions, WalletConnectionResult } from '../types.js'
+import type {
+  SorobanWalletAdapter,
+  SignTransactionOptions,
+  WalletCapabilities,
+  WalletConnectionResult,
+} from '../types.js'
 import { WalletAdapterError, mapCommonWalletError } from '../types.js'
 
 const IFRAME_ID = 'soroban-resurrect-rabet-iframe'
@@ -33,6 +38,8 @@ interface IframeMessage {
 export class RabetAdapter implements SorobanWalletAdapter {
   readonly id = 'rabet'
   readonly name = 'Rabet'
+  readonly priority = 40
+  readonly capabilities: WalletCapabilities = { supportsSoroban: true, supportsSignedTxNote: false }
 
   private mode: 'extension' | 'iframe' | null = null
   private publicKey: string | null = null

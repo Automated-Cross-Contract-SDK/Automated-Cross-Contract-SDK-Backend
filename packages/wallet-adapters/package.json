@@ -45,6 +45,8 @@
     "build": "tsup",
     "build:watch": "tsup --watch",
     "prepublishOnly": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -63,7 +65,9 @@
     "@ledgerhq/hw-transport-webusb": { "optional": true }
   },
   "devDependencies": {
-    "tsup": "^8.3.0"
+    "jsdom": "^24.0.0",
+    "tsup": "^8.3.0",
+    "vitest": "^2.0.0"
   },
   "publishConfig": {
     "access": "public",

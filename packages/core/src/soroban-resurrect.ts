@@ -42,6 +42,14 @@ import { DEFAULT_MAX_CONCURRENCY, delay, MAX_RETRIES } from '@soroban-resurrect/
 const MAX_XDR_SIZE_BYTES = 100_000
 const DEFAULT_RESTORE_FEE = '100000'
 
+/**
+ * Timeout (ms) for the one-off WebSocket reachability probe. This is
+ * intentionally kept separate from the per-transaction wait budget
+ * (`maxPollAttempts × pollIntervalMs`): the probe measures handshake latency,
+ * not transaction confirmation.
+ */
+const WS_PROBE_TIMEOUT_MS = 3000
+
 function isFeeBumpTx(tx: ReturnType<typeof TransactionBuilder.fromXDR>): tx is ReturnType<typeof TransactionBuilder.fromXDR> & { innerTransaction: any } {
   return 'innerTransaction' in tx
 }
@@ -180,7 +188,7 @@ export class SorobanResurrect {
     }
   }
 
-  private log(level: 'info' | 'warn' | 'error', message: string, data?: unknown): void {
+  private log(level: 'debug' | 'info' | 'warn' | 'error', message: string, data?: unknown): void {
     this.config.onLog(level, message, data)
   }
 
@@ -1286,7 +1294,7 @@ export class SorobanResurrect {
    * Probe whether a WebSocket connection to the server can be established.
    * Returns `true` if the handshake succeeds within `timeoutMs`.
    */
-  private probeWebSocketSupport(wsUrl: string, timeoutMs = 3000): Promise<boolean> {
+  private probeWebSocketSupport(wsUrl: string, timeoutMs = WS_PROBE_TIMEOUT_MS): Promise<boolean> {
     return new Promise(resolve => {
       let settled = false
       const settle = (result: boolean): void => {
@@ -1322,6 +1330,16 @@ export class SorobanResurrect {
     hash: string,
     maxPollAttempts = this.config.maxPollAttempts,
   ): Promise<TransactionWaitResult> {
+    // Single source of truth for the wait budget. Both the WebSocket and the
+    // polling path consume this exact value so tuning either `pollIntervalMs`
+    // or `maxPollAttempts` cannot make the two transports diverge.
+    const totalWaitMs = this.getWaitBudgetMs(maxPollAttempts)
+    this.log(
+      'debug',
+      `waitForTransaction budget: ${totalWaitMs}ms (${maxPollAttempts} attempts × ${this.config.pollIntervalMs}ms)`,
+      { hash, maxPollAttempts, pollIntervalMs: this.config.pollIntervalMs, totalWaitMs },
+    )
+
     if (this.config.useWebSocket) {
       const wsUrl = this.getWebSocketUrl()
       if (wsUrl) {
@@ -1329,7 +1347,7 @@ export class SorobanResurrect {
         if (supported) {
           this.log('info', `Using WebSocket for transaction status: ${hash}`)
           try {
-            await this.wsWaitForTransaction(hash, wsUrl, maxPollAttempts)
+            await this.wsWaitForTransaction(hash, wsUrl, totalWaitMs)
             return { hash, transport: 'websocket' }
           } catch (err) {
             // If the WS path threw something other than a SorobanResurrectError
@@ -1345,8 +1363,16 @@ export class SorobanResurrect {
       }
     }
 
-    await this.pollForReceipt(hash, maxPollAttempts)
+    await this.pollForReceipt(hash, maxPollAttempts, totalWaitMs)
     return { hash, transport: 'polling' }
+  }
+
+  /**
+   * Total wall-clock budget (ms) shared by the polling and WebSocket wait
+   * paths: `maxPollAttempts × pollIntervalMs`.
+   */
+  private getWaitBudgetMs(maxPollAttempts: number): number {
+    return maxPollAttempts * this.config.pollIntervalMs
   }
 
   /**
@@ -1360,10 +1386,8 @@ export class SorobanResurrect {
   private wsWaitForTransaction(
     hash: string,
     wsUrl: string,
-    maxPollAttempts: number,
+    timeoutMs: number,
   ): Promise<void> {
-    const timeoutMs = maxPollAttempts * (this.config.pollIntervalMs ?? 1000)
-
     return new Promise<void>((resolve, reject) => {
       let settled = false
       let ws: WebSocket
@@ -1448,8 +1472,12 @@ export class SorobanResurrect {
     })
   }
 
-  private async pollForReceipt(hash: string, maxAttempts = this.config.maxPollAttempts): Promise<string> {
-    const intervalMs = this.config.pollIntervalMs ?? 1000
+  private async pollForReceipt(
+    hash: string,
+    maxAttempts = this.config.maxPollAttempts,
+    totalWaitMs = this.getWaitBudgetMs(maxAttempts),
+  ): Promise<string> {
+    const intervalMs = this.config.pollIntervalMs
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const receipt = await this.getServer().getTransaction(hash)
       if (receipt.status !== 'NOT_FOUND') {
@@ -1467,7 +1495,7 @@ export class SorobanResurrect {
       await delay(intervalMs)
     }
     throw new SorobanResurrectError(
-      `Transaction ${hash} not confirmed after ${maxAttempts * intervalMs}ms (rpcUrl=${this.config.rpcUrl})`,
+      `Transaction ${hash} not confirmed after ${totalWaitMs}ms (rpcUrl=${this.config.rpcUrl})`,
       'NETWORK_ERROR',
       undefined,
       { rpcUrl: this.config.rpcUrl, txHash: hash },
