@@ -2,6 +2,50 @@
 
 This guide covers breaking changes and migration steps for upgrading from v0.1.0 to v1.0.0 of the Automated Cross-Contract SDK.
 
+## Package Map
+
+The SDK is now a modular monorepo. `@soroban-resurrect/sdk` is a compatibility façade over the modular packages; new code should import from the focused packages directly. The table below lists every published package, its one-line description, and its stability.
+
+| Package | Description | Stability |
+|---------|-------------|-----------|
+| `@soroban-resurrect/sdk` | Compatibility façade re-exporting the modular packages | Stable |
+| `@soroban-resurrect/core` | Core restoration engine and orchestration | Stable |
+| `@soroban-resurrect/types` | Shared TypeScript types and interfaces | Stable |
+| `@soroban-resurrect/errors` | Typed error classes and error codes | Stable |
+| `@soroban-resurrect/rpc` | Soroban RPC client and transport | Stable |
+| `@soroban-resurrect/utils` | Shared utilities and helpers | Stable |
+| `@soroban-resurrect/footprint-parser` | Ledger footprint parsing | Stable |
+| `@soroban-resurrect/footprint-parser-wasm` | WASM-accelerated footprint parsing | Experimental |
+| `@soroban-resurrect/mock-rpc` | In-memory mock RPC for tests | Stable |
+| `@soroban-resurrect/compat` | Migration shims for v0.1.0 APIs | Stable |
+| `@soroban-resurrect/wallet-adapters` | Wallet connection adapters | Stable |
+| `@soroban-resurrect/react` | React bindings and hooks | Stable |
+| `@soroban-resurrect/next` | Next.js bindings and helpers | Stable |
+| `@soroban-resurrect/react-native` | React Native bindings | Experimental |
+| `@soroban-resurrect/angular` | Angular bindings and services | Experimental |
+| `@soroban-resurrect/vue` | Vue bindings and composables | Experimental |
+| `@soroban-resurrect/svelte` | Svelte bindings and stores | Experimental |
+| `@soroban-resurrect/cli` | Command-line tooling | Stable |
+| `@soroban-resurrect/devtools-extension` | Browser devtools extension | Experimental |
+| `@soroban-resurrect/vscode-extension` | VS Code extension | Experimental |
+| `@soroban-resurrect/example` | Example application | Experimental |
+
+### Framework Bindings
+
+Framework-specific bindings are published as separate packages so you only pull in what you use: `@soroban-resurrect/react`, `@soroban-resurrect/next`, `@soroban-resurrect/react-native`, `@soroban-resurrect/angular`, `@soroban-resurrect/vue`, and `@soroban-resurrect/svelte`.
+
+### Migrating to the Modular Packages
+
+`@soroban-resurrect/compat` provides shims for the v0.1.0 API surface, so existing imports from `@soroban-resurrect/sdk` keep working while you migrate. Move to the focused packages incrementally:
+
+```typescript
+// Before: single entry point
+import { RestorationService } from '@soroban-resurrect/sdk';
+
+// After: import from the focused package
+import { RestorationService } from '@soroban-resurrect/core';
+```
+
 ## Breaking Changes Summary
 
 ### 1. EventEmitter-Based Configuration

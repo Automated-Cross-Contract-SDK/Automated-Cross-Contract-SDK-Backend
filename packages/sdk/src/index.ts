@@ -121,3 +121,16 @@ export type { LedgerAdapterConfig } from './ledger-adapter.js'
 
 /** Lightweight dependency injection container */
 export { Container, Token, BindingBuilder, ContainerError } from './container.js'
+
+/**
+ * Version negotiation between the SDK and the RPC endpoint.
+ *
+ * This is the single, supported deprecation surface for the SDK: instead of a
+ * hidden `deprecated.ts` module, version compatibility is negotiated explicitly
+ * through `VersionNegotiator`.
+ */
+export { VersionNegotiator } from './version-negotiator.js'
+export type {
+  VersionNegotiatorConfig,
+  VersionNegotiationResult,
+} from './version-negotiator.js'

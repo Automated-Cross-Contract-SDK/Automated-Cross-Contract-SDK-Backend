@@ -1,35 +1,18 @@
 {
-  "name": "@soroban-resurrect/angular",
-  "version": "0.1.0",
-  "description": "Angular signals-based service for @soroban-resurrect/sdk — pre-flight state restoration for Soroban dApps",
-  "type": "module",
+  "name": "@handsoff/angular",
+  "version": "0.0.0",
+  "description": "Angular bindings for Handsoff",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/handsoff/handsoff.git",
+    "directory": "packages/angular"
+  },
+  "homepage": "https://github.com/handsoff/handsoff/tree/main/packages/angular#readme",
+  "bugs": {
+    "url": "https://github.com/handsoff/handsoff/issues"
+  },
   "license": "MIT",
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
-    }
-  },
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
-  ],
-  "engines": {
-    "node": ">=18"
-  },
-  "scripts": {
-    "build": "tsup"
-  },
   "peerDependencies": {
-    "@soroban-resurrect/sdk": "^0.1.0",
-    "@angular/core": "^16.0.0"
-  },
-  "dependencies": {
-    "@stellar/stellar-sdk": "^12.0.0"
+    "@angular/core": ">=14.0.0"
   }
 }

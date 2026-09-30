@@ -4,6 +4,15 @@
   "description": "Vue composable & plugin for @soroban-resurrect/sdk — pre-flight state restoration for Soroban dApps",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/soroban-resurrect/soroban-resurrect.git",
+    "directory": "packages/vue"
+  },
+  "homepage": "https://github.com/soroban-resurrect/soroban-resurrect/tree/main/packages/vue#readme",
+  "bugs": {
+    "url": "https://github.com/soroban-resurrect/soroban-resurrect/issues"
+  },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",

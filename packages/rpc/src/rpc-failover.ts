@@ -87,8 +87,10 @@ export class RpcFailoverManager {
 
   /**
    * Records a successful call against the given URL.
-   * If the endpoint accumulates enough consecutive successes it is restored
-   * to healthy status.
+   *
+   * A success on a healthy endpoint resets its consecutive failure counter.
+   * An unhealthy endpoint is only restored to healthy once it accumulates
+   * `successThresholdToRestore` consecutive successes.
    */
   recordSuccess(url: string): void {
     const ep = this.findEndpoint(url)
@@ -100,13 +102,17 @@ export class RpcFailoverManager {
 
     if (!ep.isHealthy && ep.consecutiveSuccesses >= this.config.successThresholdToRestore) {
       ep.isHealthy = true
+      ep.consecutiveSuccesses = 0
     }
   }
 
   /**
    * Records a failed call against the given URL.
-   * If the endpoint exceeds the failure threshold it is marked unhealthy and
-   * the manager automatically switches to the next healthy endpoint.
+   *
+   * A failure on an unhealthy endpoint resets its consecutive success counter.
+   * A healthy endpoint is only marked unhealthy once it accumulates
+   * `maxFailuresBeforeFallback` consecutive failures, at which point the
+   * manager automatically switches to the next healthy endpoint.
    */
   recordFailure(url: string): void {
     const ep = this.findEndpoint(url)
@@ -116,8 +122,9 @@ export class RpcFailoverManager {
     ep.consecutiveFailures += 1
     ep.lastChecked = Date.now()
 
-    if (ep.consecutiveFailures >= this.config.maxFailuresBeforeFallback) {
+    if (ep.isHealthy && ep.consecutiveFailures >= this.config.maxFailuresBeforeFallback) {
       ep.isHealthy = false
+      ep.consecutiveFailures = 0
       this.pickNextHealthy()
     }
   }
