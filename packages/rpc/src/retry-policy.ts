@@ -1,4 +1,4 @@
-import { SorobanResurrectError } from '@soroban-resurrect/errors'
+import { SorobanResurrectError, isRetryable } from '@soroban-resurrect/errors'
 import type { RetryPolicy as RetryPolicyType } from '@soroban-resurrect/types'
 
 /**
@@ -41,13 +41,9 @@ export class ExponentialBackoff implements RetryPolicy {
   }
 
   shouldRetry(error: SorobanResurrectError, attempt: number): boolean {
-    // Retry on network errors and simulation failures
-    return (
-      attempt <= this.maxRetries &&
-      (error.code === 'NETWORK_ERROR' ||
-        error.code === 'SIMULATION_FAILED' ||
-        error.code === 'ARCHIVE_DETECTION_FAILED')
-    )
+    // Use the machine-readable retryability classification from @soroban-resurrect/errors
+    // instead of string matching on error codes.
+    return attempt <= this.maxRetries && isRetryable(error.code)
   }
 
   getDelay(attempt: number): number {
@@ -70,12 +66,7 @@ export class FixedDelay implements RetryPolicy {
   }
 
   shouldRetry(error: SorobanResurrectError, attempt: number): boolean {
-    return (
-      attempt <= this.maxRetries &&
-      (error.code === 'NETWORK_ERROR' ||
-        error.code === 'SIMULATION_FAILED' ||
-        error.code === 'ARCHIVE_DETECTION_FAILED')
-    )
+    return attempt <= this.maxRetries && isRetryable(error.code)
   }
 
   getDelay(attempt: number): number {
@@ -100,12 +91,7 @@ export class JitterBackoff implements RetryPolicy {
   }
 
   shouldRetry(error: SorobanResurrectError, attempt: number): boolean {
-    return (
-      attempt <= this.maxRetries &&
-      (error.code === 'NETWORK_ERROR' ||
-        error.code === 'SIMULATION_FAILED' ||
-        error.code === 'ARCHIVE_DETECTION_FAILED')
-    )
+    return attempt <= this.maxRetries && isRetryable(error.code)
   }
 
   getDelay(attempt: number): number {
@@ -173,13 +159,8 @@ export class CircuitBreaker implements RetryPolicy {
       return false
     }
 
-    // Allow retry if within attempt limit
-    return (
-      attempt <= this.maxRetries &&
-      (error.code === 'NETWORK_ERROR' ||
-        error.code === 'SIMULATION_FAILED' ||
-        error.code === 'ARCHIVE_DETECTION_FAILED')
-    )
+    // Allow retry if within attempt limit and the error is classified as retryable
+    return attempt <= this.maxRetries && isRetryable(error.code)
   }
 
   getDelay(attempt: number): number {
