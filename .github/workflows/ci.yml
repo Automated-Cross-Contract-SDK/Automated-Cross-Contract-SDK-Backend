@@ -20,9 +20,9 @@ jobs:
         node-version: [18, 20, 22, 24]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
@@ -42,9 +42,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [quality]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
@@ -60,9 +60,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [quality]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
@@ -84,9 +84,9 @@ jobs:
       test-contract-id: ${{ steps.deploy.outputs.contract_id }}
       test-contract-hash: ${{ steps.deploy.outputs.contract_hash }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
@@ -128,7 +128,7 @@ jobs:
           echo "{\"testnet\": {\"contract_id\": \"${{ steps.deploy.outputs.contract_id }}\", \"deployed_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}" > /tmp/test-contracts/deployed.json
         
       - name: Upload contract IDs as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-contracts
           path: /tmp/test-contracts/deployed.json
@@ -140,15 +140,15 @@ jobs:
     needs: [deploy-test-contracts]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
 
       - name: Download deployed contract IDs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: test-contracts
           path: /tmp/test-contracts
@@ -166,7 +166,7 @@ jobs:
 
       - name: Post failure comment on PR
         if: failure() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
@@ -191,7 +191,7 @@ jobs:
     needs: [deploy-test-contracts, integration-tests]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Stellar CLI
         # Pinned crates.io release (checksum-verified by cargo via --locked); no piped installer.
