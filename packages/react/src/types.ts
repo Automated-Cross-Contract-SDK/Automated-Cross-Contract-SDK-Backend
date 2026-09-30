@@ -38,6 +38,17 @@ export interface TransactionRecord {
   durationMs: number
 }
 
+/**
+ * Progress state for a restore operation, tracked by useSorobanResurrect.
+ */
+export interface RestoreProgress {
+  status: 'idle' | 'checking' | 'restoring' | 'complete' | 'error'
+  currentBatch: number
+  totalBatches: number
+  keysRestored: number
+  totalKeys: number
+}
+
 export interface UseSorobanResurrectOptions<TSigner extends SigningStrategy = SigningStrategy> {
   rpcUrl: string
   networkPassphrase: string

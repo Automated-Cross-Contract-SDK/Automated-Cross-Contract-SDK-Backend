@@ -46,6 +46,12 @@ export interface SorobanWalletAdapter {
   onConnectionChange?(listener: ConnectionStatusListener): () => void
   /** Subscribes to network changes reported by this adapter. Returns an unsubscribe function. */
   onNetworkChange?(listener: NetworkChangeListener): () => void
+  /**
+   * Optional hook invoked when a pending connect() is abandoned (timeout or
+   * explicit cancellation) so the adapter can release resources such as
+   * iframes, popups, or bridge transports.
+   */
+  cancelConnect?(): void | Promise<void>
 }
 
 export type WalletAdapterErrorCode =
@@ -55,6 +61,7 @@ export type WalletAdapterErrorCode =
   | 'USER_REJECTED'
   | 'DEVICE_DISCONNECTED'
   | 'TIMEOUT'
+  | 'CONNECTION_TIMEOUT'
   | 'INVALID_XDR'
 
 /** Error raised by wallet adapters, with a stable `code` for programmatic handling. */
@@ -67,6 +74,59 @@ export class WalletAdapterError extends Error {
     super(message)
     this.name = 'WalletAdapterError'
   }
+}
+
+/**
+ * Default time (ms) a wallet connect() may stay pending before WalletManager
+ * rejects with a `CONNECTION_TIMEOUT` WalletAdapterError. Wallets that open an
+ * iframe or modal (Rabet, WalletConnect) can otherwise hang forever when the
+ * user never completes approval.
+ */
+export const DEFAULT_CONNECT_TIMEOUT_MS = 120_000
+
+/**
+ * Races a wallet connect() promise against a timeout. On timeout the adapter's
+ * optional `cancelConnect()` hook is invoked so iframes/popups are torn down,
+ * then a typed `WalletAdapterError('CONNECTION_TIMEOUT')` is thrown.
+ */
+export function withConnectTimeout<T>(
+  promise: Promise<T>,
+  adapter: Pick<SorobanWalletAdapter, 'name' | 'cancelConnect'>,
+  timeoutMs: number = DEFAULT_CONNECT_TIMEOUT_MS,
+): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise
+  return new Promise<T>((resolve, reject) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      try {
+        void adapter.cancelConnect?.()
+      } catch {
+        // Cleanup failures must not mask the timeout error.
+      }
+      reject(
+        new WalletAdapterError(
+          `${adapter.name} connection timed out after ${timeoutMs}ms`,
+          'CONNECTION_TIMEOUT',
+        ),
+      )
+    }, timeoutMs)
+    promise.then(
+      (value) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
 }
 
 /** Maps a wallet SDK/extension error onto a WalletAdapterError using common rejection/not-installed phrasing. */
