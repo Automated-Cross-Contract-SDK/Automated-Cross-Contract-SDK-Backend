@@ -1,7 +1,7 @@
 # 🔬 Performance Benchmarks
 
 Benchmarks are run on every PR to detect performance regressions.  
-If a PR causes >20% slowdown in any benchmark, CI will fail.
+If a PR causes a slowdown beyond the per-benchmark threshold below, CI will fail.
 
 ## Running locally
 
@@ -9,6 +9,9 @@ If a PR causes >20% slowdown in any benchmark, CI will fail.
 cd packages/sdk
 npx tsx scripts/benchmark.ts
 ```
+
+This writes `benchmark-results.json` in the current directory. The file is a
+local artifact only — it is **not** committed to the repository.
 
 ## Benchmarks measured
 

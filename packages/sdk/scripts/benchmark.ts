@@ -15,7 +15,7 @@
 
 import { performance } from 'node:perf_hooks'
 import { execSync } from 'node:child_process'
-import { writeFileSync, existsSync } from 'node:fs'
+import { writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -239,54 +239,22 @@ function compareResults(
       prDurationMs: result.durationMs,
       changePercent: Number(changePercent.toFixed(2)),
       regression,
-      threshold: threshold * 100,
+      threshold,
     })
   }
 
   return comparisons
 }
 
-// ---------------------------------------------------------------------------
-// Output helpers
-// ---------------------------------------------------------------------------
-
 function formatComparisonTable(comparisons: ComparisonResult[]): string {
-  const lines: string[] = [
-    '',
-    '| Benchmark | Base (ms) | PR (ms) | Change | Threshold | Regression |',
-    '|-----------|-----------|---------|--------|-----------|------------|',
-  ]
-
-  for (const c of comparisons) {
-    const icon = c.regression ? '🔴' : '🟢'
-    lines.push(
-      `| ${c.name} | ${c.baseDurationMs.toFixed(2)} | ${c.prDurationMs.toFixed(2)} | ${c.changePercent > 0 ? '+' : ''}${c.changePercent}% | ${c.threshold}% | ${icon} ${c.regression ? 'FAIL' : 'PASS'} |`,
-    )
-  }
-
-  return lines.join('\n')
-}
-
-function formatGithubComment(comparisons: ComparisonResult[], suite: BenchmarkSuite): string {
-  const regressions = comparisons.filter(c => c.regression)
-  const hasRegressions = regressions.length > 0
-
-  let comment = `## 🔬 Benchmark Results\n\n`
-  comment += `**Commit:** \`${suite.commit}\` | **Branch:** \`${suite.branch}\`\n\n`
-  comment += formatComparisonTable(comparisons)
-  comment += `\n`
-
-  if (hasRegressions) {
-    comment += `\n### ⚠️ Performance Regression Detected\n\n`
-    for (const r of regressions) {
-      comment += `- **${r.name}**: +${r.changePercent}% slower (threshold: ${r.threshold}%)\n`
-    }
-    comment += `\n> CI will fail when regression exceeds the configured threshold.\n`
-  } else {
-    comment += `\n### ✅ All benchmarks within acceptable range\n`
-  }
-
-  return comment
+  const header = '| Benchmark | Base (ms) | PR (ms) | Δ % | Threshold | Status |'
+  const divider = '| --- | --- | --- | --- | --- | --- |'
+  const rows = comparisons.map(c => {
+    const status = c.regression ? '❌ REGRESSION' : '✅ OK'
+    const sign = c.changePercent >= 0 ? '+' : ''
+    return `| ${c.name} | ${c.baseDurationMs} | ${c.prDurationMs} | ${sign}${c.changePercent}% | ${(c.threshold * 100).toFixed(0)}% | ${status} |`
+  })
+  return [header, divider, ...rows].join('\n')
 }
 
 // ---------------------------------------------------------------------------
@@ -294,79 +262,45 @@ function formatGithubComment(comparisons: ComparisonResult[], suite: BenchmarkSu
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2)
-  const doCompare = args.includes('--compare')
+  const compare = process.argv.includes('--compare')
 
-  console.log('🏃 Running performance benchmarks...\n')
   const suite = await runBenchmarks()
+  writeFileSync(RESULTS_FILE, JSON.stringify(suite, null, 2) + '\n')
+  console.log(JSON.stringify(suite, null, 2))
 
-  // Print results
-  for (const result of suite.results) {
-    console.log(
-      `  ${result.name.padEnd(45)} ${result.durationMs.toFixed(2).padStart(8)}ms  ${result.opsPerSecond.toLocaleString().padStart(10)} ops/s`,
+  if (!compare) return
+
+  if (!existsSync(BASE_RESULTS_FILE)) {
+    console.warn(
+      `No base results found at ${BASE_RESULTS_FILE}; skipping comparison. `,
+      'This is expected on the first run or when no baseline artifact is available.',
     )
+    return
   }
 
-  // Write results file
-  writeFileSync(RESULTS_FILE, JSON.stringify(suite, null, 2))
-  console.log(`\n📄 Results written to ${RESULTS_FILE}`)
+  const base: BenchmarkSuite = JSON.parse(readFileSync(BASE_RESULTS_FILE, 'utf-8'))
+  const comparisons = compareResults(suite, base)
 
-  // If comparing, load base results and compare
-  if (doCompare) {
-    if (!existsSync(BASE_RESULTS_FILE)) {
-      console.log('\n⚠️  No base benchmark results found. Skipping comparison.')
-      process.exit(0)
-    }
+  console.log('\n## Benchmark comparison\n')
+  console.log(formatComparisonTable(comparisons))
 
-    const baseSuite = JSON.parse(
-      require('fs').readFileSync(BASE_RESULTS_FILE, 'utf-8'),
-    ) as BenchmarkSuite
-
-    const comparisons = compareResults(suite, baseSuite)
-    const regressions = comparisons.filter(c => c.regression)
-
-    // Write comparison results for CI to consume
-    writeFileSync(
-      resolve(PACKAGE_DIR, 'benchmark-results-comparison.json'),
-      JSON.stringify(comparisons, null, 2),
+  const regressions = comparisons.filter(c => c.regression)
+  if (regressions.length > 0) {
+    console.error(
+      `\n❌ ${regressions.length} benchmark regression(s) exceeded the configured threshold:`,
     )
-
-    console.log(formatComparisonTable(comparisons))
-
-    // Output GitHub Actions annotation
-    if (process.env.GITHUB_ACTIONS) {
-      const comment = formatGithubComment(comparisons, suite)
-
-      // Set output for the GitHub Action
-      if (process.env.GITHUB_OUTPUT) {
-        const fs = require('fs')
-        fs.appendFileSync(
-          process.env.GITHUB_OUTPUT,
-          `benchmark_comment<<EOF\n${comment}\nEOF\n`,
-        )
-        fs.appendFileSync(
-          process.env.GITHUB_OUTPUT,
-          `has_regressions=${regressions.length > 0}\n`,
-        )
-      }
-
-      // Print GitHub step summary
-      if (process.env.GITHUB_STEP_SUMMARY) {
-        const fs = require('fs')
-        fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, comment)
-      }
+    for (const r of regressions) {
+      console.error(
+        `  - ${r.name}: +${r.changePercent}% (threshold ${(r.threshold * 100).toFixed(0)}%)`,
+      )
     }
-
-    if (regressions.length > 0) {
-      console.error(`\n❌ ${regressions.length} performance regression(s) detected!`)
-      process.exit(1)
-    }
-
-    console.log('\n✅ No performance regressions detected')
+    process.exit(1)
   }
+
+  console.log('\n✅ No benchmark regressions detected.')
 }
 
 main().catch(err => {
-  console.error('Benchmark failed:', err)
+  console.error(err)
   process.exit(1)
 })

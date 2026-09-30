@@ -92,6 +92,12 @@ export interface SorobanResurrectConfig {
    * Defaults to the Stellar SDK default when not set.
    */
   timeout?: number
+  /**
+   * Validity window, in seconds, applied to restore/original transactions via
+   * `TransactionBuilder.setTimeout`. Soroban RPC expects an explicit validity
+   * window rather than `[0, 0]` time bounds. Defaults to `60`.
+   */
+  txValiditySeconds?: number
   onLog?: (level: 'info' | 'warn' | 'error', message: string, data?: unknown) => void
   /**
    * When `true`, the SDK attempts to subscribe to transaction status updates
