@@ -13,6 +13,7 @@ import type {
 import { SorobanResurrectContext } from './SorobanResurrectContext.js'
 
 const DEFAULT_HISTORY_STORAGE_KEY = 'soroban-resurrect:history'
+const DEFAULT_MAX_HISTORY_RECORDS = 50
 
 function resolveSigner(strategy: SigningStrategy | undefined): ((xdr: string) => Promise<string>) | undefined {
   if (!strategy) return undefined
@@ -75,6 +76,7 @@ type SimulationCacheEntry = {
 }
 
 const CACHE_TTL_MS = 30_000
+const MAX_CACHE_ENTRIES = 100
 
 const IDLE_PROGRESS: RestoreProgress = {
   status: 'idle',
@@ -84,6 +86,21 @@ const IDLE_PROGRESS: RestoreProgress = {
   totalKeys: 0,
 }
 
+// Length of the raw XDR prefix mixed into the fallback cache key. Including the
+// full length plus a prefix slice makes accidental cross-transaction collisions
+// far less likely than a bare 32-bit hash over the whole payload.
+const FALLBACK_PREFIX_LENGTH = 64
+
+let warnedAboutWeakHash = false
+
+/**
+ * Hash a transaction XDR into a cache key.
+ *
+ * When `crypto.subtle` is unavailable (non-HTTPS contexts, older WebViews) we
+ * fall back to a degraded djb2-style 32-bit hash. That fallback is NOT
+ * collision-resistant, so we log a one-time warning and mix in the raw XDR
+ * length plus a prefix slice to reduce the collision blast radius.
+ */
 async function hashTxXDR(txXDR: string): Promise<string> {
   const cryptoObj = typeof globalThis !== 'undefined' ? (globalThis as any).crypto : undefined
   if (cryptoObj?.subtle?.digest && typeof TextEncoder !== 'undefined') {
@@ -92,11 +109,36 @@ async function hashTxXDR(txXDR: string): Promise<string> {
     return Array.from(new Uint8Array(buffer)).map((byte: number) => byte.toString(16).padStart(2, '0')).join('')
   }
 
+  if (!warnedAboutWeakHash) {
+    warnedAboutWeakHash = true
+    console.warn(
+      '[SorobanResurrect] crypto.subtle is unavailable; falling back to a weak 32-bit hash for simulation cache keys. ' +
+        'Cache keys are not collision-resistant in this degraded mode.',
+    )
+  }
+
   let hash = 5381
   for (let i = 0; i < txXDR.length; i += 1) {
     hash = ((hash << 5) + hash) ^ txXDR.charCodeAt(i)
   }
-  return (hash >>> 0).toString(16).padStart(8, '0')
+  const weakHash = (hash >>> 0).toString(16).padStart(8, '0')
+  const prefix = txXDR.slice(0, FALLBACK_PREFIX_LENGTH)
+  return `weak:${txXDR.length}:${prefix}:${weakHash}`
+}
+
+// Lazy purge: drop expired entries and enforce a max-size cap (oldest first).
+// Map preserves insertion order, so the first keys are the oldest entries.
+function sweepCache(cache: Map<string, SimulationCacheEntry>, now: number): void {
+  for (const [key, entry] of cache) {
+    if (entry.expiresAt <= now) {
+      cache.delete(key)
+    }
+  }
+  while (cache.size > MAX_CACHE_ENTRIES) {
+    const oldest = cache.keys().next().value
+    if (oldest === undefined) break
+    cache.delete(oldest)
+  }
 }
 
 /**
@@ -136,20 +178,27 @@ export function useSorobanResurrect<TSigner extends SigningStrategy = SigningStr
   const historyStorageKey = options.persistHistory
     ? (typeof options.persistHistory === 'string' ? options.persistHistory : DEFAULT_HISTORY_STORAGE_KEY)
     : undefined
+  const maxHistoryRecords = options.maxHistoryRecords ?? DEFAULT_MAX_HISTORY_RECORDS
   const [history, setHistory] = useState<TransactionRecord[]>(() => loadHistory(historyStorageKey))
+
+  // Persist history as a side effect of state changes rather than inside the
+  // setState updater. This avoids double-writes under StrictMode and prevents
+  // concurrent updaters from clobbering each other's localStorage writes.
+  useEffect(() => {
+    saveHistory(historyStorageKey, history)
+  }, [historyStorageKey, history])
 
   const addHistoryRecord = useCallback((record: TransactionRecord) => {
     setHistory((prev) => {
       const next = [...prev, record]
-      saveHistory(historyStorageKey, next)
-      return next
+      // Enforce the cap by dropping the oldest records when exceeded.
+      return next.length > maxHistoryRecords ? next.slice(next.length - maxHistoryRecords) : next
     })
-  }, [historyStorageKey])
+  }, [maxHistoryRecords])
 
   const clearHistory = useCallback(() => {
     setHistory([])
-    saveHistory(historyStorageKey, [])
-  }, [historyStorageKey])
+  }, [])
 
   // Stabilize onLog so it doesn't trigger config re-memoization when options change
   const preFlightEnabled = options.preFlight?.enabled ?? true
