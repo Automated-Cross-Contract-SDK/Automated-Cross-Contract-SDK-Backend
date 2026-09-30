@@ -46,7 +46,7 @@
     "test:mutation": "stryker run"
   },
   "dependencies": {
-    "@stellar/stellar-sdk": "^12.0.0",
+    "@stellar/stellar-sdk": "^17.1.0",
     "@soroban-resurrect/types": "^0.1.0"
   },
   "devDependencies": {
