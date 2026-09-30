@@ -97,21 +97,36 @@ export function formatTraceparent(ctx: TraceContext): string {
   return `${SUPPORTED_VERSION}-${ctx.traceId}-${ctx.spanId}-${ctx.traceFlags}`
 }
 
+const HEX_RE = /^[0-9a-f]+$/
+
 /**
  * Parse a W3C `traceparent` header value. Returns `null` when the value is
  * missing or malformed (per spec, callers should then start a fresh trace).
+ *
+ * Validation is strict per the W3C Trace Context spec:
+ * - exactly four `-`-delimited fields, no surrounding whitespace
+ * - version: 2 lowercase hex chars, `00`–`ff` excluding `ff`
+ * - trace-id: 32 lowercase hex chars, not all zeros
+ * - parent-id: 16 lowercase hex chars, not all zeros
+ * - trace-flags: 2 lowercase hex chars
+ *
+ * Unknown (future) versions `>00` are accepted and their `traceflags` are
+ * recorded verbatim, as required by the spec's forward-compatibility rules.
  */
 export function parseTraceparent(
   value: string | string[] | undefined | null,
 ): TraceContext | null {
   if (!value) return null
   const raw = Array.isArray(value) ? value[0] : value
-  const match = TRACEPARENT_RE.exec(raw.trim().toLowerCase())
+  if (typeof raw !== 'string') return null
+  // Reject surrounding whitespace rather than silently trimming it.
+  if (raw !== raw.trim()) return null
+  const match = TRACEPARENT_RE.exec(raw)
   if (!match) return null
   const [, version, traceId, spanId, traceFlags] = match
-  // Future versions must still be accepted if they start with a known shape,
-  // but version ff is explicitly invalid.
+  // Version `ff` is explicitly invalid per spec.
   if (version === 'ff') return null
+  // trace-id and parent-id must not be all zeros.
   if (traceId === '0'.repeat(32) || spanId === '0'.repeat(16)) return null
   return { traceId, spanId, traceFlags }
 }
@@ -239,13 +254,13 @@ export class Tracer {
       this.parent != null
         ? (parseInt(this.parent.traceFlags, 16) & FLAG_SAMPLED) === FLAG_SAMPLED
         : this.config.sampled !== false
-
+    const startTime = now()
     const data: SpanData = {
       name,
       traceId,
       spanId,
       parentSpanId: this.parent?.spanId,
-      startTime: now(),
+      startTime,
       startEpochMs: Date.now(),
       status: 'unset',
       attributes: {
@@ -256,25 +271,5 @@ export class Tracer {
       },
     }
     return new Span(data, this.parent?.traceState, this.config.exporter)
-  }
-
-  /**
-   * Convenience wrapper: run `fn` inside a span, forwarding the propagation
-   * headers to it and ending the span with the correct status automatically.
-   */
-  async withSpan<T>(
-    name: string,
-    fn: (headers: Record<string, string>, span: Span) => Promise<T>,
-    attributes?: Record<string, string | number | boolean>,
-  ): Promise<T> {
-    const span = this.startSpan(name, attributes)
-    try {
-      const result = await fn(span.headers(), span)
-      span.end('ok')
-      return result
-    } catch (err) {
-      span.end('error', err)
-      throw err
-    }
   }
 }

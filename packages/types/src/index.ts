@@ -32,6 +32,26 @@ export type SacKeyType = 'sacBalance' | 'sacAllowance' | 'sacNonce' | 'sacAdmin'
  */
 export type RestorePriority = 0 | 1 | 2 | 3
 
+/**
+ * Feature flags controlling optional SDK behaviour.
+ *
+ * All flags are optional; consumers should treat a missing flag as `false`.
+ * This type is part of the public surface of `@soroban-resurrect/types` and is
+ * re-exported by `@soroban-resurrect/compat`.
+ */
+export interface FeatureFlags {
+  /** Enable WebSocket-based transaction status subscriptions. */
+  useWebSocket?: boolean
+  /** Enable caching of extracted footprints keyed by transaction hash. */
+  footprintCache?: boolean
+  /** Enable concurrent multi-batch restoration. */
+  concurrentRestore?: boolean
+  /** Enable strict network passphrase validation. */
+  strictNetworkValidation?: boolean
+  /** Allow additional, forward-compatible flags without breaking consumers. */
+  [flag: string]: boolean | undefined
+}
+
 export interface ArchivedKey {
   key: xdr.LedgerKey
   keyBase64: string
@@ -240,3 +260,5 @@ export interface FailedRestoreState {
   sourceAccountID: string
   /**
    * Batches that were not successfully su
+
+/* … truncated 4841 chars — edit only what you need near the top … */
