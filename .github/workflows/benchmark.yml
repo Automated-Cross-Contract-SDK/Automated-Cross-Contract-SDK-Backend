@@ -23,11 +23,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # Needed to access base branch
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
@@ -46,7 +46,7 @@ jobs:
 
       - name: Upload baseline artifact
         if: github.event_name == 'push'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-baseline
           path: packages/sdk/benchmark-results.json
@@ -55,7 +55,7 @@ jobs:
       # On PRs, download the latest baseline from main and compare against it.
       - name: Download baseline artifact
         if: github.event_name == 'pull_request'
-        uses: dawidd6/action-download-artifact@v6
+        uses: dawidd6/action-download-artifact@v26
         continue-on-error: true
         with:
           workflow: benchmark.yml
@@ -73,7 +73,7 @@ jobs:
       # Comment benchmark results on the PR
       - name: Comment benchmark results on PR
         if: github.event_name == 'pull_request' && always()
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
