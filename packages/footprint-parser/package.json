@@ -52,7 +52,7 @@
   "devDependencies": {
     "@stryker-mutator/core": "^8.7.1",
     "@stryker-mutator/vitest-runner": "^8.7.1",
-    "tsup": "^8.3.0",
+    "tsup": "^8.5.1",
     "typescript": "^5.5.0",
     "vitest": "^5.0.1"
   },
