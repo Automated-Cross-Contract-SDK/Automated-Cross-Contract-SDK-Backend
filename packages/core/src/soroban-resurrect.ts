@@ -103,6 +103,7 @@ export class SorobanResurrect {
       useWebSocket: false,
       pollIntervalMs: 1000,
       maxPollAttempts: 30,
+      restoreConfirmationPolicy: 'confirmed',
       ...config,
     }
 
@@ -510,7 +511,11 @@ export class SorobanResurrect {
       this.log('info', `Executing restore batch ${i + 1}/${batches.length} (${batch.keysRestored} keys)`)
 
       try {
-        const txHash = await this.submitSignedTransaction(batch.transactionXDR, signTransaction)
+        const txHash = await this.submitSignedTransaction(
+          batch.transactionXDR,
+          signTransaction,
+          this.restoreAwaitsConfirmation(),
+        )
         results.push({
           ...batch,
           txHash,
@@ -630,7 +635,11 @@ export class SorobanResurrect {
         `Starting restore batch ${idx + 1}/${total} (${batch.keysRestored} keys)`,
       )
       try {
-        const txHash = await this.submitSignedTransaction(batch.transactionXDR, signTransaction)
+        const txHash = await this.submitSignedTransaction(
+          batch.transactionXDR,
+          signTransaction,
+          this.restoreAwaitsConfirmation(),
+        )
         results[idx] = { ...batch, txHash, status: 'success' }
         totalKeysRestored += batch.keysRestored
         this.log('info', `Batch ${idx + 1}/${total} confirmed: ${txHash}`)
@@ -1112,7 +1121,11 @@ export class SorobanResurrect {
     // Execute restore transaction
     try {
       this.log('info', 'Executing restore transaction')
-      restoreTxHash = await this.submitSignedTransaction(restoreXDR, signTransaction)
+      restoreTxHash = await this.submitSignedTransaction(
+        restoreXDR,
+        signTransaction,
+        this.restoreAwaitsConfirmation(),
+      )
       this.log('info', `Restore transaction confirmed: ${restoreTxHash}`)
     } catch (err) {
       const resurrErr = new SorobanResurrectError(
@@ -1234,9 +1247,14 @@ export class SorobanResurrect {
     }
   }
 
+  private restoreAwaitsConfirmation(): boolean {
+    return this.config.restoreConfirmationPolicy !== 'submitted'
+  }
+
   private async submitSignedTransaction(
     txXDR: string,
     signTransaction: (xdr: string) => Promise<string>,
+    awaitConfirmation = true,
   ): Promise<string> {
     const signedXDR = await signTransaction(txXDR)
 
@@ -1249,6 +1267,10 @@ export class SorobanResurrect {
 
     if (sendResult.status === 'PENDING' || sendResult.status === 'DUPLICATE') {
       const hash = sendResult.hash
+      if (!awaitConfirmation) {
+        this.log('info', `Transaction ${hash} submitted without waiting for confirmation`)
+        return hash
+      }
       const { hash: confirmedHash } = await this.waitForTransaction(hash)
       return confirmedHash
     }

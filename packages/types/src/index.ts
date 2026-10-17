@@ -80,6 +80,17 @@ export interface ArchivedKey {
   restorePriority: RestorePriority
 }
 
+/**
+ * Controls how far the SDK waits for a restore transaction before moving on.
+ *
+ * - `confirmed` – wait until each restore transaction is confirmed on-chain
+ *   before submitting the next one (default, safest).
+ * - `submitted` – return as soon as the RPC accepts a restore transaction.
+ *   Faster, but the SDK then cannot prove the restore landed; results report
+ *   `restoreConfirmed: false`.
+ */
+export type RestoreConfirmationPolicy = 'confirmed' | 'submitted'
+
 export interface SorobanResurrectConfig {
   /** Single RPC URL or an ordered list of fallback URLs */
   rpcUrl: string | string[]
@@ -98,6 +109,11 @@ export interface SorobanResurrectConfig {
    * window rather than `[0, 0]` time bounds. Defaults to `60`.
    */
   txValiditySeconds?: number
+  /**
+   * How long the SDK waits for restore transactions to confirm. The original
+   * transaction is always awaited to confirmation. Defaults to `'confirmed'`.
+   */
+  restoreConfirmationPolicy?: RestoreConfirmationPolicy
   onLog?: (level: 'info' | 'warn' | 'error', message: string, data?: unknown) => void
   /**
    * When `true`, the SDK attempts to subscribe to transaction status updates
