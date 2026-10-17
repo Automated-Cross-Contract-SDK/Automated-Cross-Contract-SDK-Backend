@@ -16,6 +16,7 @@ import {
   RestoreTransactionResult,
   RestoreBatchResult,
   RestoreAllBatchesResult,
+  RestoreExecutionReceipt,
   ConcurrentRestoreResult,
   ContractKeyGroup,
   ExecutionResult,
@@ -30,6 +31,7 @@ import {
   TtlChange,
 } from './types.js'
 import { NOOP_LOGGER, onLogToLogger, type Logger } from './logger.js'
+import { EventDeduplicator } from './event-deduplicator.js'
 import {
   FootprintKeys,
   extractKeysFromFootprint,
@@ -342,6 +344,10 @@ export class SorobanResurrect {
     for (const listener of set) {
       (listener as (...a: Parameters<SorobanResurrectEvents[K]>) => void)(...args)
     }
+  }
+
+  private get logger(): Logger {
+    return this.config.logger ?? NOOP_LOGGER
   }
 
   private log(level: 'info' | 'warn' | 'error' | 'debug', message: string, meta?: Record<string, unknown>): void {
@@ -1997,6 +2003,112 @@ export class SorobanResurrect {
       undefined,
       { rpcUrl: this.config.rpcUrl, txHash: hash },
     )
+  }
+
+  /**
+   * Builds a JSON-serializable receipt so the caller can persist it and resume
+   * later with `resumeRestoreBatches`.
+   *
+   * `executeRestoreBatches` stops at the first failure and only reports the
+   * batches it reached, so pass the full planned batch list as well. Every
+   * planned batch appears in the receipt: executed ones take their result
+   * status, unexecuted ones stay `pending`.
+   */
+  createExecutionReceipt(
+    result: RestoreAllBatchesResult,
+    sourceAccountID: string,
+    plannedBatches: RestoreBatchResult[],
+  ): RestoreExecutionReceipt {
+    const executed = new Map(result.batches.map(batch => [batch.batchIndex, batch]))
+    return {
+      version: 1,
+      sourceAccountID,
+      batches: plannedBatches.map(batch => ({ ...(executed.get(batch.batchIndex) ?? batch) })),
+    }
+  }
+
+  /**
+   * Parses and validates a receipt previously produced by
+   * `createExecutionReceipt` and serialized with `JSON.stringify`.
+   *
+   * @throws {SorobanResurrectError} `INVALID_XDR` when the payload does not match
+   *   the receipt shape.
+   */
+  parseExecutionReceipt(json: string): RestoreExecutionReceipt {
+    const invalid = (reason: string): never => {
+      throw new SorobanResurrectError(
+        `Invalid execution receipt: ${reason}. Fix: pass the JSON produced by JSON.stringify(createExecutionReceipt(...)).`,
+        'INVALID_XDR',
+      )
+    }
+
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(json)
+    } catch {
+      return invalid('not valid JSON')
+    }
+
+    if (typeof parsed !== 'object' || parsed === null) return invalid('expected an object')
+    const candidate = parsed as Partial<RestoreExecutionReceipt>
+    if (candidate.version !== 1) return invalid('unsupported version')
+    if (typeof candidate.sourceAccountID !== 'string') return invalid('missing sourceAccountID')
+    if (!Array.isArray(candidate.batches)) return invalid('missing batches array')
+
+    for (const batch of candidate.batches) {
+      if (typeof batch.batchIndex !== 'number') return invalid('batch is missing batchIndex')
+      if (typeof batch.transactionXDR !== 'string') return invalid(`batch ${batch.batchIndex} is missing transactionXDR`)
+      if (typeof batch.keysRestored !== 'number') return invalid(`batch ${batch.batchIndex} is missing keysRestored`)
+      if (!['pending', 'success', 'failed'].includes(batch.status)) return invalid(`batch ${batch.batchIndex} has an unknown status`)
+    }
+
+    return candidate as RestoreExecutionReceipt
+  }
+
+  /**
+   * Resumes a multi-batch restore from a receipt. Batches that already
+   * succeeded (status `success` or a recorded `txHash`) are never resubmitted;
+   * every other batch is executed in `batchIndex` order.
+   *
+   * The returned result lists all batches in receipt order, so `batches` and
+   * `totalKeysRestored` cover the whole restore, not just the resumed part.
+   */
+  async resumeRestoreBatches(
+    receipt: RestoreExecutionReceipt,
+    signTransaction: (xdr: string) => Promise<string>,
+  ): Promise<RestoreAllBatchesResult> {
+    const ordered = [...receipt.batches].sort((a, b) => a.batchIndex - b.batchIndex)
+    const pending = ordered.filter(batch => batch.status !== 'success' && !batch.txHash)
+    const alreadyDone = ordered.length - pending.length
+
+    this.log('info', `Resuming restore: ${pending.length} of ${ordered.length} batches remaining (${alreadyDone} already succeeded)`)
+
+    if (pending.length === 0) {
+      return {
+        success: true,
+        batches: ordered,
+        totalKeysRestored: ordered.reduce((sum, batch) => sum + batch.keysRestored, 0),
+      }
+    }
+
+    const resumed = await this.executeRestoreBatches(
+      pending.map(batch => ({ ...batch, status: 'pending', txHash: undefined, error: undefined })),
+      signTransaction,
+      receipt.sourceAccountID,
+    )
+
+    const resultsByIndex = new Map(resumed.batches.map(batch => [batch.batchIndex, batch]))
+    const merged = ordered.map(batch => resultsByIndex.get(batch.batchIndex) ?? batch)
+
+    return {
+      success: resumed.success,
+      batches: merged,
+      totalKeysRestored: merged
+        .filter(batch => batch.status === 'success')
+        .reduce((sum, batch) => sum + batch.keysRestored, 0),
+      failedAtBatchIndex: resumed.failedAtBatchIndex,
+      error: resumed.error,
+    }
   }
 
   /**

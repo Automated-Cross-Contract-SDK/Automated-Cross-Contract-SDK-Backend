@@ -259,6 +259,17 @@ export interface RestoreAllBatchesResult {
   error?: string
 }
 
+/**
+ * JSON-serializable record of a multi-batch restore. Persist it after
+ * `executeRestoreBatches` (or a failed run) and pass it to
+ * `resumeRestoreBatches` to submit only the batches that never succeeded.
+ */
+export interface RestoreExecutionReceipt {
+  version: 1
+  sourceAccountID: string
+  batches: RestoreBatchResult[]
+}
+
 export interface ConcurrentRestoreResult {
   success: boolean
   batches: RestoreBatchResult[]

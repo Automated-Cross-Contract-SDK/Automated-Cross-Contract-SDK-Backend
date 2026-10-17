@@ -213,3 +213,31 @@ Check `onLog` output at warn/error level for details.
 **Q: My batches are all tiny, but fee budget seems high?**
 
 A: The XDR size limit (100 KB) is likely the real constraint. Each key's XDR representation (in base64) plus overhead pushes this limit quickly. Reduce `maxRestoreBatchSize` or increase key-entry density, not the fee budget.
+
+## Resuming from an execution receipt
+
+`executeRestoreBatches` stops at the first failed batch. To continue later
+without resubmitting work that already landed:
+
+```ts
+const planned = await client.buildRestoreTransactionBatches(archivedKeys, source)
+const result = await client.executeRestoreBatches(planned, sign, source)
+
+// Persist as JSON (e.g. localStorage, a database row).
+const receipt = client.createExecutionReceipt(result, source, planned)
+const json = JSON.stringify(receipt)
+
+// Later, possibly in another session:
+const resumed = await client.resumeRestoreBatches(
+  client.parseExecutionReceipt(json),
+  sign,
+)
+```
+
+- Batches with status `success` or a recorded `txHash` are never resubmitted.
+- Every other batch runs in `batchIndex` order and its status is updated in the
+  returned result, which covers the whole restore.
+- `parseExecutionReceipt` throws `INVALID_XDR` for a payload that is not a
+  version 1 receipt.
+- Resumed batches reuse their stored XDR. If their sequence numbers may be stale,
+  use `retryFailedRestore`, which rebuilds the transactions first.
