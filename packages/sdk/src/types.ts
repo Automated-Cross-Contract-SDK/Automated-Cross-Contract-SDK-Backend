@@ -257,6 +257,12 @@ export interface RestoreAllBatchesResult {
   totalKeysRestored: number
   failedAtBatchIndex?: number
   error?: string
+  /**
+   * True when the failing batch was accepted by the network but its outcome
+   * could not be confirmed (for example a confirmation timeout). The batch may
+   * have landed, so callers must not treat the failure as a clean rejection.
+   */
+  ambiguous?: boolean
 }
 
 /**
@@ -402,4 +408,13 @@ export interface SorobanResurrectEvents {
   'original:complete': (hash: string) => void
   /** Fired whenever a SorobanResurrectError is thrown during execution. */
   'error': (error: SorobanResurrectError) => void
+}
+
+/**
+ * True when a transaction was accepted by the network (it has a hash) but its
+ * final outcome could not be confirmed, such as a confirmation timeout. The
+ * transaction may still have landed, so it is not safe to assume it failed.
+ */
+export function isAmbiguousSubmissionError(err: unknown): boolean {
+  return err instanceof SorobanResurrectError && err.code === 'NETWORK_ERROR' && typeof err.txHash === 'string'
 }

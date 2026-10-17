@@ -22,6 +22,7 @@ import {
   ExecutionResult,
   FailedRestoreState,
   SorobanResurrectError,
+  isAmbiguousSubmissionError,
   FeeBumpMetadata,
   SorobanResurrectEvents,
   WsTransactionStatusEvent,
@@ -979,6 +980,7 @@ export class SorobanResurrect {
           totalKeysRestored,
           failedAtBatchIndex: i,
           error: `Batch ${i + 1} failed: ${errorMsg}`,
+          ambiguous: isAmbiguousSubmissionError(err),
         }
       }
     }
@@ -1686,6 +1688,17 @@ export class SorobanResurrect {
       batchResults = await this.executeRestoreBatches(restoreBatches, signTransaction)
 
       if (!batchResults.success) {
+        // An ambiguous batch may have landed on-chain. Submitting the original
+        // transaction now could run it against a partially restored footprint,
+        // so stop here even when partial success is allowed.
+        if (batchResults.ambiguous) {
+          throw new SorobanResurrectError(
+            `Restore batch ${(batchResults.failedAtBatchIndex ?? 0) + 1} has an unconfirmed outcome; original transaction was not submitted. Fix: confirm the batch transaction on-chain, then call getFailedKeys() and retryFailedRestore() before resubmitting the original.`,
+            'RESTORE_FAILED',
+            batchResults,
+          )
+        }
+
         // When batches fail partway through, expose partial-failure state
         if (requireAllBatches) {
           // Original behavior: throw on any batch failure

@@ -248,3 +248,14 @@ Concurrent submissions of the same transaction XDR share one in-flight
 signing and submission. The wallet is prompted once, and the network receives
 the transaction once. The shared entry is cleared when the submission settles,
 so a call made after a failure starts a new submission.
+
+## Ambiguous batch outcomes
+
+A batch whose transaction was accepted but could not be confirmed (a
+confirmation timeout that carries a `txHash`) is reported with
+`RestoreAllBatchesResult.ambiguous = true`. In
+`executeRestoreThenOriginalBatches` such a batch stops the flow with
+`RESTORE_FAILED` even when `requireAllBatches` is `false`, so the original
+transaction is never submitted against a footprint that may be partly restored.
+Confirm the batch on-chain, then use `getFailedKeys()` and `retryFailedRestore()`.
+A definite rejection keeps the existing partial-success behavior.
