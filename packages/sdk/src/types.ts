@@ -418,3 +418,14 @@ export interface SorobanResurrectEvents {
 export function isAmbiguousSubmissionError(err: unknown): boolean {
   return err instanceof SorobanResurrectError && err.code === 'NETWORK_ERROR' && typeof err.txHash === 'string'
 }
+
+/**
+ * True when the network rejected a submission before applying it because the
+ * sequence number was stale (`txBadSeq`) or the transaction was too late
+ * (`txTooLate`). Such a transaction did not land, so its batch can be rebuilt
+ * with a fresh sequence number safely.
+ */
+export function isStaleSequenceError(err: unknown): boolean {
+  if (!(err instanceof SorobanResurrectError) || err.code !== 'ORIGINAL_TX_FAILED') return false
+  return /result=(txBadSeq|txTooLate)\b/.test(err.message)
+}

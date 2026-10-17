@@ -259,3 +259,18 @@ confirmation timeout that carries a `txHash`) is reported with
 transaction is never submitted against a footprint that may be partly restored.
 Confirm the batch on-chain, then use `getFailedKeys()` and `retryFailedRestore()`.
 A definite rejection keeps the existing partial-success behavior.
+
+## Stale sequence numbers
+
+Batch transactions are built with projected sequence numbers. If another
+transaction from the same account lands first, later batches are rejected with
+`txBadSeq`. A transaction that expires before inclusion is rejected with
+`txTooLate`. Both rejections mean the transaction did not apply.
+
+`executeRestoreBatches` treats these two results as safe to retry. When it is
+given a `sourceAccountID`, it rebuilds the failed batch and the batches after it
+with a fresh sequence number, then retries once. A second stale rejection fails
+the batch as usual. Ambiguous outcomes (accepted but unconfirmed) are never
+rebuilt, because the original transaction may already have landed.
+`resumeRestoreBatches` passes the receipt's source account, so resumed batches
+get the same protection.
