@@ -7,6 +7,7 @@ import {
   xdr,
   SorobanDataBuilder,
   BASE_FEE,
+  StrKey,
 } from '@stellar/stellar-sdk'
 import {
   ArchivedKey,
@@ -1246,6 +1247,39 @@ export class SorobanResurrect {
   }
 
   /**
+   * Ensures the wallet returned a transaction whose source account is the one
+   * the unsigned XDR was built for and that carries a signature from that
+   * account. A wallet that signs with a different key (for example, the active
+   * account was switched mid-flow) would otherwise only fail later on-ledger
+   * with an opaque bad-auth error.
+   */
+  private assertSignerMatchesSource(unsignedXDR: string, signedTx: Transaction): void {
+    const expectedSource = new Transaction(unsignedXDR, this.config.networkPassphrase).source
+
+    if (signedTx.source !== expectedSource) {
+      throw new SorobanResurrectError(
+        `Wallet returned a transaction for source ${signedTx.source}, expected ${expectedSource}`,
+        'INVALID_XDR',
+        undefined,
+        { rpcUrl: this.config.rpcUrl },
+      )
+    }
+
+    // A decorated signature's hint is the last four bytes of the signer's key.
+    const sourceHint = Buffer.from(StrKey.decodeEd25519PublicKey(expectedSource)).subarray(-4)
+    const hasSourceSignature = signedTx.signatures.some(sig => sig.hint().equals(sourceHint))
+
+    if (!hasSourceSignature) {
+      throw new SorobanResurrectError(
+        `Wallet did not sign with the source account ${expectedSource}`,
+        'INVALID_XDR',
+        undefined,
+        { rpcUrl: this.config.rpcUrl },
+      )
+    }
+  }
+
+  /**
    * Confirms on-ledger that a restore transaction ended with `SUCCESS` before
    * any original transaction is allowed to depend on it. Guards against
    * building on a restore that was accepted but later failed or was never
@@ -1274,6 +1308,7 @@ export class SorobanResurrect {
     const signedXDR = await signTransaction(txXDR)
 
     const tx = new Transaction(signedXDR, this.config.networkPassphrase)
+    this.assertSignerMatchesSource(txXDR, tx)
 
     const sendResult = await this.retryOnFailure(
       () => this.getServer().sendTransaction(tx),
