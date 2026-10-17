@@ -86,6 +86,12 @@ export interface SorobanResurrectConfig {
   networkPassphrase: string
   allowHttp?: boolean
   restoreFee?: string
+  /**
+   * Optional ceiling (stroops, as a decimal string) on the total fee of any
+   * transaction the SDK is about to sign. Transactions whose fee exceeds it
+   * are rejected before the wallet is prompted. Unset means no ceiling.
+   */
+  maxFeeStroops?: string
   maxRestoreBatchSize?: number
   /**
    * Timeout in milliseconds for RPC requests made by SorobanRpc.Server.

@@ -1247,6 +1247,28 @@ export class SorobanResurrect {
   }
 
   /**
+   * Rejects a transaction whose fee exceeds `config.maxFeeStroops` before the
+   * wallet is asked to sign it, so a user is never prompted for a fee the
+   * application has ruled out. No-op when no ceiling is configured.
+   */
+  private assertFeeWithinCeiling(unsignedXDR: string): void {
+    const ceiling = this.config.maxFeeStroops
+    if (ceiling === undefined) {
+      return
+    }
+
+    const fee = BigInt(new Transaction(unsignedXDR, this.config.networkPassphrase).fee)
+    if (fee > BigInt(ceiling)) {
+      throw new SorobanResurrectError(
+        `Transaction fee ${fee} stroops exceeds configured maxFeeStroops ${ceiling}`,
+        'UNKNOWN',
+        undefined,
+        { rpcUrl: this.config.rpcUrl },
+      )
+    }
+  }
+
+  /**
    * Ensures the wallet returned a transaction whose source account is the one
    * the unsigned XDR was built for and that carries a signature from that
    * account. A wallet that signs with a different key (for example, the active
@@ -1305,6 +1327,8 @@ export class SorobanResurrect {
     txXDR: string,
     signTransaction: (xdr: string) => Promise<string>,
   ): Promise<string> {
+    this.assertFeeWithinCeiling(txXDR)
+
     const signedXDR = await signTransaction(txXDR)
 
     const tx = new Transaction(signedXDR, this.config.networkPassphrase)
