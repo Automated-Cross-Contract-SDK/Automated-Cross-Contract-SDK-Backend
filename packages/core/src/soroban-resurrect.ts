@@ -36,6 +36,7 @@ import {
 import { ExponentialBackoff, type RetryPolicy } from '@soroban-resurrect/rpc'
 import { SimulationCache, type SimulationCacheConfig } from '@soroban-resurrect/rpc'
 import { RpcFailoverManager, type RpcEndpointHealth } from '@soroban-resurrect/rpc'
+import { probeRpcMethods, RESTORE_REQUIRED_METHODS } from '@soroban-resurrect/rpc'
 import { FootprintCache } from '@soroban-resurrect/rpc'
 import { DEFAULT_MAX_CONCURRENCY, delay, MAX_RETRIES } from '@soroban-resurrect/utils'
 
@@ -119,6 +120,7 @@ export class SorobanResurrect {
   private simulationCache?: SimulationCache
   private footprintCache?: FootprintCache
   private _lastFailedRestoreState: FailedRestoreState | null = null
+  private restoreMethodChecks: Map<string, Promise<void>> = new Map()
 
   constructor(config: SorobanResurrectConfig) {
     this.config = {
@@ -434,6 +436,8 @@ export class SorobanResurrect {
       )
     }
 
+    await this.ensureRestoreMethodsAvailable()
+
     // Classify keys on demand before batch building (deferred from simulation)
     const classified = classifyDeferredKeys(
       archivedKeys.map(k => ({ key: k.key, keyBase64: k.keyBase64 })),
@@ -462,6 +466,8 @@ export class SorobanResurrect {
     if (archivedKeys.length === 0) {
       throw new SorobanResurrectError('No archived keys to restore', 'INVALID_XDR')
     }
+
+    await this.ensureRestoreMethodsAvailable()
 
     // Classify keys on demand before batch building (deferred from simulation)
     const classified = classifyDeferredKeys(
@@ -1810,6 +1816,52 @@ export class SorobanResurrect {
    */
   getFailoverStatus(): RpcEndpointHealth[] {
     return this.failoverManager.getHealthStatus()
+  }
+
+  /**
+   * Fails before any restore transaction is built when the active RPC endpoint
+   * lacks a method the restore flow needs. The result is cached per endpoint;
+   * a transport failure clears the cache entry so the next call re-probes.
+   */
+  private ensureRestoreMethodsAvailable(): Promise<void> {
+    const url = this.primaryEndpointUrl()
+    let check = this.restoreMethodChecks.get(url)
+    if (!check) {
+      check = this.probeRestoreMethods(url)
+      this.restoreMethodChecks.set(url, check)
+      check.catch(() => this.restoreMethodChecks.delete(url))
+    }
+    return check
+  }
+
+  private async probeRestoreMethods(url: string): Promise<void> {
+    let probe: Awaited<ReturnType<typeof probeRpcMethods>>
+    try {
+      probe = await probeRpcMethods(url, RESTORE_REQUIRED_METHODS)
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      throw new SorobanResurrectError(
+        'NETWORK_ERROR',
+        `Could not verify restore RPC methods at ${url}: ${reason}`,
+      )
+    }
+
+    if (probe.missing.length > 0) {
+      throw new SorobanResurrectError(
+        'RPC_METHOD_UNAVAILABLE',
+        `RPC endpoint ${url} lacks methods required for restore: ${probe.missing.join(', ')}`,
+      )
+    }
+  }
+
+  /**
+   * URL of the first healthy endpoint, falling back to the first configured
+   * URL when every endpoint is marked unhealthy.
+   */
+  private primaryEndpointUrl(): string {
+    const healthy = this.getFailoverStatus().find(ep => ep.isHealthy)
+    if (healthy) return healthy.url
+    return Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl
   }
 
   /**

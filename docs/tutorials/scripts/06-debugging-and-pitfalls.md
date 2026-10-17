@@ -224,6 +224,8 @@ console.log('Protocol version:', diagnostics.protocolVersion)
 console.log('Active endpoint:', diagnostics.activeEndpoint)
 ```
 
+**Restore fails with `RPC_METHOD_UNAVAILABLE`:** before building a restore, the SDK checks that the active RPC endpoint supports `getLedgerEntries`, `simulateTransaction`, `sendTransaction` and `getTransaction`. If an endpoint reports any of them as not found, the build fails immediately with the missing method names instead of partway through a restore. Switch to an endpoint that supports them. A `NETWORK_ERROR` from this check means the endpoint could not be reached; the check runs again on the next attempt.
+
 ### Key Takeaways
 
 - Always handle network errors and timeouts

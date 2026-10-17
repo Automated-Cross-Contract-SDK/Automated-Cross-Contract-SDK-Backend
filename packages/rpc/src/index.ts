@@ -2,6 +2,8 @@ export { ExponentialBackoff, FixedDelay, JitterBackoff, CircuitBreaker, DEFAULT_
 export { SimulationCache } from './simulation-cache.js'
 export { FootprintCache } from './footprint-cache.js'
 export { RpcFailoverManager } from './rpc-failover.js'
+export { probeRpcMethods, RESTORE_REQUIRED_METHODS, JSON_RPC_METHOD_NOT_FOUND } from './rpc-method-probe.js'
+export type { RpcMethodProbeResult, RestoreRequiredMethod, FetchLike } from './rpc-method-probe.js'
 
 export type { RetryPolicy } from '@soroban-resurrect/types'
 export type { SimulationCacheConfig, CacheStatistics } from '@soroban-resurrect/types'
