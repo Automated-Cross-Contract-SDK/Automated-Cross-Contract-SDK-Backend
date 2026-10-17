@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { xdr } from '@stellar/stellar-sdk'
 import {
+  classifyDeferredKeys,
   classifyLedgerKey,
   encodeLedgerKey,
   extractKeysFromFootprint,
@@ -47,6 +48,31 @@ describe('classifyLedgerKey', () => {
       new xdr.LedgerKeyConfigSetting({ configSettingId: xdr.ConfigSettingId.configSettingContractMaxSizeBytes() }),
     )
     expect(classifyLedgerKey(key)).toEqual({ keyType: 'unknown', restorePriority: 3 })
+  })
+})
+
+describe('forward-compatible handling of unknown ledger key variants', () => {
+  const unknownKey = () =>
+    xdr.LedgerKey.configSetting(
+      new xdr.LedgerKeyConfigSetting({ configSettingId: xdr.ConfigSettingId.configSettingContractMaxSizeBytes() }),
+    )
+
+  it('keeps unknown variants in a mixed batch instead of throwing', () => {
+    const known = contractDataKey(xdr.ScVal.scvLedgerKeyContractInstance())
+    const unknown = unknownKey()
+    const deferred = [unknown, known].map(key => ({ key, keyBase64: encodeLedgerKey(key) }))
+
+    const classified = classifyDeferredKeys(deferred)
+
+    expect(classified).toHaveLength(2)
+    expect(classified[0].keyType).toBe('contractInstance')
+    expect(classified[1]).toMatchObject({ keyType: 'unknown', restorePriority: 3 })
+    expect(classified[1].keyBase64).toBe(encodeLedgerKey(unknown))
+  })
+
+  it('classifies an unknown variant decoded from raw XDR the same way', () => {
+    const decoded = xdr.LedgerKey.fromXDR(unknownKey().toXDR('base64'), 'base64')
+    expect(classifyLedgerKey(decoded)).toEqual({ keyType: 'unknown', restorePriority: 3 })
   })
 })
 
