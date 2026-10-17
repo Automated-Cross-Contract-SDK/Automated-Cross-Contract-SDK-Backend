@@ -48,3 +48,23 @@ returned:
 A response that fails any of these checks throws `JsonRpcProtocolError` and is never
 returned as data. `JsonRpcProtocolError` is not retryable, because a malformed
 response usually means a misconfigured endpoint or proxy rather than a transient fault.
+
+## Retries and `Retry-After`
+
+`withRetry(operation, { policy, deadlineMs })` retries retryable `JsonRpcTransportError`s.
+`JsonRpcError` and non-retryable transport errors are thrown immediately.
+
+- `policy` supplies `maxRetries` and the backoff, such as `ExponentialBackoff`.
+- When a `429` or `5xx` response carries a `Retry-After` header, that wait replaces the
+  backoff for that attempt. The header may be a number of seconds or an HTTP-date.
+- `deadlineMs` bounds the total time measured from the first attempt. If the next wait
+  would run past it, no sleep happens and the last error is thrown.
+
+```ts
+import { withRetry, ExponentialBackoff } from '@soroban-resurrect/rpc';
+
+const latest = await withRetry(() => transport.request('getLatestLedger'), {
+  policy: new ExponentialBackoff(3, 500),
+  deadlineMs: 10_000,
+});
+```

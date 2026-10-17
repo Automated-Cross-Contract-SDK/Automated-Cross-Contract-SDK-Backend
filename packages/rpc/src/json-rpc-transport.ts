@@ -5,6 +5,8 @@
  * pass their own `fetch` instead of relying on `globalThis.fetch`.
  */
 
+import { parseRetryAfter } from './retry-after.js';
+
 /** The subset of a fetch `Response` this transport reads. */
 export interface FetchResponseLike {
   readonly ok: boolean;
@@ -39,14 +41,18 @@ export class JsonRpcError extends Error {
 
 /** Raised when the request never produced a usable response (network failure or non-2xx HTTP status). */
 export class JsonRpcTransportError extends Error {
+  /** Milliseconds the server asked the caller to wait, from a `Retry-After` header. */
+  readonly retryAfterMs: number | undefined;
+
   constructor(
     message: string,
     readonly status: number | undefined,
     readonly retryable: boolean,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; retryAfterMs?: number },
   ) {
-    super(message, options);
+    super(message, { cause: options?.cause });
     this.name = 'JsonRpcTransportError';
+    this.retryAfterMs = options?.retryAfterMs;
   }
 }
 
@@ -92,6 +98,7 @@ export class JsonRpcTransport {
         `HTTP ${response.status} calling ${method}`,
         response.status,
         retryable,
+        { retryAfterMs: parseRetryAfter(response.headers.get('retry-after')) },
       );
     }
 
