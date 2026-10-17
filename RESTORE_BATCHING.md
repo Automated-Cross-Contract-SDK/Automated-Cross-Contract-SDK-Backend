@@ -241,3 +241,10 @@ const resumed = await client.resumeRestoreBatches(
   version 1 receipt.
 - Resumed batches reuse their stored XDR. If their sequence numbers may be stale,
   use `retryFailedRestore`, which rebuilds the transactions first.
+
+## Coalesced submissions
+
+Concurrent submissions of the same transaction XDR share one in-flight
+signing and submission. The wallet is prompted once, and the network receives
+the transaction once. The shared entry is cleared when the submission settles,
+so a call made after a failure starts a new submission.

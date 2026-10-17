@@ -100,6 +100,9 @@ export class SorobanResurrect {
   private footprintCache?: FootprintCache
   /** Trace-propagation headers for the RPC call currently in flight. */
   private activeTraceHeaders: Record<string, string> = {}
+  private _lastFailedRestoreState: FailedRestoreState | null = null
+  /** In-flight submissions keyed by unsigned transaction XDR (see #513). */
+  private inFlightSubmissions: Map<string, Promise<string>> = new Map()
 
   private readonly startedAt = Date.now()
   private networkPassphraseValid = true
@@ -1741,7 +1744,32 @@ export class SorobanResurrect {
     }
   }
 
-  private async submitSignedTransaction(
+  /**
+   * Signs and submits a transaction, then waits for confirmation.
+   *
+   * Concurrent calls with the same unsigned XDR share one in-flight submission,
+   * so the wallet is prompted once and the network sees the transaction once.
+   * The entry is removed when the submission settles, success or failure, so a
+   * later call after a failure starts a fresh submission.
+   */
+  private submitSignedTransaction(
+    txXDR: string,
+    signTransaction: (xdr: string) => Promise<string>,
+  ): Promise<string> {
+    const existing = this.inFlightSubmissions.get(txXDR)
+    if (existing) {
+      this.log('debug', 'Coalescing with an in-flight submission for the same transaction')
+      return existing
+    }
+
+    const submission = this.sendSignedTransaction(txXDR, signTransaction).finally(() => {
+      this.inFlightSubmissions.delete(txXDR)
+    })
+    this.inFlightSubmissions.set(txXDR, submission)
+    return submission
+  }
+
+  private async sendSignedTransaction(
     txXDR: string,
     signTransaction: (xdr: string) => Promise<string>,
   ): Promise<string> {
