@@ -818,6 +818,8 @@ export class SorobanResurrect {
       success: true,
       originalTxHash,
       entriesRestored: concurrentResult.totalKeysRestored,
+      restoreConfirmed: concurrentResult.success && this.restoreAwaitsConfirmation(),
+      originalConfirmed: true,
       concurrentBatchResults: concurrentResult,
     }
   }
@@ -1098,6 +1100,8 @@ export class SorobanResurrect {
         success: true,
         entriesRestored: keysRestored,
         simulateOnly: true,
+        restoreConfirmed: false,
+        originalConfirmed: false,
       }
     }
 
@@ -1186,6 +1190,8 @@ export class SorobanResurrect {
       restoreTxHash,
       originalTxHash,
       entriesRestored: keysRestored,
+      restoreConfirmed: this.restoreAwaitsConfirmation(),
+      originalConfirmed: true,
     }
   }
 
@@ -1243,6 +1249,8 @@ export class SorobanResurrect {
       success: true,
       originalTxHash,
       entriesRestored: batchResults.totalKeysRestored,
+      restoreConfirmed: this.restoreAwaitsConfirmation(),
+      originalConfirmed: true,
       batchResults,
     }
   }
@@ -1649,6 +1657,7 @@ export class SorobanResurrect {
       return {
         success: true,
         entriesRestored: totalRestored,
+        restoreConfirmed: this.restoreAwaitsConfirmation(),
         batchResults: retryResult,
       }
     }
@@ -1661,6 +1670,7 @@ export class SorobanResurrect {
       failedBatchIndex: retryResult.failedAtBatchIndex,
       partialEntriesRestored: totalRestored,
       error: retryResult.error,
+      restoreConfirmed: false,
       batchResults: retryResult,
     }
   }

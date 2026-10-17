@@ -271,6 +271,15 @@ export interface ExecutionResult {
    * Differs from `entriesRestored` when a partial failure occurred.
    */
   partialEntriesRestored?: number
+  /**
+   * `true` only when every restore transaction was confirmed on-chain. It is
+   * `false` when restores were merely submitted (`restoreConfirmationPolicy:
+   * 'submitted'`), when a restore batch failed, or when no restore ran.
+   * Distinct from `success`, which describes the whole flow.
+   */
+  restoreConfirmed?: boolean
+  /** `true` when the original transaction was confirmed on-chain. */
+  originalConfirmed?: boolean
 }
 
 /**
