@@ -25,8 +25,9 @@ import {
   WsTransactionStatusEvent,
   TransactionWaitResult,
   FootprintCacheStatistics,
+  RestoreBatchErrorCode,
 } from '@soroban-resurrect/types'
-import { SorobanResurrectError } from '@soroban-resurrect/errors'
+import { SorobanResurrectError, isRetryable } from '@soroban-resurrect/errors'
 import {
   FootprintKeys,
   extractKeysFromFootprint,
@@ -41,6 +42,13 @@ import { FootprintCache } from '@soroban-resurrect/rpc'
 import { DEFAULT_MAX_CONCURRENCY, delay, MAX_RETRIES } from '@soroban-resurrect/utils'
 
 const MAX_XDR_SIZE_BYTES = 100_000
+const KNOWN_BATCH_ERROR_CODES: ReadonlySet<RestoreBatchErrorCode> = new Set<RestoreBatchErrorCode>([
+  'NETWORK_ERROR',
+  'RESTORE_FAILED',
+  'ORIGINAL_TX_FAILED',
+  'INVALID_XDR',
+  'UNKNOWN',
+])
 const DEFAULT_RESTORE_FEE = '100000'
 
 /**
@@ -526,6 +534,7 @@ export class SorobanResurrect {
           ...batch,
           status: 'failed',
           error: errorMsg,
+          ...this.describeBatchFailure(err),
         })
 
         // Collect the remaining batches (current + unexecuted) as failed batches
@@ -637,7 +646,7 @@ export class SorobanResurrect {
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err)
         this.log('error', `Batch ${idx + 1}/${total} failed: ${errorMsg}`)
-        results[idx] = { ...batch, status: 'failed', error: errorMsg }
+        results[idx] = { ...batch, status: 'failed', error: errorMsg, ...this.describeBatchFailure(err) }
         failedIndices.push(idx)
       } finally {
         release()
@@ -1266,6 +1275,20 @@ export class SorobanResurrect {
         { rpcUrl: this.config.rpcUrl },
       )
     }
+  }
+
+  /**
+   * Maps a batch submission failure to its typed outcome fields. Unrecognised
+   * errors are reported as `UNKNOWN`, which is non-retryable.
+   */
+  private describeBatchFailure(err: unknown): { errorCode: RestoreBatchErrorCode; retryable: boolean } {
+    const code = (err as { code?: unknown } | null)?.code
+    const errorCode: RestoreBatchErrorCode =
+      typeof code === 'string' && KNOWN_BATCH_ERROR_CODES.has(code as RestoreBatchErrorCode)
+        ? (code as RestoreBatchErrorCode)
+        : 'UNKNOWN'
+
+    return { errorCode, retryable: isRetryable(errorCode as Parameters<typeof isRetryable>[0]) }
   }
 
   /**
