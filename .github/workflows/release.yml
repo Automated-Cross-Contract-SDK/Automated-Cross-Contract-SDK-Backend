@@ -34,6 +34,9 @@ jobs:
 
       - run: npm run build
 
+      - name: Verify package contents
+        run: npm run verify-release
+
       - name: semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
