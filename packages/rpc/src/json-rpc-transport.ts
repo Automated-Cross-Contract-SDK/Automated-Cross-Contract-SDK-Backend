@@ -95,13 +95,68 @@ export class JsonRpcTransport {
       );
     }
 
-    const parsed = JSON.parse(await response.text()) as {
-      result?: T;
-      error?: { code: number; message: string; data?: unknown };
-    };
-    if (parsed.error) {
-      throw new JsonRpcError(parsed.error.code, parsed.error.message, parsed.error.data);
-    }
-    return parsed.result as T;
+    return parseJsonRpcEnvelope<T>(await readJson(response, method), id);
   }
+}
+
+/** Raised when a response body is not a well-formed JSON-RPC 2.0 response for the request. */
+export class JsonRpcProtocolError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'JsonRpcProtocolError';
+  }
+}
+
+async function readJson(response: FetchResponseLike, method: string): Promise<unknown> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new JsonRpcProtocolError(`Response to ${method} is not valid JSON`);
+  }
+}
+
+/**
+ * Validates a JSON-RPC 2.0 response envelope and returns its `result`.
+ *
+ * The envelope is checked in full before anything is returned, so a malformed,
+ * mismatched or partially-formed response never reaches the caller as data.
+ */
+export function parseJsonRpcEnvelope<T>(body: unknown, expectedId: number): T {
+  if (!isRecord(body)) {
+    throw new JsonRpcProtocolError('Response is not a JSON object');
+  }
+  if (body.jsonrpc !== '2.0') {
+    throw new JsonRpcProtocolError('Response has a missing or unsupported "jsonrpc" version');
+  }
+
+  const hasResult = 'result' in body;
+  const hasError = 'error' in body;
+  if (hasResult === hasError) {
+    throw new JsonRpcProtocolError('Response must contain exactly one of "result" or "error"');
+  }
+
+  // The spec only allows a null id when the server could not read the request id, and only with an error.
+  const idMatches = body.id === expectedId || (body.id === null && hasError);
+  if (!idMatches) {
+    throw new JsonRpcProtocolError(
+      `Response id ${JSON.stringify(body.id)} does not match request id ${expectedId}`,
+    );
+  }
+
+  if (hasError) {
+    const error = body.error;
+    if (!isRecord(error) || !Number.isInteger(error.code) || typeof error.message !== 'string') {
+      throw new JsonRpcProtocolError(
+        'Response "error" member must have an integer code and a string message',
+      );
+    }
+    throw new JsonRpcError(error.code as number, error.message, error.data);
+  }
+
+  return body.result as T;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

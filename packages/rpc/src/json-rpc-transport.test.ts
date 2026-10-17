@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   JsonRpcError,
+  JsonRpcProtocolError,
   JsonRpcTransport,
   JsonRpcTransportError,
+  parseJsonRpcEnvelope,
   type FetchLike,
   type FetchResponseLike,
 } from './json-rpc-transport';
@@ -46,9 +48,10 @@ describe('JsonRpcTransport', () => {
   });
 
   it('assigns a distinct id to each request', async () => {
-    const fetch = vi.fn<FetchLike>(async () =>
-      jsonResponse({ jsonrpc: '2.0', id: 0, result: null }),
-    );
+    const fetch = vi.fn<FetchLike>(async (_url, init) => {
+      const { id } = JSON.parse(init.body) as { id: number };
+      return jsonResponse({ jsonrpc: '2.0', id, result: null });
+    });
     const transport = new JsonRpcTransport({ url: 'https://rpc.example.com', fetch });
 
     await transport.request('a');
@@ -120,5 +123,102 @@ describe('JsonRpcTransport', () => {
 
     await expect(transport.request('ping')).resolves.toBe('ok');
     expect(globalFetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('parseJsonRpcEnvelope', () => {
+  it('returns the result of a well-formed response with a matching id', () => {
+    expect(parseJsonRpcEnvelope({ jsonrpc: '2.0', id: 7, result: { ok: true } }, 7)).toEqual({
+      ok: true,
+    });
+  });
+
+  it('accepts a null result as a valid result', () => {
+    expect(parseJsonRpcEnvelope({ jsonrpc: '2.0', id: 1, result: null }, 1)).toBeNull();
+  });
+
+  it.each([
+    ['a non-object body', 'oops'],
+    ['an array body', [{ jsonrpc: '2.0', id: 1, result: 1 }]],
+    ['a null body', null],
+  ])('rejects %s', (_label, body) => {
+    expect(() => parseJsonRpcEnvelope(body, 1)).toThrow(JsonRpcProtocolError);
+  });
+
+  it.each([
+    ['a missing jsonrpc version', { id: 1, result: 1 }],
+    ['an unsupported jsonrpc version', { jsonrpc: '1.0', id: 1, result: 1 }],
+  ])('rejects %s', (_label, body) => {
+    expect(() => parseJsonRpcEnvelope(body, 1)).toThrow(/jsonrpc/);
+  });
+
+  it('rejects a response with neither result nor error', () => {
+    expect(() => parseJsonRpcEnvelope({ jsonrpc: '2.0', id: 1 }, 1)).toThrow(/exactly one of/);
+  });
+
+  it('rejects a response carrying both result and error', () => {
+    const body = { jsonrpc: '2.0', id: 1, result: 1, error: { code: -1, message: 'x' } };
+    expect(() => parseJsonRpcEnvelope(body, 1)).toThrow(/exactly one of/);
+  });
+
+  it('rejects a response whose id does not match the request', () => {
+    expect(() => parseJsonRpcEnvelope({ jsonrpc: '2.0', id: 2, result: 1 }, 1)).toThrow(
+      /does not match request id 1/,
+    );
+  });
+
+  it('rejects a null id on a success response', () => {
+    expect(() => parseJsonRpcEnvelope({ jsonrpc: '2.0', id: null, result: 1 }, 1)).toThrow(
+      /does not match/,
+    );
+  });
+
+  it('accepts a null id only on an error response', () => {
+    const body = { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } };
+    expect(() => parseJsonRpcEnvelope(body, 1)).toThrow(JsonRpcError);
+  });
+
+  it.each([
+    ['a non-integer code', { code: 1.5, message: 'x' }],
+    ['a string code', { code: '-32602', message: 'x' }],
+    ['a missing message', { code: -32602 }],
+    ['a non-object error', 'boom'],
+  ])('rejects an error member with %s', (_label, error) => {
+    expect(() => parseJsonRpcEnvelope({ jsonrpc: '2.0', id: 1, error }, 1)).toThrow(
+      JsonRpcProtocolError,
+    );
+  });
+});
+
+describe('JsonRpcTransport envelope validation', () => {
+  it('throws a JsonRpcProtocolError for a body that is not valid JSON', async () => {
+    const fetch: FetchLike = async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      text: async () => '<html>gateway</html>',
+    });
+    const transport = new JsonRpcTransport({ url: 'https://rpc.example.com', fetch });
+
+    await expect(transport.request('getHealth')).rejects.toBeInstanceOf(JsonRpcProtocolError);
+  });
+
+  it('does not return a payload whose envelope id belongs to another request', async () => {
+    const fetch: FetchLike = async () =>
+      jsonResponse({ jsonrpc: '2.0', id: 99, result: { leaked: true } });
+    const transport = new JsonRpcTransport({ url: 'https://rpc.example.com', fetch });
+
+    await expect(transport.request('getHealth')).rejects.toBeInstanceOf(JsonRpcProtocolError);
+  });
+
+  it('sends the same id it expects back, across consecutive requests', async () => {
+    const fetch = vi.fn<FetchLike>(async (_url, init) => {
+      const { id } = JSON.parse(init.body) as { id: number };
+      return jsonResponse({ jsonrpc: '2.0', id, result: id });
+    });
+    const transport = new JsonRpcTransport({ url: 'https://rpc.example.com', fetch });
+
+    await expect(transport.request('a')).resolves.toBe(1);
+    await expect(transport.request('b')).resolves.toBe(2);
   });
 });

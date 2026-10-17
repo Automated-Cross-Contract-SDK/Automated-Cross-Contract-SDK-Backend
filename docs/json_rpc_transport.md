@@ -33,3 +33,18 @@ rather than failing on the first request.
 
 HTTP `429` and `5xx` responses, and rejected `fetch` calls, are marked `retryable: true`.
 Other non-2xx responses are not.
+
+## Response validation
+
+Every response is checked against the JSON-RPC 2.0 envelope before its payload is
+returned:
+
+- the body is valid JSON and a JSON object;
+- `jsonrpc` is `"2.0"`;
+- exactly one of `result` or `error` is present;
+- `id` matches the request id (a `null` id is accepted only with an `error`, as the spec allows when the server could not read the request);
+- an `error` member has an integer `code` and a string `message`.
+
+A response that fails any of these checks throws `JsonRpcProtocolError` and is never
+returned as data. `JsonRpcProtocolError` is not retryable, because a malformed
+response usually means a misconfigured endpoint or proxy rather than a transient fault.
