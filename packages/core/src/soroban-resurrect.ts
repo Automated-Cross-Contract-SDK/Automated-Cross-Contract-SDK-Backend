@@ -487,6 +487,7 @@ export class SorobanResurrect {
         batchIndex: i,
         transactionXDR: tx.toXDR(),
         keysRestored: batchKeys.length,
+        restoredKeys: batchKeys.map(k => k.keyBase64),
         status: 'pending',
       })
 
@@ -732,6 +733,7 @@ export class SorobanResurrect {
         batchIndex: i,
         transactionXDR: tx.toXDR(),
         keysRestored: batchKeys.length,
+        restoredKeys: batchKeys.map(k => k.keyBase64),
         status: 'pending',
       })
 
