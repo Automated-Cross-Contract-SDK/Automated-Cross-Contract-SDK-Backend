@@ -2,7 +2,7 @@ export { ExponentialBackoff, FixedDelay, JitterBackoff, CircuitBreaker, DEFAULT_
 export { SimulationCache } from './simulation-cache.js'
 export { FootprintCache } from './footprint-cache.js'
 export { RpcFailoverManager } from './rpc-failover.js'
-export { parseJsonRpcResponse, RpcResponseError } from './json-rpc-response.js'
+export { parseJsonRpcResponse, parseJsonRpcResult, RpcResponseError } from './json-rpc-response.js'
 export type { RpcResponseErrorKind } from './json-rpc-response.js'
 
 export type { RetryPolicy } from '@soroban-resurrect/types'
