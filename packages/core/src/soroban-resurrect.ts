@@ -37,7 +37,7 @@ import { ExponentialBackoff, type RetryPolicy } from '@soroban-resurrect/rpc'
 import { SimulationCache, type SimulationCacheConfig } from '@soroban-resurrect/rpc'
 import { RpcFailoverManager, type RpcEndpointHealth } from '@soroban-resurrect/rpc'
 import { FootprintCache } from '@soroban-resurrect/rpc'
-import { redactRpcUrls, redactUrlsInText } from '@soroban-resurrect/rpc'
+import { describeXdrEncoding, redactRpcUrls, redactUrlsInText } from '@soroban-resurrect/rpc'
 import { DEFAULT_MAX_CONCURRENCY, delay, MAX_RETRIES } from '@soroban-resurrect/utils'
 
 const MAX_XDR_SIZE_BYTES = 100_000
@@ -265,7 +265,7 @@ export class SorobanResurrect {
         'Invalid transaction XDR',
         'INVALID_XDR',
         err,
-        { rpcUrl: this.redactedRpcUrl },
+        { rpcUrl: this.redactedRpcUrl, xdrDiagnostic: describeXdrEncoding(txXDR) },
       )
     }
 
