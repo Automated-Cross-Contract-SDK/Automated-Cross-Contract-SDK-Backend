@@ -80,6 +80,17 @@ export interface ArchivedKey {
   restorePriority: RestorePriority
 }
 
+/** RPC methods that accept a per-method timeout override. */
+export type RpcMethodName =
+  | 'getAccount'
+  | 'getLedgerEntries'
+  | 'simulateTransaction'
+  | 'sendTransaction'
+  | 'getTransaction'
+
+/** Per-method timeouts in milliseconds, keyed by RPC method name. */
+export type RpcMethodTimeouts = Partial<Record<RpcMethodName, number>>
+
 /**
  * Controls how far the SDK waits for a restore transaction before moving on.
  *
@@ -114,6 +125,13 @@ export interface SorobanResurrectConfig {
    * transaction is always awaited to confirmation. Defaults to `'confirmed'`.
    */
   restoreConfirmationPolicy?: RestoreConfirmationPolicy
+  /**
+   * Timeouts (ms) for individual RPC methods, overriding the global `timeout`
+   * for those methods only. A call that exceeds its limit fails with a
+   * `NETWORK_ERROR` and is retried under the retry policy like any other RPC
+   * failure. The underlying HTTP request is not aborted.
+   */
+  rpcMethodTimeouts?: RpcMethodTimeouts
   onLog?: (level: 'info' | 'warn' | 'error', message: string, data?: unknown) => void
   /**
    * When `true`, the SDK attempts to subscribe to transaction status updates

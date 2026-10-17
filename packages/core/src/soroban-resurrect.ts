@@ -24,6 +24,7 @@ import {
   WsTransactionStatusEvent,
   TransactionWaitResult,
   FootprintCacheStatistics,
+  RpcMethodName,
 } from '@soroban-resurrect/types'
 import { SorobanResurrectError } from '@soroban-resurrect/errors'
 import {
@@ -104,6 +105,7 @@ export class SorobanResurrect {
       pollIntervalMs: 1000,
       maxPollAttempts: 30,
       restoreConfirmationPolicy: 'confirmed',
+      rpcMethodTimeouts: {},
       ...config,
     }
 
@@ -284,7 +286,10 @@ export class SorobanResurrect {
     let simResult: SorobanRpc.Api.SimulateTransactionResponse
     try {
       simResult = await this.retryOnFailure(
-        () => this.server.simulateTransaction(innerTx as any),
+        () =>
+          this.withMethodTimeout('simulateTransaction', () =>
+            this.server.simulateTransaction(innerTx as any),
+          ),
         'simulateTransaction',
       )
     } catch (err) {
@@ -346,7 +351,10 @@ export class SorobanResurrect {
     let existingKeys: SorobanRpc.Api.GetLedgerEntriesResponse
     try {
       existingKeys = await this.retryOnFailure(
-        () => this.getServer().getLedgerEntries(...keys.all),
+        () =>
+          this.withMethodTimeout('getLedgerEntries', () =>
+            this.getServer().getLedgerEntries(...keys.all),
+          ),
         'getLedgerEntries',
       )
     } catch (err) {
@@ -943,7 +951,10 @@ export class SorobanResurrect {
         .build()
 
       const simResult = await this.retryOnFailure(
-        () => this.getServer().simulateTransaction(candidateTx as any),
+        () =>
+          this.withMethodTimeout('simulateTransaction', () =>
+            this.getServer().simulateTransaction(candidateTx as any),
+          ),
         'simulateTransaction(estimateRestoreFee)',
       )
 
@@ -980,7 +991,7 @@ export class SorobanResurrect {
     sourceAccountID: string,
   ): Promise<RestoreTransactionResult> {
     const sourceAccount = await this.retryOnFailure(
-      () => this.getServer().getAccount(sourceAccountID),
+      () => this.withMethodTimeout('getAccount', () => this.getServer().getAccount(sourceAccountID)),
       `getAccount(${sourceAccountID})`,
     )
 
@@ -1255,6 +1266,36 @@ export class SorobanResurrect {
     }
   }
 
+  /**
+   * Races `call` against the per-method timeout configured in
+   * `rpcMethodTimeouts`. Methods without an override run unbounded here and
+   * are governed only by the global `timeout`.
+   */
+  private async withMethodTimeout<T>(method: RpcMethodName, call: () => Promise<T>): Promise<T> {
+    const limitMs = this.config.rpcMethodTimeouts[method]
+    if (limitMs === undefined) {
+      return call()
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new SorobanResurrectError(
+            'NETWORK_ERROR',
+            `RPC method ${method} timed out after ${limitMs}ms (rpcUrl=${this.config.rpcUrl})`,
+          ),
+        )
+      }, limitMs)
+    })
+
+    try {
+      return await Promise.race([call(), deadline])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   private restoreAwaitsConfirmation(): boolean {
     return this.config.restoreConfirmationPolicy !== 'submitted'
   }
@@ -1269,7 +1310,7 @@ export class SorobanResurrect {
     const tx = new Transaction(signedXDR, this.config.networkPassphrase)
 
     const sendResult = await this.retryOnFailure(
-      () => this.getServer().sendTransaction(tx),
+      () => this.withMethodTimeout('sendTransaction', () => this.getServer().sendTransaction(tx)),
       'sendTransaction',
     )
 
@@ -1511,7 +1552,9 @@ export class SorobanResurrect {
   ): Promise<string> {
     const intervalMs = this.config.pollIntervalMs
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const receipt = await this.getServer().getTransaction(hash)
+      const receipt = await this.withMethodTimeout('getTransaction', () =>
+        this.getServer().getTransaction(hash),
+      )
       if (receipt.status !== 'NOT_FOUND') {
         if (receipt.status === 'SUCCESS') {
           return hash
