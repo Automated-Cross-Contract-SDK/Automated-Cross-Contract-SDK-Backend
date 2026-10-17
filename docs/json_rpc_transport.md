@@ -68,3 +68,22 @@ const latest = await withRetry(() => transport.request('getLatestLedger'), {
   deadlineMs: 10_000,
 });
 ```
+
+## Bounding in-flight requests
+
+`maxInFlight` caps how many requests one transport instance has outstanding at a time.
+The cap is shared by every caller of that instance, so concurrent client operations
+cannot exceed it together. Requests beyond the cap wait in FIFO order and start as slots
+free up. A failed request frees its slot like a successful one.
+
+```ts
+const transport = new JsonRpcTransport({
+  url: 'https://soroban-testnet.example.com',
+  maxInFlight: 4,
+});
+```
+
+Retries made through `withRetry` pass through the same limiter on every attempt, so a
+request waiting out a backoff does not hold a slot. The default is unlimited, and a value
+below 1 throws a `RangeError` at construction. `createConcurrencyLimiter` is exported for
+bounding other async work with the same semantics.

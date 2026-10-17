@@ -222,3 +222,60 @@ describe('JsonRpcTransport envelope validation', () => {
     await expect(transport.request('b')).resolves.toBe(2);
   });
 });
+
+describe('JsonRpcTransport maxInFlight', () => {
+  it('holds requests beyond the limit until an in-flight request completes', async () => {
+    const pending: Array<(response: FetchResponseLike) => void> = [];
+    const fetch = vi.fn<FetchLike>(
+      () =>
+        new Promise<FetchResponseLike>((resolve) => {
+          pending.push(resolve);
+        }),
+    );
+    const transport = new JsonRpcTransport({
+      url: 'https://rpc.example.com',
+      fetch,
+      maxInFlight: 2,
+    });
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+    const requests = [1, 2, 3, 4].map(() => transport.request('getHealth'));
+    await settle();
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    pending[0](jsonResponse({ jsonrpc: '2.0', id: 1, result: 'a' }));
+    await settle();
+    expect(fetch).toHaveBeenCalledTimes(3);
+
+    pending[1](jsonResponse({ jsonrpc: '2.0', id: 2, result: 'b' }));
+    await settle();
+    expect(fetch).toHaveBeenCalledTimes(4);
+
+    pending[2](jsonResponse({ jsonrpc: '2.0', id: 3, result: 'c' }));
+    pending[3](jsonResponse({ jsonrpc: '2.0', id: 4, result: 'd' }));
+    await expect(Promise.all(requests)).resolves.toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('frees the slot when a request fails, so queued requests still run', async () => {
+    const fetch: FetchLike = async () => {
+      throw new Error('connection reset');
+    };
+    const transport = new JsonRpcTransport({
+      url: 'https://rpc.example.com',
+      fetch,
+      maxInFlight: 1,
+    });
+
+    const results = await Promise.allSettled([transport.request('a'), transport.request('b')]);
+
+    expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected']);
+    expect((results[1] as PromiseRejectedResult).reason).toBeInstanceOf(JsonRpcTransportError);
+  });
+
+  it('rejects an invalid maxInFlight at construction', () => {
+    const fetch: FetchLike = async () => jsonResponse({});
+    expect(
+      () => new JsonRpcTransport({ url: 'https://rpc.example.com', fetch, maxInFlight: 0 }),
+    ).toThrow(RangeError);
+  });
+});

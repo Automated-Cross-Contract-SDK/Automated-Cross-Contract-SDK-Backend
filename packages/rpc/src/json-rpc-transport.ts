@@ -5,6 +5,7 @@
  * pass their own `fetch` instead of relying on `globalThis.fetch`.
  */
 
+import { createConcurrencyLimiter, type ConcurrencyLimiter } from './concurrency.js';
 import { parseRetryAfter } from './retry-after.js';
 
 /** The subset of a fetch `Response` this transport reads. */
@@ -25,6 +26,11 @@ export interface JsonRpcTransportOptions {
   url: string;
   /** Fetch implementation to use. Defaults to `globalThis.fetch`. */
   fetch?: FetchLike;
+  /**
+   * Maximum number of requests in flight across all callers of this transport.
+   * Excess requests wait in FIFO order. Defaults to unlimited.
+   */
+  maxInFlight?: number;
 }
 
 /** Raised when the JSON-RPC server returns an `error` member in its response. */
@@ -59,6 +65,7 @@ export class JsonRpcTransportError extends Error {
 export class JsonRpcTransport {
   private readonly url: string;
   private readonly fetchImpl: FetchLike;
+  private readonly limiter: ConcurrencyLimiter;
   private nextId = 1;
 
   constructor(options: JsonRpcTransportOptions) {
@@ -70,10 +77,15 @@ export class JsonRpcTransport {
       );
     }
     this.fetchImpl = fetchImpl;
+    this.limiter = createConcurrencyLimiter(options.maxInFlight ?? Infinity);
   }
 
-  async request<T>(method: string, params?: unknown): Promise<T> {
+  request<T>(method: string, params?: unknown): Promise<T> {
     const id = this.nextId++;
+    return this.limiter.run(() => this.send<T>(id, method, params));
+  }
+
+  private async send<T>(id: number, method: string, params: unknown): Promise<T> {
     const body = JSON.stringify({ jsonrpc: '2.0', id, method, params });
 
     let response: FetchResponseLike;

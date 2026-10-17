@@ -28,3 +28,5 @@ export type {
 export { withRetry } from './retry.js';
 export type { RetryOptions } from './retry.js';
 export { parseRetryAfter } from './retry-after.js';
+export { createConcurrencyLimiter } from './concurrency.js';
+export type { ConcurrencyLimiter } from './concurrency.js';
