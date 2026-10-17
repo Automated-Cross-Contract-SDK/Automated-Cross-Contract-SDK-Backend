@@ -790,6 +790,12 @@ export class SorobanResurrect {
       )
     }
 
+    for (const batch of concurrentResult.batches) {
+      if (batch.status === 'success' && batch.txHash) {
+        await this.verifyRestorationConfirmed(batch.txHash)
+      }
+    }
+
     let originalTxHash: string
     try {
       this.log('info', 'Executing original transaction after concurrent restore')
@@ -1111,6 +1117,7 @@ export class SorobanResurrect {
     try {
       this.log('info', 'Executing restore transaction')
       restoreTxHash = await this.submitSignedTransaction(restoreXDR, signTransaction)
+      await this.verifyRestorationConfirmed(restoreTxHash)
       this.log('info', `Restore transaction confirmed: ${restoreTxHash}`)
     } catch (err) {
       const resurrErr = new SorobanResurrectError(
@@ -1196,6 +1203,12 @@ export class SorobanResurrect {
         )
       }
 
+      for (const batch of batchResults.batches) {
+        if (batch.status === 'success' && batch.txHash) {
+          await this.verifyRestorationConfirmed(batch.txHash)
+        }
+      }
+
       this.log(
         'info',
         `All ${restoreBatches.length} batches succeeded, restored ${batchResults.totalKeysRestored} keys`,
@@ -1229,6 +1242,28 @@ export class SorobanResurrect {
       originalTxHash,
       entriesRestored: batchResults.totalKeysRestored,
       batchResults,
+    }
+  }
+
+  /**
+   * Confirms on-ledger that a restore transaction ended with `SUCCESS` before
+   * any original transaction is allowed to depend on it. Guards against
+   * building on a restore that was accepted but later failed or was never
+   * applied.
+   */
+  private async verifyRestorationConfirmed(restoreTxHash: string): Promise<void> {
+    const receipt = await this.retryOnFailure(
+      () => this.getServer().getTransaction(restoreTxHash),
+      'getTransaction(verifyRestorationConfirmed)',
+    )
+
+    if (receipt.status !== SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+      throw new SorobanResurrectError(
+        `Restoration ${restoreTxHash} is not confirmed as SUCCESS (status=${receipt.status}, rpcUrl=${this.config.rpcUrl})`,
+        'RESTORE_FAILED',
+        receipt,
+        { rpcUrl: this.config.rpcUrl, txHash: restoreTxHash },
+      )
     }
   }
 
