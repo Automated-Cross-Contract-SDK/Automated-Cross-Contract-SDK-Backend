@@ -50,6 +50,34 @@ const DEFAULT_RESTORE_FEE = '100000'
  */
 const WS_PROBE_TIMEOUT_MS = 3000
 
+/** RPC methods this SDK invokes, reported verbatim in diagnostics. */
+const SDK_RPC_METHODS = [
+  'getNetwork',
+  'getAccount',
+  'simulateTransaction',
+  'sendTransaction',
+  'getTransaction',
+  'getLedgerEntries',
+] as const
+
+/**
+ * Snapshot returned by `SorobanResurrect.getDiagnostics()`.
+ */
+export interface SorobanResurrectDiagnostics {
+  /** URL of the first endpoint currently considered healthy, or null if none. */
+  activeEndpoint: string | null
+  /** Passphrase reported by the RPC server, or null if `getNetwork()` failed. */
+  networkPassphrase: string | null
+  /** Protocol version reported by the RPC server, or null if unavailable. */
+  protocolVersion: number | null
+  /** Error message from the `getNetwork()` call, or null on success. */
+  networkError: string | null
+  /** Health snapshot for every configured endpoint. */
+  endpoints: RpcEndpointHealth[]
+  /** RPC methods this SDK calls. */
+  sdkRpcMethods: string[]
+}
+
 function isFeeBumpTx(tx: ReturnType<typeof TransactionBuilder.fromXDR>): tx is ReturnType<typeof TransactionBuilder.fromXDR> & { innerTransaction: any } {
   return 'innerTransaction' in tx
 }
@@ -1782,6 +1810,39 @@ export class SorobanResurrect {
    */
   getFailoverStatus(): RpcEndpointHealth[] {
     return this.failoverManager.getHealthStatus()
+  }
+
+  /**
+   * Returns a diagnostics snapshot: the negotiated network and protocol line
+   * reported by the RPC server, the endpoint currently in use, per-endpoint
+   * health, and the RPC methods this SDK calls.
+   *
+   * Never throws on RPC failure. A failed `getNetwork()` call is reported in
+   * `networkError` with `protocolVersion` and `networkPassphrase` set to null.
+   */
+  async getDiagnostics(): Promise<SorobanResurrectDiagnostics> {
+    const endpoints = this.failoverManager.getHealthStatus()
+    const activeEndpoint = endpoints.find(ep => ep.isHealthy)?.url ?? null
+
+    let networkPassphrase: string | null = null
+    let protocolVersion: number | null = null
+    let networkError: string | null = null
+    try {
+      const network = await this.server.getNetwork()
+      networkPassphrase = network.passphrase
+      protocolVersion = network.protocolVersion ?? null
+    } catch (err) {
+      networkError = err instanceof Error ? err.message : String(err)
+    }
+
+    return {
+      activeEndpoint,
+      networkPassphrase,
+      protocolVersion,
+      networkError,
+      endpoints,
+      sdkRpcMethods: [...SDK_RPC_METHODS],
+    }
   }
 
   /**

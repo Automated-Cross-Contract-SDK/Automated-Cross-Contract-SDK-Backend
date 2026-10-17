@@ -211,6 +211,19 @@ console.log('RPC health:', sdk.getFailoverStatus())
 console.log('Cache stats:', sdk.getFootprintCacheStats())
 ```
 
+**Check the negotiated network and endpoint:**
+
+`getDiagnostics()` returns the active endpoint, the network passphrase and protocol version reported by the RPC server, per-endpoint health, and the RPC methods the SDK calls. It does not throw when the RPC is unreachable; check `networkError` instead.
+
+```typescript
+const diagnostics = await sdk.getDiagnostics()
+if (diagnostics.networkError) {
+  console.warn('RPC unreachable:', diagnostics.networkError)
+}
+console.log('Protocol version:', diagnostics.protocolVersion)
+console.log('Active endpoint:', diagnostics.activeEndpoint)
+```
+
 ### Key Takeaways
 
 - Always handle network errors and timeouts
