@@ -121,6 +121,7 @@ export class SorobanResurrect {
   private footprintCache?: FootprintCache
   private _lastFailedRestoreState: FailedRestoreState | null = null
   private restoreMethodChecks: Map<string, Promise<void>> = new Map()
+  private networkIdentityCheck: Promise<void> | null = null
 
   constructor(config: SorobanResurrectConfig) {
     this.config = {
@@ -1270,6 +1271,8 @@ export class SorobanResurrect {
     txXDR: string,
     signTransaction: (xdr: string) => Promise<string>,
   ): Promise<string> {
+    await this.ensureNetworkIdentityMatches()
+
     const signedXDR = await signTransaction(txXDR)
 
     const tx = new Transaction(signedXDR, this.config.networkPassphrase)
@@ -1816,6 +1819,42 @@ export class SorobanResurrect {
    */
   getFailoverStatus(): RpcEndpointHealth[] {
     return this.failoverManager.getHealthStatus()
+  }
+
+  /**
+   * Blocks signing unless the RPC endpoint reports the configured network
+   * passphrase. Unlike the constructor's warning-only check, a mismatch or an
+   * unreachable endpoint refuses to sign. Only a successful check is cached.
+   */
+  private ensureNetworkIdentityMatches(): Promise<void> {
+    if (!this.networkIdentityCheck) {
+      this.networkIdentityCheck = this.checkNetworkIdentity()
+      this.networkIdentityCheck.catch(() => {
+        this.networkIdentityCheck = null
+      })
+    }
+    return this.networkIdentityCheck
+  }
+
+  private async checkNetworkIdentity(): Promise<void> {
+    const rpcUrl = Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl
+    let reported: string
+    try {
+      reported = (await this.server.getNetwork()).passphrase
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      throw new SorobanResurrectError(
+        'NETWORK_ERROR',
+        `Could not verify network passphrase before signing (rpcUrl=${rpcUrl}): ${reason}`,
+      )
+    }
+
+    if (reported !== this.config.networkPassphrase) {
+      throw new SorobanResurrectError(
+        'NETWORK_MISMATCH',
+        `Refusing to sign: configured "${this.config.networkPassphrase}" but RPC server reports "${reported}" (rpcUrl=${rpcUrl})`,
+      )
+    }
   }
 
   /**
