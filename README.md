@@ -136,6 +136,10 @@ User Action → dApp → SorobanResurrect SDK
                          execute original tx
 ```
 
+Restoring more than one batch of keys is covered in
+[`docs/multi-batch-restoration.md`](./docs/multi-batch-restoration.md), including the
+sequential vs concurrent decision and failure recovery.
+
 ## Governance & proposals
 
 - [`GOVERNANCE.md`](./GOVERNANCE.md) — maintainer roles, decision-making, RFC

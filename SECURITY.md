@@ -85,6 +85,49 @@ When integrating this SDK, ensure:
    - Log security-related errors securely
    - Never expose sensitive data in error messages
 
+## Attack Surface
+
+The SDK consumes data it does not control. These are the inputs that should be treated
+as hostile:
+
+- **XDR parsing**: transaction envelopes and ledger keys are decoded by
+  `@soroban-resurrect/footprint-parser` and its WebAssembly build
+  (`@soroban-resurrect/footprint-parser-wasm`). Malformed XDR must produce a safe
+  failure, never a crash or unbounded allocation. Memory safety of the WASM parser is
+  tracked in #90.
+- **RPC responses**: simulation results, ledger entries, and TTL data come from
+  configured RPC endpoints, which may be misbehaving or compromised, so their output is
+  not trusted without checks. Endpoints should use HTTPS; plain HTTP requires
+  `allowHttp: true`.
+- **Wallet adapter messages**: signatures and account data returned by user wallets
+  are untrusted until verified against the expected transaction.
+- **Tracing headers**: trace context propagated to RPC endpoints is passed through as
+  opaque values. Do not place secrets in trace or baggage headers.
+
+## Coordinated Disclosure Timeline
+
+| Stage | Target |
+|-------|--------|
+| Acknowledge report | Within 48 hours |
+| Triage and confirm severity | Within 7 days |
+| Fix target, high or critical severity | Within 30 days of confirmation |
+| Fix target, other severities | Within 90 days of confirmation |
+| Public advisory | After the fix release and a 30-day disclosure window |
+
+Reporters are kept updated at least every 14 days until the issue is resolved.
+
+## Fuzzing
+
+XDR parsing is fuzzed continuously:
+
+- **Harness**: `packages/sdk/tests/fuzz/xdr-parsing.fuzz.ts`. It generates malformed XDR
+  and checks that the footprint parser entry points never throw an uncaught exception.
+- **Run locally**: `npm run test:fuzz` in `packages/sdk`. Pass `-- -max_total_time=<seconds>`
+  to change the duration.
+- **Nightly**: `.github/workflows/nightly-fuzz.yml` runs the harness for 15 minutes every
+  night at 02:00 UTC and fails the workflow if an uncaught exception is found. Crash
+  details are in the workflow logs. Any crash is triaged under the timeline above.
+
 ## Security Update Process
 
 When a vulnerability is confirmed:
