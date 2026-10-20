@@ -214,63 +214,21 @@ Check `onLog` output at warn/error level for details.
 
 A: The XDR size limit (100 KB) is likely the real constraint. Each key's XDR representation (in base64) plus overhead pushes this limit quickly. Reduce `maxRestoreBatchSize` or increase key-entry density, not the fee budget.
 
-## Resuming from an execution receipt
+## Safety Checks Before the Original Transaction
 
-`executeRestoreBatches` stops at the first failed batch. To continue later
-without resubmitting work that already landed:
+These checks run around every restore-then-original flow.
 
-```ts
-const planned = await client.buildRestoreTransactionBatches(archivedKeys, source)
-const result = await client.executeRestoreBatches(planned, sign, source)
+- **Restoration confirmation (#508).** Before the original transaction is submitted, each successful restore transaction is read back with `getTransaction` and must report `SUCCESS`. Otherwise the call rejects with `RESTORE_FAILED` and the original is never sent.
+- **Signer matches source (#509).** After the wallet signs, the returned envelope must have the same source account as the unsigned XDR and carry a signature from that account. A mismatch is rejected before submission with `INVALID_XDR`.
+- **Fee ceiling (#510).** Set `maxFeeStroops` (decimal string, stroops) to cap the fee of any transaction the SDK asks the wallet to sign. Transactions above the ceiling are rejected before the wallet prompt. Leaving it unset imposes no limit.
 
-// Persist as JSON (e.g. localStorage, a database row).
-const receipt = client.createExecutionReceipt(result, source, planned)
-const json = JSON.stringify(receipt)
+## Per-Batch Outcomes (#511)
 
-// Later, possibly in another session:
-const resumed = await client.resumeRestoreBatches(
-  client.parseExecutionReceipt(json),
-  sign,
-)
-```
+Each `RestoreBatchResult` in a concurrent or sequential run carries typed failure fields:
 
-- Batches with status `success` or a recorded `txHash` are never resubmitted.
-- Every other batch runs in `batchIndex` order and its status is updated in the
-  returned result, which covers the whole restore.
-- `parseExecutionReceipt` throws `INVALID_XDR` for a payload that is not a
-  version 1 receipt.
-- Resumed batches reuse their stored XDR. If their sequence numbers may be stale,
-  use `retryFailedRestore`, which rebuilds the transactions first.
+| Field        | Set when        | Meaning                                                                 |
+| ------------ | --------------- | ----------------------------------------------------------------------- |
+| `errorCode`  | `status: 'failed'` | One of `NETWORK_ERROR`, `RESTORE_FAILED`, `ORIGINAL_TX_FAILED`, `INVALID_XDR`, `UNKNOWN`. |
+| `retryable`  | `status: 'failed'` | Whether retrying the batch can succeed. Unrecognised errors are `UNKNOWN` and not retryable. |
 
-## Coalesced submissions
-
-Concurrent submissions of the same transaction XDR share one in-flight
-signing and submission. The wallet is prompted once, and the network receives
-the transaction once. The shared entry is cleared when the submission settles,
-so a call made after a failure starts a new submission.
-
-## Ambiguous batch outcomes
-
-A batch whose transaction was accepted but could not be confirmed (a
-confirmation timeout that carries a `txHash`) is reported with
-`RestoreAllBatchesResult.ambiguous = true`. In
-`executeRestoreThenOriginalBatches` such a batch stops the flow with
-`RESTORE_FAILED` even when `requireAllBatches` is `false`, so the original
-transaction is never submitted against a footprint that may be partly restored.
-Confirm the batch on-chain, then use `getFailedKeys()` and `retryFailedRestore()`.
-A definite rejection keeps the existing partial-success behavior.
-
-## Stale sequence numbers
-
-Batch transactions are built with projected sequence numbers. If another
-transaction from the same account lands first, later batches are rejected with
-`txBadSeq`. A transaction that expires before inclusion is rejected with
-`txTooLate`. Both rejections mean the transaction did not apply.
-
-`executeRestoreBatches` treats these two results as safe to retry. When it is
-given a `sourceAccountID`, it rebuilds the failed batch and the batches after it
-with a fresh sequence number, then retries once. A second stale rejection fails
-the batch as usual. Ambiguous outcomes (accepted but unconfirmed) are never
-rebuilt, because the original transaction may already have landed.
-`resumeRestoreBatches` passes the receipt's source account, so resumed batches
-get the same protection.
+`failedBatchIndices` on the concurrent result lists the failed batches, so callers can retry only the retryable ones.

@@ -15,6 +15,7 @@ updates:
       prefix-development: chore
       include: scope
     groups:
+      # Never auto-merged; routed to the integration label (see dependabot-auto-merge.yml).
       stellar-sdk:
         patterns:
           - "@stellar/stellar-sdk"

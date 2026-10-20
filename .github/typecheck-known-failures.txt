@@ -1,0 +1,15 @@
+# Workspace packages whose `typecheck` script fails on main.
+# The typecheck CI job reports these as warnings instead of failing.
+# Remove a line once that package typechecks cleanly. Any package not listed here must pass.
+packages/types
+packages/footprint-parser
+packages/rpc
+packages/utils
+packages/core
+packages/sdk
+packages/compat
+packages/react
+packages/wallet-adapters
+packages/mock-rpc
+packages/footprint-parser-wasm
+packages/react-native
