@@ -175,6 +175,9 @@ An RFC is required for:
 6. Accepted RFCs are merged with status `Accepted` and tracked to completion by a
    linked issue.
 
+Protocol-level and cross-cutting design proposals use
+`docs/proposals/0000-template.md` and are listed in `docs/proposals/README.md`.
+
 ### 4.3 Formal votes
 
 Used only for: adding/removing maintainers, selecting lead maintainers, resolving

@@ -22,6 +22,12 @@ const { needsRestoration, restoreTransactionXDR } =
   await client.checkAndPrepare(txXDR, sourceAccount)
 ```
 
+## Multi-batch restoration
+
+For large restores (more keys than `maxRestoreBatchSize`), see
+[Multi-Batch and Concurrent Restoration](../../docs/multi-batch-restoration.md) for
+the sequential vs concurrent decision, fee math, and resuming after a partial failure.
+
 ## Dependency injection
 
 The SDK ships a lightweight DI container (`Container`, `Token`, `BindingBuilder`,

@@ -40,6 +40,8 @@
     "licenses:sync": "node scripts/sync-licenses.mjs",
     "release": "semantic-release",
     "release:dry-run": "semantic-release --dry-run",
+    "verify-release": "node scripts/verify-release.mjs",
+    "test:scripts": "node --test scripts/verify-release.test.mjs",
     "prepare": "husky"
   },
   "devDependencies": {
