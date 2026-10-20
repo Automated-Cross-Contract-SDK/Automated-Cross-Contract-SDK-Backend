@@ -24,6 +24,7 @@ import {
   WsTransactionStatusEvent,
   TransactionWaitResult,
   FootprintCacheStatistics,
+  RpcMethodName,
 } from '@soroban-resurrect/types'
 import { SorobanResurrectError } from '@soroban-resurrect/errors'
 import {
@@ -103,6 +104,8 @@ export class SorobanResurrect {
       useWebSocket: false,
       pollIntervalMs: 1000,
       maxPollAttempts: 30,
+      restoreConfirmationPolicy: 'confirmed',
+      rpcMethodTimeouts: {},
       ...config,
     }
 
@@ -283,7 +286,10 @@ export class SorobanResurrect {
     let simResult: SorobanRpc.Api.SimulateTransactionResponse
     try {
       simResult = await this.retryOnFailure(
-        () => this.server.simulateTransaction(innerTx as any),
+        () =>
+          this.withMethodTimeout('simulateTransaction', () =>
+            this.server.simulateTransaction(innerTx as any),
+          ),
         'simulateTransaction',
       )
     } catch (err) {
@@ -345,7 +351,10 @@ export class SorobanResurrect {
     let existingKeys: SorobanRpc.Api.GetLedgerEntriesResponse
     try {
       existingKeys = await this.retryOnFailure(
-        () => this.getServer().getLedgerEntries(...keys.all),
+        () =>
+          this.withMethodTimeout('getLedgerEntries', () =>
+            this.getServer().getLedgerEntries(...keys.all),
+          ),
         'getLedgerEntries',
       )
     } catch (err) {
@@ -487,6 +496,7 @@ export class SorobanResurrect {
         batchIndex: i,
         transactionXDR: tx.toXDR(),
         keysRestored: batchKeys.length,
+        restoredKeys: batchKeys.map(k => k.keyBase64),
         status: 'pending',
       })
 
@@ -509,7 +519,11 @@ export class SorobanResurrect {
       this.log('info', `Executing restore batch ${i + 1}/${batches.length} (${batch.keysRestored} keys)`)
 
       try {
-        const txHash = await this.submitSignedTransaction(batch.transactionXDR, signTransaction)
+        const txHash = await this.submitSignedTransaction(
+          batch.transactionXDR,
+          signTransaction,
+          this.restoreAwaitsConfirmation(),
+        )
         results.push({
           ...batch,
           txHash,
@@ -629,7 +643,11 @@ export class SorobanResurrect {
         `Starting restore batch ${idx + 1}/${total} (${batch.keysRestored} keys)`,
       )
       try {
-        const txHash = await this.submitSignedTransaction(batch.transactionXDR, signTransaction)
+        const txHash = await this.submitSignedTransaction(
+          batch.transactionXDR,
+          signTransaction,
+          this.restoreAwaitsConfirmation(),
+        )
         results[idx] = { ...batch, txHash, status: 'success' }
         totalKeysRestored += batch.keysRestored
         this.log('info', `Batch ${idx + 1}/${total} confirmed: ${txHash}`)
@@ -732,6 +750,7 @@ export class SorobanResurrect {
         batchIndex: i,
         transactionXDR: tx.toXDR(),
         keysRestored: batchKeys.length,
+        restoredKeys: batchKeys.map(k => k.keyBase64),
         status: 'pending',
       })
 
@@ -807,6 +826,8 @@ export class SorobanResurrect {
       success: true,
       originalTxHash,
       entriesRestored: concurrentResult.totalKeysRestored,
+      restoreConfirmed: concurrentResult.success && this.restoreAwaitsConfirmation(),
+      originalConfirmed: true,
       concurrentBatchResults: concurrentResult,
     }
   }
@@ -930,7 +951,10 @@ export class SorobanResurrect {
         .build()
 
       const simResult = await this.retryOnFailure(
-        () => this.getServer().simulateTransaction(candidateTx as any),
+        () =>
+          this.withMethodTimeout('simulateTransaction', () =>
+            this.getServer().simulateTransaction(candidateTx as any),
+          ),
         'simulateTransaction(estimateRestoreFee)',
       )
 
@@ -967,7 +991,7 @@ export class SorobanResurrect {
     sourceAccountID: string,
   ): Promise<RestoreTransactionResult> {
     const sourceAccount = await this.retryOnFailure(
-      () => this.getServer().getAccount(sourceAccountID),
+      () => this.withMethodTimeout('getAccount', () => this.getServer().getAccount(sourceAccountID)),
       `getAccount(${sourceAccountID})`,
     )
 
@@ -1087,6 +1111,8 @@ export class SorobanResurrect {
         success: true,
         entriesRestored: keysRestored,
         simulateOnly: true,
+        restoreConfirmed: false,
+        originalConfirmed: false,
       }
     }
 
@@ -1110,7 +1136,11 @@ export class SorobanResurrect {
     // Execute restore transaction
     try {
       this.log('info', 'Executing restore transaction')
-      restoreTxHash = await this.submitSignedTransaction(restoreXDR, signTransaction)
+      restoreTxHash = await this.submitSignedTransaction(
+        restoreXDR,
+        signTransaction,
+        this.restoreAwaitsConfirmation(),
+      )
       this.log('info', `Restore transaction confirmed: ${restoreTxHash}`)
     } catch (err) {
       const resurrErr = new SorobanResurrectError(
@@ -1171,6 +1201,8 @@ export class SorobanResurrect {
       restoreTxHash,
       originalTxHash,
       entriesRestored: keysRestored,
+      restoreConfirmed: this.restoreAwaitsConfirmation(),
+      originalConfirmed: true,
     }
   }
 
@@ -1228,25 +1260,66 @@ export class SorobanResurrect {
       success: true,
       originalTxHash,
       entriesRestored: batchResults.totalKeysRestored,
+      restoreConfirmed: this.restoreAwaitsConfirmation(),
+      originalConfirmed: true,
       batchResults,
     }
+  }
+
+  /**
+   * Races `call` against the per-method timeout configured in
+   * `rpcMethodTimeouts`. Methods without an override run unbounded here and
+   * are governed only by the global `timeout`.
+   */
+  private async withMethodTimeout<T>(method: RpcMethodName, call: () => Promise<T>): Promise<T> {
+    const limitMs = this.config.rpcMethodTimeouts[method]
+    if (limitMs === undefined) {
+      return call()
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new SorobanResurrectError(
+            'NETWORK_ERROR',
+            `RPC method ${method} timed out after ${limitMs}ms (rpcUrl=${this.config.rpcUrl})`,
+          ),
+        )
+      }, limitMs)
+    })
+
+    try {
+      return await Promise.race([call(), deadline])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  private restoreAwaitsConfirmation(): boolean {
+    return this.config.restoreConfirmationPolicy !== 'submitted'
   }
 
   private async submitSignedTransaction(
     txXDR: string,
     signTransaction: (xdr: string) => Promise<string>,
+    awaitConfirmation = true,
   ): Promise<string> {
     const signedXDR = await signTransaction(txXDR)
 
     const tx = new Transaction(signedXDR, this.config.networkPassphrase)
 
     const sendResult = await this.retryOnFailure(
-      () => this.getServer().sendTransaction(tx),
+      () => this.withMethodTimeout('sendTransaction', () => this.getServer().sendTransaction(tx)),
       'sendTransaction',
     )
 
     if (sendResult.status === 'PENDING' || sendResult.status === 'DUPLICATE') {
       const hash = sendResult.hash
+      if (!awaitConfirmation) {
+        this.log('info', `Transaction ${hash} submitted without waiting for confirmation`)
+        return hash
+      }
       const { hash: confirmedHash } = await this.waitForTransaction(hash)
       return confirmedHash
     }
@@ -1479,7 +1552,9 @@ export class SorobanResurrect {
   ): Promise<string> {
     const intervalMs = this.config.pollIntervalMs
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const receipt = await this.getServer().getTransaction(hash)
+      const receipt = await this.withMethodTimeout('getTransaction', () =>
+        this.getServer().getTransaction(hash),
+      )
       if (receipt.status !== 'NOT_FOUND') {
         if (receipt.status === 'SUCCESS') {
           return hash
@@ -1625,6 +1700,7 @@ export class SorobanResurrect {
       return {
         success: true,
         entriesRestored: totalRestored,
+        restoreConfirmed: this.restoreAwaitsConfirmation(),
         batchResults: retryResult,
       }
     }
@@ -1637,6 +1713,7 @@ export class SorobanResurrect {
       failedBatchIndex: retryResult.failedAtBatchIndex,
       partialEntriesRestored: totalRestored,
       error: retryResult.error,
+      restoreConfirmed: false,
       batchResults: retryResult,
     }
   }
