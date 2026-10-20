@@ -213,3 +213,22 @@ Check `onLog` output at warn/error level for details.
 **Q: My batches are all tiny, but fee budget seems high?**
 
 A: The XDR size limit (100 KB) is likely the real constraint. Each key's XDR representation (in base64) plus overhead pushes this limit quickly. Reduce `maxRestoreBatchSize` or increase key-entry density, not the fee budget.
+
+## Safety Checks Before the Original Transaction
+
+These checks run around every restore-then-original flow.
+
+- **Restoration confirmation (#508).** Before the original transaction is submitted, each successful restore transaction is read back with `getTransaction` and must report `SUCCESS`. Otherwise the call rejects with `RESTORE_FAILED` and the original is never sent.
+- **Signer matches source (#509).** After the wallet signs, the returned envelope must have the same source account as the unsigned XDR and carry a signature from that account. A mismatch is rejected before submission with `INVALID_XDR`.
+- **Fee ceiling (#510).** Set `maxFeeStroops` (decimal string, stroops) to cap the fee of any transaction the SDK asks the wallet to sign. Transactions above the ceiling are rejected before the wallet prompt. Leaving it unset imposes no limit.
+
+## Per-Batch Outcomes (#511)
+
+Each `RestoreBatchResult` in a concurrent or sequential run carries typed failure fields:
+
+| Field        | Set when        | Meaning                                                                 |
+| ------------ | --------------- | ----------------------------------------------------------------------- |
+| `errorCode`  | `status: 'failed'` | One of `NETWORK_ERROR`, `RESTORE_FAILED`, `ORIGINAL_TX_FAILED`, `INVALID_XDR`, `UNKNOWN`. |
+| `retryable`  | `status: 'failed'` | Whether retrying the batch can succeed. Unrecognised errors are `UNKNOWN` and not retryable. |
+
+`failedBatchIndices` on the concurrent result lists the failed batches, so callers can retry only the retryable ones.

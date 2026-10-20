@@ -7,6 +7,7 @@ import {
   xdr,
   SorobanDataBuilder,
   BASE_FEE,
+  StrKey,
 } from '@stellar/stellar-sdk'
 import {
   ArchivedKey,
@@ -26,7 +27,7 @@ import {
   FootprintCacheStatistics,
   RpcMethodName,
 } from '@soroban-resurrect/types'
-import { SorobanResurrectError } from '@soroban-resurrect/errors'
+import { SorobanResurrectError, isRetryable } from '@soroban-resurrect/errors'
 import {
   FootprintKeys,
   extractKeysFromFootprint,
@@ -43,6 +44,13 @@ import { describeXdrEncoding, redactRpcUrls, redactUrlsInText } from '@soroban-r
 import { DEFAULT_MAX_CONCURRENCY, delay, MAX_RETRIES } from '@soroban-resurrect/utils'
 
 const MAX_XDR_SIZE_BYTES = 100_000
+const KNOWN_BATCH_ERROR_CODES: ReadonlySet<RestoreBatchErrorCode> = new Set<RestoreBatchErrorCode>([
+  'NETWORK_ERROR',
+  'RESTORE_FAILED',
+  'ORIGINAL_TX_FAILED',
+  'INVALID_XDR',
+  'UNKNOWN',
+])
 const DEFAULT_RESTORE_FEE = '100000'
 
 /**
@@ -575,6 +583,7 @@ export class SorobanResurrect {
           ...batch,
           status: 'failed',
           error: errorMsg,
+          ...this.describeBatchFailure(err),
         })
 
         // Collect the remaining batches (current + unexecuted) as failed batches
@@ -690,7 +699,7 @@ export class SorobanResurrect {
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err)
         this.log('error', `Batch ${idx + 1}/${total} failed: ${errorMsg}`)
-        results[idx] = { ...batch, status: 'failed', error: errorMsg }
+        results[idx] = { ...batch, status: 'failed', error: errorMsg, ...this.describeBatchFailure(err) }
         failedIndices.push(idx)
       } finally {
         release()
@@ -843,6 +852,12 @@ export class SorobanResurrect {
         'warn',
         `Proceeding with original transaction despite ${concurrentResult.failedBatchCount} failed restore batches`,
       )
+    }
+
+    for (const batch of concurrentResult.batches) {
+      if (batch.status === 'success' && batch.txHash) {
+        await this.verifyRestorationConfirmed(batch.txHash)
+      }
     }
 
     let originalTxHash: string
@@ -1264,6 +1279,12 @@ export class SorobanResurrect {
         )
       }
 
+      for (const batch of batchResults.batches) {
+        if (batch.status === 'success' && batch.txHash) {
+          await this.verifyRestorationConfirmed(batch.txHash)
+        }
+      }
+
       this.log(
         'info',
         `All ${restoreBatches.length} batches succeeded, restored ${batchResults.totalKeysRestored} keys`,
@@ -1346,6 +1367,7 @@ export class SorobanResurrect {
     const signedXDR = await signTransaction(txXDR)
 
     const tx = new Transaction(signedXDR, this.config.networkPassphrase)
+    this.assertSignerMatchesSource(txXDR, tx)
 
     const sendResult = await this.retryOnFailure(
       () => this.withMethodTimeout('sendTransaction', () => this.getServer().sendTransaction(tx)),

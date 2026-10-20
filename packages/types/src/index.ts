@@ -108,6 +108,12 @@ export interface SorobanResurrectConfig {
   networkPassphrase: string
   allowHttp?: boolean
   restoreFee?: string
+  /**
+   * Optional ceiling (stroops, as a decimal string) on the total fee of any
+   * transaction the SDK is about to sign. Transactions whose fee exceeds it
+   * are rejected before the wallet is prompted. Unset means no ceiling.
+   */
+  maxFeeStroops?: string
   maxRestoreBatchSize?: number
   /**
    * Timeout in milliseconds for RPC requests made by SorobanRpc.Server.
@@ -222,6 +228,14 @@ export interface RestoreTransactionResult {
   keysRestored: number
 }
 
+/** Error codes a single restore batch can fail with. */
+export type RestoreBatchErrorCode =
+  | 'NETWORK_ERROR'
+  | 'RESTORE_FAILED'
+  | 'ORIGINAL_TX_FAILED'
+  | 'INVALID_XDR'
+  | 'UNKNOWN'
+
 export interface RestoreBatchResult {
   batchIndex: number
   transactionXDR: string
@@ -233,6 +247,10 @@ export interface RestoreBatchResult {
    */
   restoredKeys: string[]
   status: 'pending' | 'success' | 'failed'
+  /** Typed reason for a failed batch. Set only when `status` is `'failed'`. */
+  errorCode?: RestoreBatchErrorCode
+  /** Whether retrying this batch can succeed, per the error code's retryability. */
+  retryable?: boolean
   txHash?: string
   error?: string
 }
