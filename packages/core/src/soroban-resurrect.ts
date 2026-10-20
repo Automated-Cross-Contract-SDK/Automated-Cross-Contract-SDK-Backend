@@ -37,6 +37,7 @@ import {
 import { ExponentialBackoff, type RetryPolicy } from '@soroban-resurrect/rpc'
 import { SimulationCache, type SimulationCacheConfig } from '@soroban-resurrect/rpc'
 import { RpcFailoverManager, type RpcEndpointHealth } from '@soroban-resurrect/rpc'
+import { probeRpcMethods, RESTORE_REQUIRED_METHODS } from '@soroban-resurrect/rpc'
 import { FootprintCache } from '@soroban-resurrect/rpc'
 import { describeXdrEncoding, redactRpcUrls, redactUrlsInText } from '@soroban-resurrect/rpc'
 import { DEFAULT_MAX_CONCURRENCY, delay, MAX_RETRIES } from '@soroban-resurrect/utils'
@@ -51,6 +52,34 @@ const DEFAULT_RESTORE_FEE = '100000'
  * not transaction confirmation.
  */
 const WS_PROBE_TIMEOUT_MS = 3000
+
+/** RPC methods this SDK invokes, reported verbatim in diagnostics. */
+const SDK_RPC_METHODS = [
+  'getNetwork',
+  'getAccount',
+  'simulateTransaction',
+  'sendTransaction',
+  'getTransaction',
+  'getLedgerEntries',
+] as const
+
+/**
+ * Snapshot returned by `SorobanResurrect.getDiagnostics()`.
+ */
+export interface SorobanResurrectDiagnostics {
+  /** URL of the first endpoint currently considered healthy, or null if none. */
+  activeEndpoint: string | null
+  /** Passphrase reported by the RPC server, or null if `getNetwork()` failed. */
+  networkPassphrase: string | null
+  /** Protocol version reported by the RPC server, or null if unavailable. */
+  protocolVersion: number | null
+  /** Error message from the `getNetwork()` call, or null on success. */
+  networkError: string | null
+  /** Health snapshot for every configured endpoint. */
+  endpoints: RpcEndpointHealth[]
+  /** RPC methods this SDK calls. */
+  sdkRpcMethods: string[]
+}
 
 function isFeeBumpTx(tx: ReturnType<typeof TransactionBuilder.fromXDR>): tx is ReturnType<typeof TransactionBuilder.fromXDR> & { innerTransaction: any } {
   return 'innerTransaction' in tx
@@ -93,6 +122,8 @@ export class SorobanResurrect {
   private simulationCache?: SimulationCache
   private footprintCache?: FootprintCache
   private _lastFailedRestoreState: FailedRestoreState | null = null
+  private restoreMethodChecks: Map<string, Promise<void>> = new Map()
+  private networkIdentityCheck: Promise<void> | null = null
 
   constructor(config: SorobanResurrectConfig) {
     this.config = {
@@ -416,6 +447,8 @@ export class SorobanResurrect {
       )
     }
 
+    await this.ensureRestoreMethodsAvailable()
+
     // Classify keys on demand before batch building (deferred from simulation)
     const classified = classifyDeferredKeys(
       archivedKeys.map(k => ({ key: k.key, keyBase64: k.keyBase64 })),
@@ -444,6 +477,8 @@ export class SorobanResurrect {
     if (archivedKeys.length === 0) {
       throw new SorobanResurrectError('No archived keys to restore', 'INVALID_XDR')
     }
+
+    await this.ensureRestoreMethodsAvailable()
 
     // Classify keys on demand before batch building (deferred from simulation)
     const classified = classifyDeferredKeys(
@@ -1306,6 +1341,8 @@ export class SorobanResurrect {
     signTransaction: (xdr: string) => Promise<string>,
     awaitConfirmation = true,
   ): Promise<string> {
+    await this.ensureNetworkIdentityMatches()
+
     const signedXDR = await signTransaction(txXDR)
 
     const tx = new Transaction(signedXDR, this.config.networkPassphrase)
@@ -1864,6 +1901,121 @@ export class SorobanResurrect {
    */
   getFailoverStatus(): RpcEndpointHealth[] {
     return this.failoverManager.getHealthStatus()
+  }
+
+  /**
+   * Blocks signing unless the RPC endpoint reports the configured network
+   * passphrase. Unlike the constructor's warning-only check, a mismatch or an
+   * unreachable endpoint refuses to sign. Only a successful check is cached.
+   */
+  private ensureNetworkIdentityMatches(): Promise<void> {
+    if (!this.networkIdentityCheck) {
+      this.networkIdentityCheck = this.checkNetworkIdentity()
+      this.networkIdentityCheck.catch(() => {
+        this.networkIdentityCheck = null
+      })
+    }
+    return this.networkIdentityCheck
+  }
+
+  private async checkNetworkIdentity(): Promise<void> {
+    const rpcUrl = Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl
+    let reported: string
+    try {
+      reported = (await this.server.getNetwork()).passphrase
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      throw new SorobanResurrectError(
+        'NETWORK_ERROR',
+        `Could not verify network passphrase before signing (rpcUrl=${rpcUrl}): ${reason}`,
+      )
+    }
+
+    if (reported !== this.config.networkPassphrase) {
+      throw new SorobanResurrectError(
+        'NETWORK_MISMATCH',
+        `Refusing to sign: configured "${this.config.networkPassphrase}" but RPC server reports "${reported}" (rpcUrl=${rpcUrl})`,
+      )
+    }
+  }
+
+  /**
+   * Fails before any restore transaction is built when the active RPC endpoint
+   * lacks a method the restore flow needs. The result is cached per endpoint;
+   * a transport failure clears the cache entry so the next call re-probes.
+   */
+  private ensureRestoreMethodsAvailable(): Promise<void> {
+    const url = this.primaryEndpointUrl()
+    let check = this.restoreMethodChecks.get(url)
+    if (!check) {
+      check = this.probeRestoreMethods(url)
+      this.restoreMethodChecks.set(url, check)
+      check.catch(() => this.restoreMethodChecks.delete(url))
+    }
+    return check
+  }
+
+  private async probeRestoreMethods(url: string): Promise<void> {
+    let probe: Awaited<ReturnType<typeof probeRpcMethods>>
+    try {
+      probe = await probeRpcMethods(url, RESTORE_REQUIRED_METHODS)
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      throw new SorobanResurrectError(
+        'NETWORK_ERROR',
+        `Could not verify restore RPC methods at ${url}: ${reason}`,
+      )
+    }
+
+    if (probe.missing.length > 0) {
+      throw new SorobanResurrectError(
+        'RPC_METHOD_UNAVAILABLE',
+        `RPC endpoint ${url} lacks methods required for restore: ${probe.missing.join(', ')}`,
+      )
+    }
+  }
+
+  /**
+   * URL of the first healthy endpoint, falling back to the first configured
+   * URL when every endpoint is marked unhealthy.
+   */
+  private primaryEndpointUrl(): string {
+    const healthy = this.getFailoverStatus().find(ep => ep.isHealthy)
+    if (healthy) return healthy.url
+    return Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl
+  }
+
+  /**
+   * Returns a diagnostics snapshot: the negotiated network and protocol line
+   * reported by the RPC server, the endpoint currently in use, per-endpoint
+   * health, and the RPC methods this SDK calls.
+   *
+   * Never throws on RPC failure. A failed `getNetwork()` call is reported in
+   * `networkError` with `protocolVersion` and `networkPassphrase` set to null.
+   */
+  async getDiagnostics(): Promise<SorobanResurrectDiagnostics> {
+    const endpoints = this.failoverManager.getHealthStatus()
+    const activeEndpoint = endpoints.find(ep => ep.isHealthy)?.url ?? null
+
+    let networkPassphrase: string | null = null
+    let protocolVersion: number | null = null
+    let networkError: string | null = null
+    try {
+      const network = await this.server.getNetwork()
+      networkPassphrase = network.passphrase
+      protocolVersion = network.protocolVersion ?? null
+    } catch (err) {
+      networkError = err instanceof Error ? err.message : String(err)
+    }
+
+    return {
+      activeEndpoint,
+      networkPassphrase,
+      protocolVersion,
+      networkError,
+      endpoints,
+      sdkRpcMethods: [...SDK_RPC_METHODS],
+    }
   }
 
   /**

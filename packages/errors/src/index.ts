@@ -11,6 +11,8 @@
  * | INVALID_XDR                | no        | Malformed input; retrying cannot succeed.              |
  * | NO_ACCOUNT                 | no        | Account does not exist; retrying cannot succeed.       |
  * | ARCHIVE_DETECTION_FAILED   | no        | Deterministic detection failure; retrying is futile.   |
+ * | RPC_METHOD_UNAVAILABLE     | no        | Endpoint lacks a method the restore flow needs.        |
+ * | NETWORK_MISMATCH          | no        | RPC network differs from config; signing is refused.   |
  * | UNKNOWN                    | no        | Unclassified; default to non-retryable.                |
  */
 export enum SorobanResurrectErrorCode {
@@ -20,6 +22,8 @@ export enum SorobanResurrectErrorCode {
   INVALID_XDR = 'INVALID_XDR',
   NO_ACCOUNT = 'NO_ACCOUNT',
   ARCHIVE_DETECTION_FAILED = 'ARCHIVE_DETECTION_FAILED',
+  RPC_METHOD_UNAVAILABLE = 'RPC_METHOD_UNAVAILABLE',
+  NETWORK_MISMATCH = 'NETWORK_MISMATCH',
   UNKNOWN = 'UNKNOWN',
 }
 
