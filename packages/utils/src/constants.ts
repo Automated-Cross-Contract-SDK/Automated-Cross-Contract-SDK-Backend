@@ -25,3 +25,16 @@ export const RESTORE_TUNING = {
   MAX_XDR_SIZE_BYTES,
   DEFAULT_RESTORE_FEE,
 } as const
+
+/**
+ * Status strings returned by Soroban RPC `sendTransaction` and `getTransaction`.
+ * Frozen so callers cannot change them at runtime.
+ */
+export const TRANSACTION_STATUS = Object.freeze({
+  PENDING: 'PENDING',
+  SUCCESS: 'SUCCESS',
+  FAILED: 'FAILED',
+  ERROR: 'ERROR',
+  DUPLICATE: 'DUPLICATE',
+  NOT_FOUND: 'NOT_FOUND',
+} as const)

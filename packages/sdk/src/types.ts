@@ -257,6 +257,23 @@ export interface RestoreAllBatchesResult {
   totalKeysRestored: number
   failedAtBatchIndex?: number
   error?: string
+  /**
+   * True when the failing batch was accepted by the network but its outcome
+   * could not be confirmed (for example a confirmation timeout). The batch may
+   * have landed, so callers must not treat the failure as a clean rejection.
+   */
+  ambiguous?: boolean
+}
+
+/**
+ * JSON-serializable record of a multi-batch restore. Persist it after
+ * `executeRestoreBatches` (or a failed run) and pass it to
+ * `resumeRestoreBatches` to submit only the batches that never succeeded.
+ */
+export interface RestoreExecutionReceipt {
+  version: 1
+  sourceAccountID: string
+  batches: RestoreBatchResult[]
 }
 
 export interface ConcurrentRestoreResult {
@@ -391,4 +408,24 @@ export interface SorobanResurrectEvents {
   'original:complete': (hash: string) => void
   /** Fired whenever a SorobanResurrectError is thrown during execution. */
   'error': (error: SorobanResurrectError) => void
+}
+
+/**
+ * True when a transaction was accepted by the network (it has a hash) but its
+ * final outcome could not be confirmed, such as a confirmation timeout. The
+ * transaction may still have landed, so it is not safe to assume it failed.
+ */
+export function isAmbiguousSubmissionError(err: unknown): boolean {
+  return err instanceof SorobanResurrectError && err.code === 'NETWORK_ERROR' && typeof err.txHash === 'string'
+}
+
+/**
+ * True when the network rejected a submission before applying it because the
+ * sequence number was stale (`txBadSeq`) or the transaction was too late
+ * (`txTooLate`). Such a transaction did not land, so its batch can be rebuilt
+ * with a fresh sequence number safely.
+ */
+export function isStaleSequenceError(err: unknown): boolean {
+  if (!(err instanceof SorobanResurrectError) || err.code !== 'ORIGINAL_TX_FAILED') return false
+  return /result=(txBadSeq|txTooLate)\b/.test(err.message)
 }

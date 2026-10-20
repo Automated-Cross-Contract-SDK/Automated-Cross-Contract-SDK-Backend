@@ -16,11 +16,14 @@ import {
   RestoreTransactionResult,
   RestoreBatchResult,
   RestoreAllBatchesResult,
+  RestoreExecutionReceipt,
   ConcurrentRestoreResult,
   ContractKeyGroup,
   ExecutionResult,
   FailedRestoreState,
   SorobanResurrectError,
+  isAmbiguousSubmissionError,
+  isStaleSequenceError,
   FeeBumpMetadata,
   SorobanResurrectEvents,
   WsTransactionStatusEvent,
@@ -30,6 +33,7 @@ import {
   TtlChange,
 } from './types.js'
 import { NOOP_LOGGER, onLogToLogger, type Logger } from './logger.js'
+import { EventDeduplicator } from './event-deduplicator.js'
 import {
   FootprintKeys,
   extractKeysFromFootprint,
@@ -42,13 +46,26 @@ import { SimulationCache, type SimulationCacheConfig } from '@soroban-resurrect/
 import { RpcFailoverManager, type RpcEndpointHealth } from '@soroban-resurrect/rpc'
 import { FootprintCache, type FootprintCacheStatistics } from '@soroban-resurrect/rpc'
 import { Tracer } from './tracing.js'
-import { DEFAULT_MAX_CONCURRENCY, MAX_RETRIES, RESTORED_ENTRY_TTL_LEDGERS } from '@soroban-resurrect/utils'
+import { DEFAULT_MAX_CONCURRENCY, MAX_RETRIES, RESTORED_ENTRY_TTL_LEDGERS, TRANSACTION_STATUS } from '@soroban-resurrect/utils'
 
 const MAX_XDR_SIZE_BYTES = 100_000
 const DEFAULT_RESTORE_FEE = '100000'
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/**
+ * Reads the result code (for example `txBadSeq`) from a failed submission's
+ * `errorResultXdr`. Returns `unknown` when it cannot be decoded.
+ */
+function decodeSubmissionResultCode(errorResultXdr: string | undefined): string {
+  if (!errorResultXdr) return 'unknown'
+  try {
+    return xdr.TransactionResult.fromXDR(errorResultXdr, 'base64').result().switch().name
+  } catch {
+    return 'unknown'
+  }
 }
 
 function isFeeBumpTx(tx: ReturnType<typeof TransactionBuilder.fromXDR>): tx is ReturnType<typeof TransactionBuilder.fromXDR> & { innerTransaction: any } {
@@ -98,6 +115,9 @@ export class SorobanResurrect {
   private footprintCache?: FootprintCache
   /** Trace-propagation headers for the RPC call currently in flight. */
   private activeTraceHeaders: Record<string, string> = {}
+  private _lastFailedRestoreState: FailedRestoreState | null = null
+  /** In-flight submissions keyed by unsigned transaction XDR (see #513). */
+  private inFlightSubmissions: Map<string, Promise<string>> = new Map()
 
   private readonly startedAt = Date.now()
   private networkPassphraseValid = true
@@ -342,6 +362,10 @@ export class SorobanResurrect {
     for (const listener of set) {
       (listener as (...a: Parameters<SorobanResurrectEvents[K]>) => void)(...args)
     }
+  }
+
+  private get logger(): Logger {
+    return this.config.logger ?? NOOP_LOGGER
   }
 
   private log(level: 'info' | 'warn' | 'error' | 'debug', message: string, meta?: Record<string, unknown>): void {
@@ -927,10 +951,12 @@ export class SorobanResurrect {
   ): Promise<RestoreAllBatchesResult> {
     const results: RestoreBatchResult[] = []
     let totalKeysRestored = 0
+    let queue = batches
+    let sequenceRefreshed = false
 
-    for (let i = 0; i < batches.length; i++) {
-      const batch = batches[i]
-      this.log('info', `Executing restore batch ${i + 1}/${batches.length} (${batch.keysRestored} keys)`)
+    for (let i = 0; i < queue.length; i++) {
+      const batch = queue[i]
+      this.log('info', `Executing restore batch ${i + 1}/${queue.length} (${batch.keysRestored} keys)`)
 
       try {
         const txHash = await this.submitSignedTransaction(batch.transactionXDR, signTransaction)
@@ -943,6 +969,20 @@ export class SorobanResurrect {
         this.log('info', `Batch ${i + 1} confirmed: ${txHash}`)
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err)
+
+        // A stale sequence number or expired transaction was rejected, so it
+        // did not apply. Rebuild this batch and the ones after it with fresh
+        // sequence numbers and retry once. Ambiguous outcomes are not refreshed
+        // because the original transaction may already have landed.
+        if (sourceAccountID && !sequenceRefreshed && isStaleSequenceError(err)) {
+          sequenceRefreshed = true
+          this.log('warn', `Batch ${i + 1} rejected with a stale sequence or expired transaction; refreshing sequence numbers and retrying`)
+          const rebuilt = await this.rebuildRestoreBatches(queue.slice(i), sourceAccountID)
+          queue = [...queue.slice(0, i), ...rebuilt]
+          i--
+          continue
+        }
+
         this.log('error', `Batch ${i + 1} failed: ${errorMsg}`)
 
         results.push({
@@ -952,7 +992,7 @@ export class SorobanResurrect {
         })
 
         // Collect the remaining batches (current + unexecuted) as failed batches
-        const failedBatches = [results[results.length - 1], ...batches.slice(i + 1)]
+        const failedBatches = [results[results.length - 1], ...queue.slice(i + 1)]
 
         // Capture failed state for recovery via getFailedKeys() / retryFailedRestore()
         this._lastFailedRestoreState = {
@@ -970,6 +1010,7 @@ export class SorobanResurrect {
           totalKeysRestored,
           failedAtBatchIndex: i,
           error: `Batch ${i + 1} failed: ${errorMsg}`,
+          ambiguous: isAmbiguousSubmissionError(err),
         }
       }
     }
@@ -1677,6 +1718,17 @@ export class SorobanResurrect {
       batchResults = await this.executeRestoreBatches(restoreBatches, signTransaction)
 
       if (!batchResults.success) {
+        // An ambiguous batch may have landed on-chain. Submitting the original
+        // transaction now could run it against a partially restored footprint,
+        // so stop here even when partial success is allowed.
+        if (batchResults.ambiguous) {
+          throw new SorobanResurrectError(
+            `Restore batch ${(batchResults.failedAtBatchIndex ?? 0) + 1} has an unconfirmed outcome; original transaction was not submitted. Fix: confirm the batch transaction on-chain, then call getFailedKeys() and retryFailedRestore() before resubmitting the original.`,
+            'RESTORE_FAILED',
+            batchResults,
+          )
+        }
+
         // When batches fail partway through, expose partial-failure state
         if (requireAllBatches) {
           // Original behavior: throw on any batch failure
@@ -1735,7 +1787,32 @@ export class SorobanResurrect {
     }
   }
 
-  private async submitSignedTransaction(
+  /**
+   * Signs and submits a transaction, then waits for confirmation.
+   *
+   * Concurrent calls with the same unsigned XDR share one in-flight submission,
+   * so the wallet is prompted once and the network sees the transaction once.
+   * The entry is removed when the submission settles, success or failure, so a
+   * later call after a failure starts a fresh submission.
+   */
+  private submitSignedTransaction(
+    txXDR: string,
+    signTransaction: (xdr: string) => Promise<string>,
+  ): Promise<string> {
+    const existing = this.inFlightSubmissions.get(txXDR)
+    if (existing) {
+      this.log('debug', 'Coalescing with an in-flight submission for the same transaction')
+      return existing
+    }
+
+    const submission = this.sendSignedTransaction(txXDR, signTransaction).finally(() => {
+      this.inFlightSubmissions.delete(txXDR)
+    })
+    this.inFlightSubmissions.set(txXDR, submission)
+    return submission
+  }
+
+  private async sendSignedTransaction(
     txXDR: string,
     signTransaction: (xdr: string) => Promise<string>,
   ): Promise<string> {
@@ -1756,7 +1833,7 @@ export class SorobanResurrect {
 
     if (sendResult.status === TRANSACTION_STATUS.ERROR) {
       throw new SorobanResurrectError(
-        `Transaction submission error (rpcUrl=${this.config.rpcUrl})`,
+        `Transaction submission error (rpcUrl=${this.config.rpcUrl}, result=${decodeSubmissionResultCode(sendResult.errorResultXdr)})`,
         'ORIGINAL_TX_FAILED',
         sendResult,
         { rpcUrl: this.config.rpcUrl },
@@ -2000,6 +2077,112 @@ export class SorobanResurrect {
   }
 
   /**
+   * Builds a JSON-serializable receipt so the caller can persist it and resume
+   * later with `resumeRestoreBatches`.
+   *
+   * `executeRestoreBatches` stops at the first failure and only reports the
+   * batches it reached, so pass the full planned batch list as well. Every
+   * planned batch appears in the receipt: executed ones take their result
+   * status, unexecuted ones stay `pending`.
+   */
+  createExecutionReceipt(
+    result: RestoreAllBatchesResult,
+    sourceAccountID: string,
+    plannedBatches: RestoreBatchResult[],
+  ): RestoreExecutionReceipt {
+    const executed = new Map(result.batches.map(batch => [batch.batchIndex, batch]))
+    return {
+      version: 1,
+      sourceAccountID,
+      batches: plannedBatches.map(batch => ({ ...(executed.get(batch.batchIndex) ?? batch) })),
+    }
+  }
+
+  /**
+   * Parses and validates a receipt previously produced by
+   * `createExecutionReceipt` and serialized with `JSON.stringify`.
+   *
+   * @throws {SorobanResurrectError} `INVALID_XDR` when the payload does not match
+   *   the receipt shape.
+   */
+  parseExecutionReceipt(json: string): RestoreExecutionReceipt {
+    const invalid = (reason: string): never => {
+      throw new SorobanResurrectError(
+        `Invalid execution receipt: ${reason}. Fix: pass the JSON produced by JSON.stringify(createExecutionReceipt(...)).`,
+        'INVALID_XDR',
+      )
+    }
+
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(json)
+    } catch {
+      return invalid('not valid JSON')
+    }
+
+    if (typeof parsed !== 'object' || parsed === null) return invalid('expected an object')
+    const candidate = parsed as Partial<RestoreExecutionReceipt>
+    if (candidate.version !== 1) return invalid('unsupported version')
+    if (typeof candidate.sourceAccountID !== 'string') return invalid('missing sourceAccountID')
+    if (!Array.isArray(candidate.batches)) return invalid('missing batches array')
+
+    for (const batch of candidate.batches) {
+      if (typeof batch.batchIndex !== 'number') return invalid('batch is missing batchIndex')
+      if (typeof batch.transactionXDR !== 'string') return invalid(`batch ${batch.batchIndex} is missing transactionXDR`)
+      if (typeof batch.keysRestored !== 'number') return invalid(`batch ${batch.batchIndex} is missing keysRestored`)
+      if (!['pending', 'success', 'failed'].includes(batch.status)) return invalid(`batch ${batch.batchIndex} has an unknown status`)
+    }
+
+    return candidate as RestoreExecutionReceipt
+  }
+
+  /**
+   * Resumes a multi-batch restore from a receipt. Batches that already
+   * succeeded (status `success` or a recorded `txHash`) are never resubmitted;
+   * every other batch is executed in `batchIndex` order.
+   *
+   * The returned result lists all batches in receipt order, so `batches` and
+   * `totalKeysRestored` cover the whole restore, not just the resumed part.
+   */
+  async resumeRestoreBatches(
+    receipt: RestoreExecutionReceipt,
+    signTransaction: (xdr: string) => Promise<string>,
+  ): Promise<RestoreAllBatchesResult> {
+    const ordered = [...receipt.batches].sort((a, b) => a.batchIndex - b.batchIndex)
+    const pending = ordered.filter(batch => batch.status !== 'success' && !batch.txHash)
+    const alreadyDone = ordered.length - pending.length
+
+    this.log('info', `Resuming restore: ${pending.length} of ${ordered.length} batches remaining (${alreadyDone} already succeeded)`)
+
+    if (pending.length === 0) {
+      return {
+        success: true,
+        batches: ordered,
+        totalKeysRestored: ordered.reduce((sum, batch) => sum + batch.keysRestored, 0),
+      }
+    }
+
+    const resumed = await this.executeRestoreBatches(
+      pending.map(batch => ({ ...batch, status: 'pending', txHash: undefined, error: undefined })),
+      signTransaction,
+      receipt.sourceAccountID,
+    )
+
+    const resultsByIndex = new Map(resumed.batches.map(batch => [batch.batchIndex, batch]))
+    const merged = ordered.map(batch => resultsByIndex.get(batch.batchIndex) ?? batch)
+
+    return {
+      success: resumed.success,
+      batches: merged,
+      totalKeysRestored: merged
+        .filter(batch => batch.status === 'success')
+        .reduce((sum, batch) => sum + batch.keysRestored, 0),
+      failedAtBatchIndex: resumed.failedAtBatchIndex,
+      error: resumed.error,
+    }
+  }
+
+  /**
    * Returns the captured partial-failure state from the most recent
    * `executeRestoreBatches` call that failed mid-way through a batch sequence,
    * or `null` when the last execution succeeded (or no execution has run yet).
@@ -2023,6 +2206,72 @@ export class SorobanResurrect {
    */
   getFailedKeys(): FailedRestoreState | null {
     return this._lastFailedRestoreState
+  }
+
+  /**
+   * Rebuilds restore transactions with sequence numbers fetched from the RPC.
+   * Each batch keeps its footprint; fees are re-estimated when
+   * `dynamicFeeEstimation` is enabled. Batches that cannot be parsed keep their
+   * original XDR, with a warning.
+   */
+  private async rebuildRestoreBatches(
+    batches: RestoreBatchResult[],
+    sourceAccountID: string,
+  ): Promise<RestoreBatchResult[]> {
+    // Re-fetch current sequence number so rebuilt transactions are valid
+    const sourceAccount = await this.retryOnFailure(
+      () => this.getServer().getAccount(sourceAccountID),
+      `getAccount(${sourceAccountID})`,
+    )
+
+    let currentSequence = BigInt(sourceAccount.sequenceNumber())
+
+    // Rebuild each failed batch with an updated sequence number and, if
+    // dynamicFeeEstimation is enabled, a freshly estimated fee.
+    const rebuiltBatches: RestoreBatchResult[] = []
+    for (const batch of batches) {
+      // We can't recover the original ArchivedKey objects from the XDR here,
+      // so we reconstruct a minimal transaction with the same footprint by
+      // parsing the stored XDR.
+      let rebuildXDR = batch.transactionXDR
+      try {
+        const existingTx = TransactionBuilder.fromXDR(
+          batch.transactionXDR,
+          this.config.networkPassphrase,
+        ) as any
+        const sorobanData = existingTx.sorobanData as xdr.SorobanTransactionData | undefined
+        const batchAccount = new Account(sourceAccountID, currentSequence.toString())
+        currentSequence += 1n
+
+        const fee = await this.estimateRestoreFee(batch.keysRestored)
+
+        const rebuiltTx = new TransactionBuilder(batchAccount, {
+          fee,
+          networkPassphrase: this.config.networkPassphrase,
+          sorobanData: sorobanData?.toXDR('base64') ?? batch.transactionXDR,
+        })
+          .addOperation(Operation.restoreFootprint({}))
+          .setTimeout(0)
+          .build()
+
+        rebuildXDR = rebuiltTx.toXDR()
+      } catch (err) {
+        this.log(
+          'warn',
+          `Could not rebuild batch ${batch.batchIndex}, retrying with original XDR: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+
+      rebuiltBatches.push({
+        ...batch,
+        transactionXDR: rebuildXDR,
+        status: 'pending',
+        txHash: undefined,
+        error: undefined,
+      })
+    }
+
+    return rebuiltBatches
   }
 
   /**
@@ -2055,58 +2304,7 @@ export class SorobanResurrect {
       `Retrying ${state.failedBatches.length} failed restore batches (source=${state.sourceAccountID})`,
     )
 
-    // Re-fetch current sequence number so rebuilt transactions are valid
-    const sourceAccount = await this.retryOnFailure(
-      () => this.getServer().getAccount(state.sourceAccountID),
-      `getAccount(${state.sourceAccountID})`,
-    )
-
-    let currentSequence = BigInt(sourceAccount.sequenceNumber())
-
-    // Rebuild each failed batch with an updated sequence number and, if
-    // dynamicFeeEstimation is enabled, a freshly estimated fee.
-    const rebuiltBatches: RestoreBatchResult[] = []
-    for (const batch of state.failedBatches) {
-      // We can't recover the original ArchivedKey objects from the XDR here,
-      // so we reconstruct a minimal transaction with the same footprint by
-      // parsing the stored XDR.
-      let rebuildXDR = batch.transactionXDR
-      try {
-        const existingTx = TransactionBuilder.fromXDR(
-          batch.transactionXDR,
-          this.config.networkPassphrase,
-        ) as any
-        const sorobanData = existingTx.sorobanData as xdr.SorobanTransactionData | undefined
-        const batchAccount = new Account(state.sourceAccountID, currentSequence.toString())
-        currentSequence += 1n
-
-        const fee = await this.estimateRestoreFee(batch.keysRestored)
-
-        const rebuiltTx = new TransactionBuilder(batchAccount, {
-          fee,
-          networkPassphrase: this.config.networkPassphrase,
-          sorobanData: sorobanData?.toXDR('base64') ?? batch.transactionXDR,
-        })
-          .addOperation(Operation.restoreFootprint({}))
-          .setTimeout(0)
-          .build()
-
-        rebuildXDR = rebuiltTx.toXDR()
-      } catch (err) {
-        this.log(
-          'warn',
-          `Could not rebuild batch ${batch.batchIndex}, retrying with original XDR: ${err instanceof Error ? err.message : String(err)}`,
-        )
-      }
-
-      rebuiltBatches.push({
-        ...batch,
-        transactionXDR: rebuildXDR,
-        status: 'pending',
-        txHash: undefined,
-        error: undefined,
-      })
-    }
+    const rebuiltBatches = await this.rebuildRestoreBatches(state.failedBatches, state.sourceAccountID)
 
     const retryResult = await this.executeRestoreBatches(
       rebuiltBatches,

@@ -34,6 +34,7 @@ export type {
   RestoreTransactionResult,
   RestoreBatchResult,
   RestoreAllBatchesResult,
+  RestoreExecutionReceipt,
   ConcurrentRestoreResult,
   ContractKeyGroup,
   ExecutionResult,
