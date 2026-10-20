@@ -99,6 +99,19 @@ mock.loadFixtureFromFile('./fixtures/test.json')
 // All subsequent calls return pre-recorded responses
 ```
 
+## Protocol Line Fixtures
+
+`PROTOCOL_LINE_FIXTURES` provides a versioned `getNetwork` and `getHealth` response for every protocol line in `SUPPORTED_PROTOCOL_LINES` (currently 20, 21 and 22). Use them to replay a known-good response for a specific protocol line:
+
+```ts
+import { PROTOCOL_LINE_FIXTURES, SUPPORTED_PROTOCOL_LINES } from '@soroban-resurrect/mock-rpc'
+
+for (const line of SUPPORTED_PROTOCOL_LINES) {
+  const { getNetwork } = PROTOCOL_LINE_FIXTURES[line]
+  // exercise the SDK against getNetwork.protocolVersion === line
+}
+```
+
 ## Method Overrides
 
 ```typescript

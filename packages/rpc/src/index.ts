@@ -1,13 +1,12 @@
-export {
-  ExponentialBackoff,
-  FixedDelay,
-  JitterBackoff,
-  CircuitBreaker,
-  DEFAULT_RETRY_POLICY,
-} from './retry-policy.js';
-export { SimulationCache } from './simulation-cache.js';
-export { FootprintCache } from './footprint-cache.js';
-export { RpcFailoverManager } from './rpc-failover.js';
+export { ExponentialBackoff, FixedDelay, JitterBackoff, CircuitBreaker, DEFAULT_RETRY_POLICY } from './retry-policy.js'
+export { SimulationCache } from './simulation-cache.js'
+export { FootprintCache } from './footprint-cache.js'
+export { RpcFailoverManager } from './rpc-failover.js'
+export { parseJsonRpcResponse, parseJsonRpcResult, RpcResponseError } from './json-rpc-response.js'
+export type { RpcResponseErrorKind } from './json-rpc-response.js'
+export { redactRpcUrl, redactRpcUrls, redactUrlsInText } from './redact-url.js'
+export { describeXdrEncoding } from './xdr-diagnostics.js'
+export type { XdrEncodingDiagnostic } from './xdr-diagnostics.js'
 
 export type { RetryPolicy } from '@soroban-resurrect/types';
 export type { SimulationCacheConfig, CacheStatistics } from '@soroban-resurrect/types';

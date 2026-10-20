@@ -24,6 +24,7 @@ import {
   WsTransactionStatusEvent,
   TransactionWaitResult,
   FootprintCacheStatistics,
+  RpcMethodName,
 } from '@soroban-resurrect/types'
 import { SorobanResurrectError } from '@soroban-resurrect/errors'
 import {
@@ -36,7 +37,9 @@ import {
 import { ExponentialBackoff, type RetryPolicy } from '@soroban-resurrect/rpc'
 import { SimulationCache, type SimulationCacheConfig } from '@soroban-resurrect/rpc'
 import { RpcFailoverManager, type RpcEndpointHealth } from '@soroban-resurrect/rpc'
+import { probeRpcMethods, RESTORE_REQUIRED_METHODS } from '@soroban-resurrect/rpc'
 import { FootprintCache } from '@soroban-resurrect/rpc'
+import { describeXdrEncoding, redactRpcUrls, redactUrlsInText } from '@soroban-resurrect/rpc'
 import { DEFAULT_MAX_CONCURRENCY, delay, MAX_RETRIES } from '@soroban-resurrect/utils'
 
 const MAX_XDR_SIZE_BYTES = 100_000
@@ -49,6 +52,34 @@ const DEFAULT_RESTORE_FEE = '100000'
  * not transaction confirmation.
  */
 const WS_PROBE_TIMEOUT_MS = 3000
+
+/** RPC methods this SDK invokes, reported verbatim in diagnostics. */
+const SDK_RPC_METHODS = [
+  'getNetwork',
+  'getAccount',
+  'simulateTransaction',
+  'sendTransaction',
+  'getTransaction',
+  'getLedgerEntries',
+] as const
+
+/**
+ * Snapshot returned by `SorobanResurrect.getDiagnostics()`.
+ */
+export interface SorobanResurrectDiagnostics {
+  /** URL of the first endpoint currently considered healthy, or null if none. */
+  activeEndpoint: string | null
+  /** Passphrase reported by the RPC server, or null if `getNetwork()` failed. */
+  networkPassphrase: string | null
+  /** Protocol version reported by the RPC server, or null if unavailable. */
+  protocolVersion: number | null
+  /** Error message from the `getNetwork()` call, or null on success. */
+  networkError: string | null
+  /** Health snapshot for every configured endpoint. */
+  endpoints: RpcEndpointHealth[]
+  /** RPC methods this SDK calls. */
+  sdkRpcMethods: string[]
+}
 
 function isFeeBumpTx(tx: ReturnType<typeof TransactionBuilder.fromXDR>): tx is ReturnType<typeof TransactionBuilder.fromXDR> & { innerTransaction: any } {
   return 'innerTransaction' in tx
@@ -91,6 +122,8 @@ export class SorobanResurrect {
   private simulationCache?: SimulationCache
   private footprintCache?: FootprintCache
   private _lastFailedRestoreState: FailedRestoreState | null = null
+  private restoreMethodChecks: Map<string, Promise<void>> = new Map()
+  private networkIdentityCheck: Promise<void> | null = null
 
   constructor(config: SorobanResurrectConfig) {
     this.config = {
@@ -103,6 +136,8 @@ export class SorobanResurrect {
       useWebSocket: false,
       pollIntervalMs: 1000,
       maxPollAttempts: 30,
+      restoreConfirmationPolicy: 'confirmed',
+      rpcMethodTimeouts: {},
       ...config,
     }
 
@@ -152,7 +187,7 @@ export class SorobanResurrect {
         this.config.onLog('error', err.message)
         throw err
       }
-      this.config.onLog('warn', `Failed to validate network passphrase: ${err instanceof Error ? err.message : String(err)}`)
+      this.config.onLog('warn', `Failed to validate network passphrase: ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`)
     }
   }
 
@@ -241,7 +276,7 @@ export class SorobanResurrect {
       `Operation failed after ${MAX_RETRIES} retries: ${context}`,
       'NETWORK_ERROR',
       lastError,
-      { rpcUrl: this.config.rpcUrl },
+      { rpcUrl: this.redactedRpcUrl },
     )
   }
 
@@ -264,7 +299,7 @@ export class SorobanResurrect {
         'Invalid transaction XDR',
         'INVALID_XDR',
         err,
-        { rpcUrl: this.config.rpcUrl },
+        { rpcUrl: this.redactedRpcUrl, xdrDiagnostic: describeXdrEncoding(txXDR) },
       )
     }
 
@@ -276,32 +311,35 @@ export class SorobanResurrect {
         'Fee bump transactions are not supported',
         'INVALID_XDR',
         undefined,
-        { rpcUrl: this.config.rpcUrl },
+        { rpcUrl: this.redactedRpcUrl },
       )
     }
 
     let simResult: SorobanRpc.Api.SimulateTransactionResponse
     try {
       simResult = await this.retryOnFailure(
-        () => this.server.simulateTransaction(innerTx as any),
+        () =>
+          this.withMethodTimeout('simulateTransaction', () =>
+            this.server.simulateTransaction(innerTx as any),
+          ),
         'simulateTransaction',
       )
     } catch (err) {
       const msg = err instanceof SorobanResurrectError ? err.message : String(err)
       throw new SorobanResurrectError(
-        `Simulation failed (rpcUrl=${this.config.rpcUrl}): ${msg}`,
+        `Simulation failed (rpcUrl=${this.redactedRpcUrl}): ${msg}`,
         'SIMULATION_FAILED',
         err,
-        { rpcUrl: this.config.rpcUrl },
+        { rpcUrl: this.redactedRpcUrl },
       )
     }
 
     if (SorobanRpc.Api.isSimulationError(simResult)) {
       throw new SorobanResurrectError(
-        `Simulation error (rpcUrl=${this.config.rpcUrl}): ${simResult.error}`,
+        `Simulation error (rpcUrl=${this.redactedRpcUrl}): ${redactUrlsInText(simResult.error)}`,
         'SIMULATION_FAILED',
         simResult,
-        { rpcUrl: this.config.rpcUrl },
+        { rpcUrl: this.redactedRpcUrl },
       )
     }
 
@@ -345,7 +383,10 @@ export class SorobanResurrect {
     let existingKeys: SorobanRpc.Api.GetLedgerEntriesResponse
     try {
       existingKeys = await this.retryOnFailure(
-        () => this.getServer().getLedgerEntries(...keys.all),
+        () =>
+          this.withMethodTimeout('getLedgerEntries', () =>
+            this.getServer().getLedgerEntries(...keys.all),
+          ),
         'getLedgerEntries',
       )
     } catch (err) {
@@ -355,10 +396,10 @@ export class SorobanResurrect {
         keyType: 'unknown' as const,
       }))
       throw new SorobanResurrectError(
-        `Failed to query ${keys.all.length} ledger entries (rpcUrl=${this.config.rpcUrl}): ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to query ${keys.all.length} ledger entries (rpcUrl=${this.redactedRpcUrl}): ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`,
         'ARCHIVE_DETECTION_FAILED',
         err,
-        { rpcUrl: this.config.rpcUrl, archivedKeys: keyContext },
+        { rpcUrl: this.redactedRpcUrl, archivedKeys: keyContext },
       )
     }
 
@@ -402,9 +443,11 @@ export class SorobanResurrect {
         'No archived keys to restore',
         'INVALID_XDR',
         undefined,
-        { rpcUrl: this.config.rpcUrl },
+        { rpcUrl: this.redactedRpcUrl },
       )
     }
+
+    await this.ensureRestoreMethodsAvailable()
 
     // Classify keys on demand before batch building (deferred from simulation)
     const classified = classifyDeferredKeys(
@@ -434,6 +477,8 @@ export class SorobanResurrect {
     if (archivedKeys.length === 0) {
       throw new SorobanResurrectError('No archived keys to restore', 'INVALID_XDR')
     }
+
+    await this.ensureRestoreMethodsAvailable()
 
     // Classify keys on demand before batch building (deferred from simulation)
     const classified = classifyDeferredKeys(
@@ -487,6 +532,7 @@ export class SorobanResurrect {
         batchIndex: i,
         transactionXDR: tx.toXDR(),
         keysRestored: batchKeys.length,
+        restoredKeys: batchKeys.map(k => k.keyBase64),
         status: 'pending',
       })
 
@@ -509,7 +555,11 @@ export class SorobanResurrect {
       this.log('info', `Executing restore batch ${i + 1}/${batches.length} (${batch.keysRestored} keys)`)
 
       try {
-        const txHash = await this.submitSignedTransaction(batch.transactionXDR, signTransaction)
+        const txHash = await this.submitSignedTransaction(
+          batch.transactionXDR,
+          signTransaction,
+          this.restoreAwaitsConfirmation(),
+        )
         results.push({
           ...batch,
           txHash,
@@ -629,7 +679,11 @@ export class SorobanResurrect {
         `Starting restore batch ${idx + 1}/${total} (${batch.keysRestored} keys)`,
       )
       try {
-        const txHash = await this.submitSignedTransaction(batch.transactionXDR, signTransaction)
+        const txHash = await this.submitSignedTransaction(
+          batch.transactionXDR,
+          signTransaction,
+          this.restoreAwaitsConfirmation(),
+        )
         results[idx] = { ...batch, txHash, status: 'success' }
         totalKeysRestored += batch.keysRestored
         this.log('info', `Batch ${idx + 1}/${total} confirmed: ${txHash}`)
@@ -732,6 +786,7 @@ export class SorobanResurrect {
         batchIndex: i,
         transactionXDR: tx.toXDR(),
         keysRestored: batchKeys.length,
+        restoredKeys: batchKeys.map(k => k.keyBase64),
         status: 'pending',
       })
 
@@ -797,7 +852,7 @@ export class SorobanResurrect {
       this.log('info', `Original transaction confirmed: ${originalTxHash}`)
     } catch (err) {
       throw new SorobanResurrectError(
-        `Original transaction failed after restore: ${err instanceof Error ? err.message : String(err)}`,
+        `Original transaction failed after restore: ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`,
         'ORIGINAL_TX_FAILED',
         err,
       )
@@ -807,6 +862,8 @@ export class SorobanResurrect {
       success: true,
       originalTxHash,
       entriesRestored: concurrentResult.totalKeysRestored,
+      restoreConfirmed: concurrentResult.success && this.restoreAwaitsConfirmation(),
+      originalConfirmed: true,
       concurrentBatchResults: concurrentResult,
     }
   }
@@ -930,7 +987,10 @@ export class SorobanResurrect {
         .build()
 
       const simResult = await this.retryOnFailure(
-        () => this.getServer().simulateTransaction(candidateTx as any),
+        () =>
+          this.withMethodTimeout('simulateTransaction', () =>
+            this.getServer().simulateTransaction(candidateTx as any),
+          ),
         'simulateTransaction(estimateRestoreFee)',
       )
 
@@ -954,7 +1014,7 @@ export class SorobanResurrect {
     } catch (err) {
       this.log(
         'warn',
-        `Dynamic fee estimation failed, falling back to restoreFee: ${err instanceof Error ? err.message : String(err)}`,
+        `Dynamic fee estimation failed, falling back to restoreFee: ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`,
       )
     }
 
@@ -967,7 +1027,7 @@ export class SorobanResurrect {
     sourceAccountID: string,
   ): Promise<RestoreTransactionResult> {
     const sourceAccount = await this.retryOnFailure(
-      () => this.getServer().getAccount(sourceAccountID),
+      () => this.withMethodTimeout('getAccount', () => this.getServer().getAccount(sourceAccountID)),
       `getAccount(${sourceAccountID})`,
     )
 
@@ -1027,7 +1087,7 @@ export class SorobanResurrect {
       return feeBumpXdr
     } catch (err) {
       throw new SorobanResurrectError(
-        `Failed to re-wrap fee-bump transaction: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to re-wrap fee-bump transaction: ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`,
         'INVALID_XDR',
         err,
       )
@@ -1058,7 +1118,7 @@ export class SorobanResurrect {
 
       return newInnerTx
     } catch (err) {
-      this.log('warn', `Could not preserve signatures: ${err instanceof Error ? err.message : String(err)}`)
+      this.log('warn', `Could not preserve signatures: ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`)
       return newInnerTx
     }
   }
@@ -1087,6 +1147,8 @@ export class SorobanResurrect {
         success: true,
         entriesRestored: keysRestored,
         simulateOnly: true,
+        restoreConfirmed: false,
+        originalConfirmed: false,
       }
     }
 
@@ -1103,21 +1165,25 @@ export class SorobanResurrect {
         this.log('info', 'Original transaction is a fee-bump, will re-wrap after restoration')
       }
     } catch (err) {
-      this.log('warn', `Could not parse original transaction for fee-bump detection: ${err instanceof Error ? err.message : String(err)}`)
+      this.log('warn', `Could not parse original transaction for fee-bump detection: ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`)
       // Continue without fee-bump detection
     }
 
     // Execute restore transaction
     try {
       this.log('info', 'Executing restore transaction')
-      restoreTxHash = await this.submitSignedTransaction(restoreXDR, signTransaction)
+      restoreTxHash = await this.submitSignedTransaction(
+        restoreXDR,
+        signTransaction,
+        this.restoreAwaitsConfirmation(),
+      )
       this.log('info', `Restore transaction confirmed: ${restoreTxHash}`)
     } catch (err) {
       const resurrErr = new SorobanResurrectError(
-        `Restore transaction failed (rpcUrl=${this.config.rpcUrl}): ${err instanceof Error ? err.message : String(err)}`,
+        `Restore transaction failed (rpcUrl=${this.redactedRpcUrl}): ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`,
         'RESTORE_FAILED',
         err,
-        { rpcUrl: this.config.rpcUrl, txHash: restoreTxHash },
+        { rpcUrl: this.redactedRpcUrl, txHash: restoreTxHash },
       )
       this.emit('error', resurrErr)
       throw resurrErr
@@ -1132,7 +1198,7 @@ export class SorobanResurrect {
         txToSubmit = this.reWrapFeeBumpTransaction(innerTxXDR, originalTx)
         this.log('info', 'Re-wrapped fee-bump transaction for submission')
       } catch (err) {
-        this.log('warn', `Failed to re-wrap fee-bump, attempting submission with original: ${err instanceof Error ? err.message : String(err)}`)
+        this.log('warn', `Failed to re-wrap fee-bump, attempting submission with original: ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`)
         txToSubmit = originalXDR
       }
     }
@@ -1145,10 +1211,10 @@ export class SorobanResurrect {
       this.emit('original:complete', originalTxHash)
     } catch (err) {
       const resurrErr = new SorobanResurrectError(
-        `Original transaction failed after successful restore (rpcUrl=${this.config.rpcUrl}, restoreTxHash=${restoreTxHash}): ${err instanceof Error ? err.message : String(err)}`,
+        `Original transaction failed after successful restore (rpcUrl=${this.redactedRpcUrl}, restoreTxHash=${restoreTxHash}): ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`,
         'ORIGINAL_TX_FAILED',
         err,
-        { rpcUrl: this.config.rpcUrl, txHash: restoreTxHash },
+        { rpcUrl: this.redactedRpcUrl, txHash: restoreTxHash },
       )
       this.emit('error', resurrErr)
       throw resurrErr
@@ -1171,6 +1237,8 @@ export class SorobanResurrect {
       restoreTxHash,
       originalTxHash,
       entriesRestored: keysRestored,
+      restoreConfirmed: this.restoreAwaitsConfirmation(),
+      originalConfirmed: true,
     }
   }
 
@@ -1206,7 +1274,7 @@ export class SorobanResurrect {
         throw err
       }
       throw new SorobanResurrectError(
-        `Restore batches failed: ${err instanceof Error ? err.message : String(err)}`,
+        `Restore batches failed: ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`,
         'RESTORE_FAILED',
         err,
       )
@@ -1218,7 +1286,7 @@ export class SorobanResurrect {
       this.log('info', `Original transaction confirmed: ${originalTxHash}`)
     } catch (err) {
       throw new SorobanResurrectError(
-        `Original transaction failed after successful restore batches: ${err instanceof Error ? err.message : String(err)}`,
+        `Original transaction failed after successful restore batches: ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`,
         'ORIGINAL_TX_FAILED',
         err,
       )
@@ -1228,43 +1296,86 @@ export class SorobanResurrect {
       success: true,
       originalTxHash,
       entriesRestored: batchResults.totalKeysRestored,
+      restoreConfirmed: this.restoreAwaitsConfirmation(),
+      originalConfirmed: true,
       batchResults,
     }
+  }
+
+  /**
+   * Races `call` against the per-method timeout configured in
+   * `rpcMethodTimeouts`. Methods without an override run unbounded here and
+   * are governed only by the global `timeout`.
+   */
+  private async withMethodTimeout<T>(method: RpcMethodName, call: () => Promise<T>): Promise<T> {
+    const limitMs = this.config.rpcMethodTimeouts[method]
+    if (limitMs === undefined) {
+      return call()
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new SorobanResurrectError(
+            'NETWORK_ERROR',
+            `RPC method ${method} timed out after ${limitMs}ms (rpcUrl=${this.config.rpcUrl})`,
+          ),
+        )
+      }, limitMs)
+    })
+
+    try {
+      return await Promise.race([call(), deadline])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  private restoreAwaitsConfirmation(): boolean {
+    return this.config.restoreConfirmationPolicy !== 'submitted'
   }
 
   private async submitSignedTransaction(
     txXDR: string,
     signTransaction: (xdr: string) => Promise<string>,
+    awaitConfirmation = true,
   ): Promise<string> {
+    await this.ensureNetworkIdentityMatches()
+
     const signedXDR = await signTransaction(txXDR)
 
     const tx = new Transaction(signedXDR, this.config.networkPassphrase)
 
     const sendResult = await this.retryOnFailure(
-      () => this.getServer().sendTransaction(tx),
+      () => this.withMethodTimeout('sendTransaction', () => this.getServer().sendTransaction(tx)),
       'sendTransaction',
     )
 
     if (sendResult.status === 'PENDING' || sendResult.status === 'DUPLICATE') {
       const hash = sendResult.hash
+      if (!awaitConfirmation) {
+        this.log('info', `Transaction ${hash} submitted without waiting for confirmation`)
+        return hash
+      }
       const { hash: confirmedHash } = await this.waitForTransaction(hash)
       return confirmedHash
     }
 
     if (sendResult.status === 'ERROR') {
       throw new SorobanResurrectError(
-        `Transaction submission error (rpcUrl=${this.config.rpcUrl})`,
+        `Transaction submission error (rpcUrl=${this.redactedRpcUrl})`,
         'ORIGINAL_TX_FAILED',
         sendResult,
-        { rpcUrl: this.config.rpcUrl },
+        { rpcUrl: this.redactedRpcUrl },
       )
     }
 
     throw new SorobanResurrectError(
-      `Unexpected submission status: ${sendResult.status} (rpcUrl=${this.config.rpcUrl})`,
+      `Unexpected submission status: ${sendResult.status} (rpcUrl=${this.redactedRpcUrl})`,
       'NETWORK_ERROR',
       sendResult,
-      { rpcUrl: this.config.rpcUrl },
+      { rpcUrl: this.redactedRpcUrl },
     )
   }
 
@@ -1273,6 +1384,10 @@ export class SorobanResurrect {
    * Returns `null` when the URL scheme cannot be mapped to a WS scheme
    * (e.g. plain `http://` without `allowHttp`).
    */
+  private get redactedRpcUrl(): string | string[] {
+    return redactRpcUrls(this.config.rpcUrl)
+  }
+
   private getWebSocketUrl(): string | null {
     try {
       const url = new URL(Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl)
@@ -1353,7 +1468,7 @@ export class SorobanResurrect {
             // If the WS path threw something other than a SorobanResurrectError
             // (e.g. a connection drop) fall through to polling.
             if (err instanceof SorobanResurrectError) throw err
-            this.log('warn', `WebSocket wait failed, falling back to polling: ${err instanceof Error ? err.message : String(err)}`)
+            this.log('warn', `WebSocket wait failed, falling back to polling: ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`)
           }
         } else {
           this.log('warn', 'WebSocket not supported by server, falling back to polling')
@@ -1479,26 +1594,28 @@ export class SorobanResurrect {
   ): Promise<string> {
     const intervalMs = this.config.pollIntervalMs
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const receipt = await this.getServer().getTransaction(hash)
+      const receipt = await this.withMethodTimeout('getTransaction', () =>
+        this.getServer().getTransaction(hash),
+      )
       if (receipt.status !== 'NOT_FOUND') {
         if (receipt.status === 'SUCCESS') {
           return hash
         }
         const result = 'result' in receipt ? (receipt as any).result : receipt
         throw new SorobanResurrectError(
-          `Transaction failed (txHash=${hash}, rpcUrl=${this.config.rpcUrl}): ${JSON.stringify(result)}`,
+          `Transaction failed (txHash=${hash}, rpcUrl=${this.redactedRpcUrl}): ${JSON.stringify(result)}`,
           'ORIGINAL_TX_FAILED',
           receipt,
-          { rpcUrl: this.config.rpcUrl, txHash: hash },
+          { rpcUrl: this.redactedRpcUrl, txHash: hash },
         )
       }
       await delay(intervalMs)
     }
     throw new SorobanResurrectError(
-      `Transaction ${hash} not confirmed after ${totalWaitMs}ms (rpcUrl=${this.config.rpcUrl})`,
+      `Transaction ${hash} not confirmed after ${totalWaitMs}ms (rpcUrl=${this.redactedRpcUrl})`,
       'NETWORK_ERROR',
       undefined,
-      { rpcUrl: this.config.rpcUrl, txHash: hash },
+      { rpcUrl: this.redactedRpcUrl, txHash: hash },
     )
   }
 
@@ -1598,7 +1715,7 @@ export class SorobanResurrect {
       } catch (err) {
         this.log(
           'warn',
-          `Could not rebuild batch ${batch.batchIndex}, retrying with original XDR: ${err instanceof Error ? err.message : String(err)}`,
+          `Could not rebuild batch ${batch.batchIndex}, retrying with original XDR: ${redactUrlsInText(err instanceof Error ? err.message : String(err))}`,
         )
       }
 
@@ -1625,6 +1742,7 @@ export class SorobanResurrect {
       return {
         success: true,
         entriesRestored: totalRestored,
+        restoreConfirmed: this.restoreAwaitsConfirmation(),
         batchResults: retryResult,
       }
     }
@@ -1637,6 +1755,7 @@ export class SorobanResurrect {
       failedBatchIndex: retryResult.failedAtBatchIndex,
       partialEntriesRestored: totalRestored,
       error: retryResult.error,
+      restoreConfirmed: false,
       batchResults: retryResult,
     }
   }
@@ -1782,6 +1901,121 @@ export class SorobanResurrect {
    */
   getFailoverStatus(): RpcEndpointHealth[] {
     return this.failoverManager.getHealthStatus()
+  }
+
+  /**
+   * Blocks signing unless the RPC endpoint reports the configured network
+   * passphrase. Unlike the constructor's warning-only check, a mismatch or an
+   * unreachable endpoint refuses to sign. Only a successful check is cached.
+   */
+  private ensureNetworkIdentityMatches(): Promise<void> {
+    if (!this.networkIdentityCheck) {
+      this.networkIdentityCheck = this.checkNetworkIdentity()
+      this.networkIdentityCheck.catch(() => {
+        this.networkIdentityCheck = null
+      })
+    }
+    return this.networkIdentityCheck
+  }
+
+  private async checkNetworkIdentity(): Promise<void> {
+    const rpcUrl = Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl
+    let reported: string
+    try {
+      reported = (await this.server.getNetwork()).passphrase
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      throw new SorobanResurrectError(
+        'NETWORK_ERROR',
+        `Could not verify network passphrase before signing (rpcUrl=${rpcUrl}): ${reason}`,
+      )
+    }
+
+    if (reported !== this.config.networkPassphrase) {
+      throw new SorobanResurrectError(
+        'NETWORK_MISMATCH',
+        `Refusing to sign: configured "${this.config.networkPassphrase}" but RPC server reports "${reported}" (rpcUrl=${rpcUrl})`,
+      )
+    }
+  }
+
+  /**
+   * Fails before any restore transaction is built when the active RPC endpoint
+   * lacks a method the restore flow needs. The result is cached per endpoint;
+   * a transport failure clears the cache entry so the next call re-probes.
+   */
+  private ensureRestoreMethodsAvailable(): Promise<void> {
+    const url = this.primaryEndpointUrl()
+    let check = this.restoreMethodChecks.get(url)
+    if (!check) {
+      check = this.probeRestoreMethods(url)
+      this.restoreMethodChecks.set(url, check)
+      check.catch(() => this.restoreMethodChecks.delete(url))
+    }
+    return check
+  }
+
+  private async probeRestoreMethods(url: string): Promise<void> {
+    let probe: Awaited<ReturnType<typeof probeRpcMethods>>
+    try {
+      probe = await probeRpcMethods(url, RESTORE_REQUIRED_METHODS)
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      throw new SorobanResurrectError(
+        'NETWORK_ERROR',
+        `Could not verify restore RPC methods at ${url}: ${reason}`,
+      )
+    }
+
+    if (probe.missing.length > 0) {
+      throw new SorobanResurrectError(
+        'RPC_METHOD_UNAVAILABLE',
+        `RPC endpoint ${url} lacks methods required for restore: ${probe.missing.join(', ')}`,
+      )
+    }
+  }
+
+  /**
+   * URL of the first healthy endpoint, falling back to the first configured
+   * URL when every endpoint is marked unhealthy.
+   */
+  private primaryEndpointUrl(): string {
+    const healthy = this.getFailoverStatus().find(ep => ep.isHealthy)
+    if (healthy) return healthy.url
+    return Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl
+  }
+
+  /**
+   * Returns a diagnostics snapshot: the negotiated network and protocol line
+   * reported by the RPC server, the endpoint currently in use, per-endpoint
+   * health, and the RPC methods this SDK calls.
+   *
+   * Never throws on RPC failure. A failed `getNetwork()` call is reported in
+   * `networkError` with `protocolVersion` and `networkPassphrase` set to null.
+   */
+  async getDiagnostics(): Promise<SorobanResurrectDiagnostics> {
+    const endpoints = this.failoverManager.getHealthStatus()
+    const activeEndpoint = endpoints.find(ep => ep.isHealthy)?.url ?? null
+
+    let networkPassphrase: string | null = null
+    let protocolVersion: number | null = null
+    let networkError: string | null = null
+    try {
+      const network = await this.server.getNetwork()
+      networkPassphrase = network.passphrase
+      protocolVersion = network.protocolVersion ?? null
+    } catch (err) {
+      networkError = err instanceof Error ? err.message : String(err)
+    }
+
+    return {
+      activeEndpoint,
+      networkPassphrase,
+      protocolVersion,
+      networkError,
+      endpoints,
+      sdkRpcMethods: [...SDK_RPC_METHODS],
+    }
   }
 
   /**
