@@ -17,6 +17,9 @@ export type {
   SignOptions,
   TransactionRecord,
   RestoreProgress,
+  AdapterProgress,
+  AdapterError,
+  AdapterErrorCode,
 } from './types.js'
 export type { SorobanResurrectProviderProps } from './SorobanResurrectProvider.js'
 

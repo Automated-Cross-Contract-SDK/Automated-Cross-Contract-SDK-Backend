@@ -58,6 +58,33 @@ All framework bindings share a single conformance suite that defines the support
 - Bindings marked *Experimental* in the package map are validated against the suite but may still change their surface between minor releases; *Stable* bindings are expected to pass the suite unchanged.
 - Running the suite requires the workspace test tooling; no additional configuration is needed for consumers of the published packages.
 
+### Unified Progress and Error Types
+
+All framework adapters now expose a consistent contract for progress reporting and error propagation, defined by shared types in `@soroban-resurrect/types` and typed error classes in `@soroban-resurrect/errors`. Adapters no longer define their own ad-hoc progress or error shapes; they surface the shared types directly.
+
+**Progress contract:**
+
+- Progress is reported as a `RestorationProgress` value with a `phase` (`idle`, `loading`, `ready`, or `error`) and, while loading, a `completed`/`total` key count.
+- Progress transitions follow `idle → loading → ready` on success and `idle → loading → error` on failure; a binding never reports `ready` and `error` simultaneously.
+- Progress callbacks receive the same shape across every adapter, so consumers can share handling code regardless of framework.
+
+**Error contract:**
+
+- Failures surface as typed errors from `@soroban-resurrect/errors` (e.g. `FeeBumpTransactionError`), preserving the original error code and cause.
+- Adapter-specific wrapping must retain the underlying typed error via `cause`; adapters must not replace a typed error with a generic `Error`.
+- Errors are propagated through the adapter's error channel (callback, event, or rejected promise) and are never swallowed.
+
+**Failure and edge cases:**
+
+- A restoration that fails mid-progress reports the error phase and does not emit further progress updates.
+- Empty key sets complete immediately with a `ready` phase and no error.
+- Adapters that wrap errors must keep the typed error reachable so callers can branch on error codes.
+
+**Compatibility constraints:**
+
+- The shared progress and error types are additive; existing adapter-specific fields remain available where they were already exposed.
+- Consumers that previously matched on adapter-specific error shapes should migrate to the shared typed errors and their error codes.
+
 ### Migrating to the Modular Packages
 
 `@soroban-resurrect/compat` provides shims for the v0.1.0 API surface, so existing imports from `@soroban-resurrect/sdk` keep working while you migrate. Move to the focused packages incrementally:
@@ -205,83 +232,5 @@ Automatically converts callback-based configuration to EventEmitter.
 ### Codemod 2: Remove Manual Batching
 Removes manual batch creation loops.
 
-### Codemod 3: Remove Manual Retry Logic
-Removes try/catch retry patterns.
-
-## Before/After Code Examples
-
-### Example 1: Complete Restoration Service Integration
-
-**Before (v0.1.0):**
-```typescript
-import { RestorationService, PreFlightConfig } from '@soroban-resurrect/sdk';
-
-const preflight = new PreFlightConfig({
-  onSuccess: (result) => {
-    console.log('Preflight successful:', result);
-  },
-  onError: (error) => {
-    console.error('Preflight failed:', error);
-  }
-});
-
-const service = new RestorationService(preflight);
-
-// Manual batching
-const keys = getKeysToRestore();
-const batchSize = 25;
-for (let i = 0; i < keys.length; i += batchSize) {
-  const batch = keys.slice(i, i + batchSize);
-  
-  // Manual retry logic
-  let result;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      result = await service.restoreKeys(batch);
-      break;
-    } catch (error) {
-      if (attempt === 2) throw error;
-      await delay(Math.pow(2, attempt) * 1000);
-    }
-  }
-  
-  console.log('Restored batch:', result);
-}
-```
-
-**After (v1.0.0):**
-```typescript
-import { RestorationService, PreFlightConfig } from '@soroban-resurrect/sdk';
-
-const preflight = new PreFlightConfig();
-preflight.on('success', (result) => {
-  console.log('Preflight successful:', result);
-});
-preflight.on('error', (error) => {
-  console.error('Preflight failed:', error);
-});
-
-const service = new RestorationService(preflight);
-
-// Automatic batching and retry logic
-const keys = getKeysToRestore();
-const results = await service.restoreKeys(keys);
-console.log('Restored keys:', results);
-```
-
-### Example 2: Event Handling
-
-**Before (v0.1.0):**
-```typescript
-const preflight = new PreFlightConfig({
-  onSuccess: (result) => handleSuccess(result),
-  onError: (error) => handleError(error)
-});
-```
-
-**After (v1.0.0):**
-```typescript
-const preflight = new PreFlightConfig();
-preflight.on('success', handleSuccess);
-preflight.on('error', handleError);
-```
+### Codemod 3: Remove Manual Retry
+Removes manual retry loops.
