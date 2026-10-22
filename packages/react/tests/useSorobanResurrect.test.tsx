@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { renderHook, act, render } from '@testing-library/react'
 import { SorobanResurrectError } from '@soroban-resurrect/sdk'
 import { useSorobanResurrect } from '../src/useSorobanResurrect.js'
@@ -61,6 +61,10 @@ describe('useSorobanResurrect', () => {
     mockExecuteRestoreThenOriginal.mockReset()
   })
 
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
   describe('initial state', () => {
     it('returns default values on mount', () => {
       const { result } = renderHook(() => useSorobanResurrect(defaultOptions))
@@ -107,6 +111,23 @@ describe('useSorobanResurrect', () => {
 
       expect(result.current.needsRestore).toBe(false)
       expect(result.current.archivedKeys).toEqual([])
+    })
+
+    it('uses the fallback cache key when Web Crypto exists without TextEncoder', async () => {
+      const digest = vi.fn()
+      vi.stubGlobal('crypto', { subtle: { digest } })
+      vi.stubGlobal('TextEncoder', undefined)
+      mockSimulate.mockResolvedValue(simResult(false))
+
+      const { result } = renderHook(() => useSorobanResurrect(defaultOptions))
+
+      await act(async () => {
+        await result.current.checkTransaction('tx-xdr')
+        await result.current.checkTransaction('tx-xdr')
+      })
+
+      expect(mockSimulate).toHaveBeenCalledOnce()
+      expect(digest).not.toHaveBeenCalled()
     })
 
     it('sets error state when simulation throws', async () => {

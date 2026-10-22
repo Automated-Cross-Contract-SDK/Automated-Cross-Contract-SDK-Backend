@@ -1,0 +1,147 @@
+name: Benchmark
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'packages/sdk/src/**'
+      - 'packages/sdk/scripts/**'
+      - 'packages/footprint-parser-wasm/**'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/sdk/src/**'
+      - 'packages/sdk/scripts/**'
+      - 'packages/footprint-parser-wasm/**'
+
+concurrency:
+  group: benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Needed to access base branch
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      # On main, run benchmarks and store the result as the baseline artifact.
+      # The baseline is kept as a workflow artifact (not a committed JSON file)
+      # so it never causes merge conflicts.
+      - name: Run benchmarks (baseline)
+        if: github.event_name == 'push'
+        working-directory: packages/sdk
+        run: npx tsx scripts/benchmark.ts
+
+      - name: Upload baseline artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-baseline
+          path: packages/sdk/benchmark-results.json
+          retention-days: 90
+
+      # On PRs, download the latest baseline from main and compare against it.
+      - name: Download baseline artifact
+        if: github.event_name == 'pull_request'
+        uses: dawidd6/action-download-artifact@v6
+        continue-on-error: true
+        with:
+          workflow: benchmark.yml
+          branch: main
+          name: benchmark-baseline
+          path: packages/sdk
+          search_artifacts: true
+
+      - name: Run benchmarks & compare
+        id: benchmarks
+        if: github.event_name == 'pull_request'
+        working-directory: packages/sdk
+        run: npx tsx scripts/benchmark.ts --compare
+
+      # Comment benchmark results on the PR
+      - name: Comment benchmark results on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            // Read the benchmark comment from the output
+            let commentBody = '## 🔬 Benchmark Results\n\n_Benchmarks completed. See CI logs for details._';
+
+            // Try to read the results file for richer output
+            try {
+              const results = JSON.parse(fs.readFileSync('packages/sdk/benchmark-results.json', 'utf-8'));
+              const comparisons = JSON.parse(fs.readFileSync('packages/sdk/benchmark-results-comparison.json', 'utf-8'));
+
+              commentBody = '## 🔬 Benchmark Results\n\n';
+              commentBody += `**Commit:** \`${results.commit}\` | **Branch:** \`${results.branch}\`\n\n`;
+
+              // Build comparison table
+              commentBody += '| Benchmark | Base (ms) | PR (ms) | Change | Threshold | Status |\n';
+              commentBody += '|-----------|-----------|---------|--------|-----------|--------|\n';
+
+              for (const c of comparisons) {
+                const icon = c.regression ? '🔴' : '🟢';
+                const sign = c.changePercent > 0 ? '+' : '';
+                commentBody += `| ${c.name} | ${c.baseDurationMs.toFixed(2)} | ${c.prDurationMs.toFixed(2)} | ${sign}${c.changePercent}% | ${c.threshold}% | ${icon} ${c.regression ? 'FAIL' : 'PASS'} |\n`;
+              }
+
+              const regressions = comparisons.filter(c => c.regression);
+              if (regressions.length > 0) {
+                commentBody += '\n### ⚠️ Performance Regression Detected\n\n';
+                for (const r of regressions) {
+                  commentBody += `- **${r.name}**: +${r.changePercent}% slower (threshold: ${r.threshold}%)\n`;
+                }
+              } else {
+                commentBody += '\n### ✅ All benchmarks within acceptable range\n';
+              }
+            } catch (e) {
+              console.log('Could not read benchmark results:', e.message);
+            }
+
+            // Find existing benchmark comment
+            const { data: comments } = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+
+            const benchmarkComment = comments.find(c =>
+              c.body.startsWith('## 🔬 Benchmark Results')
+            );
+
+            if (benchmarkComment) {
+              await github.rest.issues.updateComment({
+                comment_id: benchmarkComment.id,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: commentBody,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: commentBody,
+              });
+            }
+
+      # Fail CI if performance regressions are detected
+      - name: Check for regressions
+        if: github.event_name == 'pull_request' && steps.benchmarks.outcome == 'failure'
+        run: |
+          echo "❌ Performance regression detected! See benchmark comment above."
+          exit 1

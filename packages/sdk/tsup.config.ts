@@ -11,6 +11,14 @@ export default defineConfig({
   outExtension({ format }) {
     return { js: format === 'cjs' ? '.cjs' : '.js' }
   },
-  // Treat stellar-sdk as external — consumers provide it
-  external: ['@stellar/stellar-sdk'],
+  // Treat stellar-sdk and internal packages as external
+  external: [
+    '@stellar/stellar-sdk',
+    '@soroban-resurrect/types',
+    '@soroban-resurrect/errors',
+    '@soroban-resurrect/footprint-parser',
+    '@soroban-resurrect/rpc',
+    '@soroban-resurrect/utils',
+    '@soroban-resurrect/core',
+  ],
 })

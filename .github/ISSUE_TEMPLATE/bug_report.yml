@@ -1,0 +1,77 @@
+name: Bug report
+description: Report a reproducible problem in a package
+title: '[bug] '
+labels: ['bug']
+body:
+  - type: dropdown
+    id: package
+    attributes:
+      label: Affected package
+      description: Pick the package where the problem shows up.
+      options:
+        - '@soroban-resurrect/types'
+        - '@soroban-resurrect/errors'
+        - '@soroban-resurrect/rpc'
+        - '@soroban-resurrect/utils'
+        - '@soroban-resurrect/footprint-parser'
+        - '@soroban-resurrect/footprint-parser-wasm'
+        - '@soroban-resurrect/core'
+        - '@soroban-resurrect/sdk'
+        - '@soroban-resurrect/compat'
+        - '@soroban-resurrect/wallet-adapters'
+        - '@soroban-resurrect/mock-rpc'
+        - '@soroban-resurrect/react'
+        - '@soroban-resurrect/next'
+        - '@soroban-resurrect/react-native'
+        - '@soroban-resurrect/angular'
+        - '@soroban-resurrect/vue'
+        - '@soroban-resurrect/svelte'
+        - '@soroban-resurrect/example'
+        - 'Not sure / multiple'
+    validations:
+      required: true
+  - type: input
+    id: sdk-version
+    attributes:
+      label: soroban-resurrect version
+      description: The installed version, for example 0.1.0 (run `npm ls @soroban-resurrect/core`).
+      placeholder: '0.1.0'
+    validations:
+      required: true
+  - type: dropdown
+    id: network
+    attributes:
+      label: Network
+      options:
+        - Mainnet
+        - Testnet
+        - Futurenet
+        - Local / mock RPC
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: The smallest code or steps that show the problem. A link to a repo is welcome.
+      render: typescript
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste relevant console output or error stacks. Remove secrets and account keys first.
+      render: shell

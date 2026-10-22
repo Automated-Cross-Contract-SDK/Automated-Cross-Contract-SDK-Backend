@@ -1,0 +1,14 @@
+import { defineConfig } from 'tsup'
+
+export default defineConfig({
+  entry: ['src/lib/index.ts'],
+  outDir: 'dist',
+  format: ['esm', 'cjs'],
+  dts: true,
+  sourcemap: true,
+  clean: true,
+  outExtension({ format }) {
+    return { js: format === 'cjs' ? '.cjs' : '.js' }
+  },
+  external: ['@soroban-resurrect/sdk', 'svelte', 'svelte/store', '@stellar/stellar-sdk'],
+})
