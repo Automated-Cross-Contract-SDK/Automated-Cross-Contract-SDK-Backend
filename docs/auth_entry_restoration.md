@@ -36,3 +36,33 @@ refresh, and on session restore. The supported behavior is:
   the app pointing at a non-existent account.
 - No public API changes are required; the behavior is internal to session and
   account selection handling.
+
+## Restore side effects under React StrictMode
+
+React StrictMode intentionally mounts, unmounts, and re-mounts components in
+development to surface unsafe side effects. Restore logic must therefore be
+**idempotent**: running the restore effect twice must not trigger duplicate
+restore operations (duplicate network calls, duplicate state writes, or
+repeated prompts).
+
+The supported behavior is:
+
+- **Deduplicated restore:** a restore that is already in flight for the same
+  wallet/account is not started again. The second effect invocation reuses the
+  in-flight result instead of issuing a new restore.
+- **Rapid mount/unmount:** if the component unmounts before a restore settles,
+  the pending restore is cancelled and its result is discarded; a subsequent
+  mount starts a fresh restore rather than observing a stale result.
+- **Concurrent restores:** overlapping restore requests for the same target are
+  coalesced into a single operation; callers all observe the same outcome.
+- **Cleanup:** effect cleanup releases any in-flight tracking so that a later
+  mount is not blocked by a previous, already-cancelled restore.
+
+### Compatibility constraints
+
+- Deduplication is keyed by the restore target (wallet and account), so
+  restoring a different target is never suppressed.
+- The behavior is internal to restore handling; no public API changes are
+  required. Consumers do not need to opt in or configure anything.
+- Deduplication applies in both development and production; StrictMode simply
+  makes the double invocation visible in development.

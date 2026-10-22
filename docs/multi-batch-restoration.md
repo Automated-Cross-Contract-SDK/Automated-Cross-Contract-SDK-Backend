@@ -128,6 +128,64 @@ if (state) {
 to resubmit), `failedKeys` (flattened, for logging and UX), `failedBatchIndex`, and
 `partialEntriesRestored`.
 
+## React StrictMode and duplicate restore side effects
+
+React 18+ StrictMode intentionally mounts, unmounts, and remounts components in
+development so effects run twice. If you kick off a restore from a `useEffect`, the
+second invocation can submit the same restore batches again — paying duplicate fees
+and racing two restore transactions for the same keys.
+
+Restore operations are **idempotent at the SDK level**: restoring a key that is
+already live is a no-op on-chain, so a duplicate restore will not corrupt state. It
+can still waste fees and produce confusing logs, so the SDK deduplicates concurrent
+restore calls for the same keys.
+
+### Deduplication behavior
+
+- **In-flight dedup:** while a restore for a given set of keys is in flight, a second
+  call with the same keys joins the existing operation and resolves with the same
+  `ExecutionResult` instead of submitting new transactions.
+- **Completed dedup:** once a restore completes successfully, a repeat call for the
+  same keys short-circuits and returns the cached success result without new
+  transactions.
+- **Failure is not cached:** if a restore fails, the next call retries normally (use
+  `getFailedKeys` / `retryFailedRestore` for explicit recovery).
+- **Cleanup:** aborting or unmounting does not cancel an in-flight restore; the
+  operation completes and its result is cached so a remount reuses it.
+
+### Recommended pattern
+
+Guard the effect so a remount does not start a second restore, and let the SDK's
+dedup handle the StrictMode double-invoke:
+
+```typescript
+useEffect(() => {
+  let cancelled = false
+  client
+    .executeRestoreThenOriginalBatches(restoreBatches, originalXDR, signTransaction)
+    .then((result) => {
+      if (!cancelled) setResult(result)
+    })
+  return () => {
+    cancelled = true
+  }
+}, [restoreBatches, originalXDR])
+```
+
+Because the SDK deduplicates identical in-flight restores, the StrictMode remount
+joins the first operation rather than submitting a second set of batches. Keep the
+`cancelled` flag to avoid setting state on an unmounted component; it does not affect
+the restore itself.
+
+### Edge cases
+
+| Scenario | Behavior |
+|----------|----------|
+| Rapid mount/unmount/remount | Second effect joins the in-flight restore; one set of transactions. |
+| Concurrent calls with identical keys | Deduplicated to a single restore operation. |
+| Concurrent calls with different keys | Treated as independent restores; not deduplicated. |
+| Retry after failure | Not deduplicated against the failed attempt; a fresh restore runs. |
+
 ## Sequence diagram
 
 ```mermaid
