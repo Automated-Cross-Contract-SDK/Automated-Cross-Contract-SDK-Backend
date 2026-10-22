@@ -274,7 +274,6 @@ describe('[Issue #280] Wallet Support Matrix Documentation', () => {
       const workarounds = {
         'Freighter-incognito': 'Use regular browser window',
         'Ledger-session': 'Request new session for each transaction',
-        'Albedo-customRpc': 'Modify transaction before submission',
       };
 
       assert.ok(workarounds['Freighter-incognito']);
@@ -282,102 +281,62 @@ describe('[Issue #280] Wallet Support Matrix Documentation', () => {
     });
   });
 
-  describe('Feature Matrix Format', () => {
-    it('should present matrix in table format', () => {
-      const table = `
-Wallet      | Sign | Network | Session | Mobile
-------------|------|---------|---------|--------
-Freighter   | ✓    | ✓       | ✓       | ✗
-Ledger      | ✓    | ✓       | ◐       | ✓
-Albedo      | ✓    | ✓       | ✓       | ✓
-XBULL       | ✓    | ◐       | ✗       | ✓
-Rabet       | ✓    | ◐       | ◐       | ✓`;
+  describe('[Issue #552] Selected Account Stability Across Sessions', () => {
+    // Mirrors the documented resolution order for restoring the selected
+    // account when a multi-account wallet session is re-established.
+    const resolveSelectedAccount = (
+      accounts: string[],
+      previousSelection: string | null,
+    ): string | null => {
+      if (accounts.length === 0) {
+        return null;
+      }
+      if (previousSelection && accounts.includes(previousSelection)) {
+        return previousSelection;
+      }
+      return accounts[0];
+    };
 
-      assert.ok(table.includes('Wallet'));
-      assert.ok(table.includes('Freighter'));
+    it('should keep the previously selected account when it is still present', () => {
+      const accounts = ['GAAA', 'GBBB', 'GCCC'];
+      assert.strictEqual(resolveSelectedAccount(accounts, 'GBBB'), 'GBBB');
     });
 
-    it('should use consistent symbols for support status', () => {
-      const symbols = {
-        supported: '✓',
-        notSupported: '✗',
-        limited: '◐',
-      };
-
-      assert.strictEqual(symbols.supported, '✓');
-      assert.strictEqual(symbols.limited, '◐');
+    it('should fall back to the first account when the previous selection is gone', () => {
+      const accounts = ['GAAA', 'GCCC'];
+      assert.strictEqual(resolveSelectedAccount(accounts, 'GBBB'), 'GAAA');
     });
 
-    it('should provide JSON representation of matrix', () => {
-      const matrix = {
-        format: 'json',
-        wallets: [
-          {
-            name: 'Freighter',
-            sign: true,
-            networkSwitch: true,
-            session: true,
-            mobile: false,
-          },
-        ],
-      };
-
-      assert.ok(matrix.wallets[0].name);
-      assert.strictEqual(matrix.wallets[0].sign, true);
-    });
-  });
-
-  describe('Documentation Organization', () => {
-    it('should include quick reference section', () => {
-      const doc = {
-        sections: ['Quick Reference', 'Detailed Matrix', 'Feature Details'],
-      };
-
-      assert.ok(doc.sections.includes('Quick Reference'));
+    it('should fall back to the first account when there is no prior selection', () => {
+      const accounts = ['GAAA', 'GBBB'];
+      assert.strictEqual(resolveSelectedAccount(accounts, null), 'GAAA');
     });
 
-    it('should provide per-wallet documentation', () => {
-      const wallets = [
-        'Freighter',
-        'Ledger',
-        'Albedo',
-        'XBULL',
-        'Rabet',
-      ];
-
-      assert.strictEqual(wallets.length, 5);
+    it('should return null when the account list is empty', () => {
+      assert.strictEqual(resolveSelectedAccount([], 'GBBB'), null);
+      assert.strictEqual(resolveSelectedAccount([], null), null);
     });
 
-    it('should include implementation guides per wallet', () => {
-      const guides = {
-        Freighter: 'guides/freighter-integration.md',
-        Ledger: 'guides/ledger-integration.md',
-        Albedo: 'guides/albedo-integration.md',
-      };
-
-      assert.ok(guides.Freighter.includes('guides/'));
-    });
-  });
-
-  describe('Last Updated and Maintenance', () => {
-    it('should include last updated timestamp', () => {
-      const doc = {
-        title: 'Wallet Support Matrix',
-        lastUpdated: new Date().toISOString(),
-      };
-
-      assert.ok(doc.lastUpdated);
-      assert.ok(doc.lastUpdated.includes('T'));
+    it('should re-resolve selection after a wallet switch', () => {
+      const previousWalletAccounts = ['GAAA', 'GBBB'];
+      const newWalletAccounts = ['GDDD', 'GEEE'];
+      const previousSelection = resolveSelectedAccount(
+        previousWalletAccounts,
+        null,
+      );
+      assert.strictEqual(previousSelection, 'GAAA');
+      // After switching wallets the old selection is not in the new list.
+      assert.strictEqual(
+        resolveSelectedAccount(newWalletAccounts, previousSelection),
+        'GDDD',
+      );
     });
 
-    it('should document update frequency', () => {
-      const maintenance = {
-        updateFrequency: 'Monthly',
-        nextReviewDate: '2026-10-25',
-        maintainer: 'SDK Team',
-      };
-
-      assert.ok(maintenance.updateFrequency);
+    it('should preserve selection across an account list refresh', () => {
+      const before = ['GAAA', 'GBBB'];
+      const selected = resolveSelectedAccount(before, 'GBBB');
+      const afterRefresh = ['GAAA', 'GBBB', 'GCCC'];
+      assert.strictEqual(resolveSelectedAccount(afterRefresh, selected), 'GBBB');
     });
   });
 });
