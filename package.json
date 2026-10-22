@@ -16,7 +16,10 @@
     "test:coverage": "npm run test:coverage -w packages/sdk && npm run test:coverage -w packages/react",
     "lint": "tsc --noEmit -p tsconfig.base.json",
     "clean": "rm -rf packages/*/dist",
-    "example": "npm run dev -w packages/example"
+    "example": "npm run dev -w packages/example",
+    "verify:exports": "node scripts/verify-exports.mjs",
+    "bench:bundle": "node scripts/bundle-cost.mjs",
+    "profile:footprint": "node scripts/profile-footprint.mjs"
   },
   "devDependencies": {
     "typescript": "^5.5.0"
