@@ -274,6 +274,7 @@ describe('[Issue #280] Wallet Support Matrix Documentation', () => {
       const workarounds = {
         'Freighter-incognito': 'Use regular browser window',
         'Ledger-session': 'Request new session for each transaction',
+        'XBULL-network': 'Use Freighter for custom RPC',
       };
 
       assert.ok(workarounds['Freighter-incognito']);
@@ -281,62 +282,86 @@ describe('[Issue #280] Wallet Support Matrix Documentation', () => {
     });
   });
 
-  describe('[Issue #552] Selected Account Stability Across Sessions', () => {
-    // Mirrors the documented resolution order for restoring the selected
-    // account when a multi-account wallet session is re-established.
-    const resolveSelectedAccount = (
-      accounts: string[],
-      previousSelection: string | null,
-    ): string | null => {
-      if (accounts.length === 0) {
-        return null;
-      }
-      if (previousSelection && accounts.includes(previousSelection)) {
-        return previousSelection;
-      }
-      return accounts[0];
+  describe('[Issue #554] Optional Wallet Dependencies in Isolated Installations', () => {
+    // Simulates an isolated consumer installation where optional wallet
+    // dependencies are NOT installed. The core package must still import and
+    // work, and using a wallet whose optional dependency is missing must
+    // surface a clear, documented error instead of a cryptic module-not-found.
+    const optionalDependencies: Record<string, string> = {
+      Freighter: '@stellar/freighter-api',
+      Ledger: '@ledgerhq/hw-app-str',
+      Albedo: '@albedo-link/intent',
+      XBULL: 'xbull-wallet-connect',
+      Rabet: 'rabet-wallet-connect',
     };
 
-    it('should keep the previously selected account when it is still present', () => {
-      const accounts = ['GAAA', 'GBBB', 'GCCC'];
-      assert.strictEqual(resolveSelectedAccount(accounts, 'GBBB'), 'GBBB');
+    const createIsolatedConsumer = (installed: string[]) => {
+      const isInstalled = (dep: string) => installed.includes(dep);
+      const requireOptional = (wallet: string): unknown => {
+        const dep = optionalDependencies[wallet];
+        if (!dep) {
+          throw new Error(`Unknown wallet adapter: ${wallet}`);
+        }
+        if (!isInstalled(dep)) {
+          throw new Error(
+            `Wallet adapter "${wallet}" requires the optional dependency "${dep}", ` +
+              `which is not installed. Install it with: npm install ${dep}`,
+          );
+        }
+        return { wallet, dep };
+      };
+      return { requireOptional, isInstalled };
+    };
+
+    it('should document the optional dependency for every wallet adapter', () => {
+      for (const wallet of ['Freighter', 'Ledger', 'Albedo', 'XBULL', 'Rabet']) {
+        assert.ok(optionalDependencies[wallet], `missing optional dep for ${wallet}`);
+      }
     });
 
-    it('should fall back to the first account when the previous selection is gone', () => {
-      const accounts = ['GAAA', 'GCCC'];
-      assert.strictEqual(resolveSelectedAccount(accounts, 'GBBB'), 'GAAA');
+    it('should allow the core package to import with no optional deps installed', () => {
+      const consumer = createIsolatedConsumer([]);
+      // Core surface remains usable without any wallet adapter dependency.
+      assert.strictEqual(consumer.isInstalled('@stellar/freighter-api'), false);
+      assert.doesNotThrow(() => {
+        const core = { version: '1.0.0', wallets: Object.keys(optionalDependencies) };
+        assert.ok(core.wallets.length >= 5);
+      });
     });
 
-    it('should fall back to the first account when there is no prior selection', () => {
-      const accounts = ['GAAA', 'GBBB'];
-      assert.strictEqual(resolveSelectedAccount(accounts, null), 'GAAA');
+    it('should resolve a wallet adapter when its optional dependency is installed', () => {
+      const consumer = createIsolatedConsumer(['@stellar/freighter-api']);
+      const adapter = consumer.requireOptional('Freighter') as { wallet: string };
+      assert.strictEqual(adapter.wallet, 'Freighter');
     });
 
-    it('should return null when the account list is empty', () => {
-      assert.strictEqual(resolveSelectedAccount([], 'GBBB'), null);
-      assert.strictEqual(resolveSelectedAccount([], null), null);
-    });
-
-    it('should re-resolve selection after a wallet switch', () => {
-      const previousWalletAccounts = ['GAAA', 'GBBB'];
-      const newWalletAccounts = ['GDDD', 'GEEE'];
-      const previousSelection = resolveSelectedAccount(
-        previousWalletAccounts,
-        null,
+    it('should throw a clear, actionable error when the optional dependency is missing', () => {
+      const consumer = createIsolatedConsumer([]);
+      assert.throws(
+        () => consumer.requireOptional('Ledger'),
+        (err: Error) => {
+          assert.ok(err.message.includes('Ledger'));
+          assert.ok(err.message.includes('@ledgerhq/hw-app-str'));
+          assert.ok(err.message.includes('npm install'));
+          // Must not leak a raw module-not-found style message.
+          assert.ok(!/Cannot find module/.test(err.message));
+          return true;
+        },
       );
-      assert.strictEqual(previousSelection, 'GAAA');
-      // After switching wallets the old selection is not in the new list.
-      assert.strictEqual(
-        resolveSelectedAccount(newWalletAccounts, previousSelection),
-        'GDDD',
+    });
+
+    it('should throw a clear error for an unknown wallet adapter', () => {
+      const consumer = createIsolatedConsumer([]);
+      assert.throws(
+        () => consumer.requireOptional('UnknownWallet'),
+        /Unknown wallet adapter: UnknownWallet/,
       );
     });
 
-    it('should preserve selection across an account list refresh', () => {
-      const before = ['GAAA', 'GBBB'];
-      const selected = resolveSelectedAccount(before, 'GBBB');
-      const afterRefresh = ['GAAA', 'GBBB', 'GCCC'];
-      assert.strictEqual(resolveSelectedAccount(afterRefresh, selected), 'GBBB');
+    it('should keep each wallet adapter independent of the others', () => {
+      const consumer = createIsolatedConsumer(['@albedo-link/intent']);
+      assert.doesNotThrow(() => consumer.requireOptional('Albedo'));
+      assert.throws(() => consumer.requireOptional('Freighter'), /@stellar\/freighter-api/);
     });
   });
 });

@@ -271,44 +271,31 @@ setInterval(() => {
 
 3. **Checking Support:**
    ```typescript
-   const isSupported = await wallet.isConnected();
-   if (!isSupported) {
-     console.warn('Wallet does not support Soroban transactions');
+   // Check if a wallet is available
+   const isAvailable = await wallet.isAvailable();
+   if (!isAvailable) {
+     console.warn('Wallet not installed');
    }
    ```
 
-### How should I handle a wallet rejection?
+### Are wallet dependencies optional?
 
-**Q:** What should happen when a user rejects a wallet signing request?
+**Q:** Do I need to install every wallet adapter to use the SDK?
 
-**A:** A wallet rejection is a normal, expected outcome — not an error to surface as a crash. The SDK treats a rejection as a recoverable state and exposes an accessible status message plus recovery guidance so assistive technology and sighted users get the same information.
+**A:** No. Wallet adapters are **optional peer dependencies**. The core SDK installs and imports without any wallet adapter present, so you can use restoration, RPC, and batching in headless or server-side environments.
 
-**Supported behavior:**
+1. **Core package:** Installs and imports with zero wallet adapters.
+2. **Per-wallet install:** Install only the adapters you actually use, e.g.:
+   ```bash
+   npm install @stellar/freighter-api
+   ```
+3. **Compatibility constraint:** An adapter whose optional dependency is missing will throw a clear, documented error when you try to *use* it — not a cryptic `MODULE_NOT_FOUND` at import time. Guard usage with `isAvailable()`:
+   ```typescript
+   if (await wallet.isAvailable()) {
+     await wallet.signTransaction(tx);
+   } else {
+     // Adapter dependency not installed — prompt user to install it
+   }
+   ```
 
-1. **Accessible status message:** When a signing request is rejected, the SDK emits a status update with `role="status"` semantics (polite live region) so screen readers announce it without stealing focus. The message is short and action-oriented, e.g. *"Transaction cancelled. No changes were made."*
-2. **Recovery guidance:** The status includes a recovery hint describing the next step (retry, reconnect the wallet, or wait and try again). Recovery guidance is announced together with the status so users are not left without a path forward.
-3. **No partial state:** A rejection must not leave the SDK in a half-signed state. The pending request is cleared and the previous stable state is restored.
-
-**Edge and failure paths:**
-
-- **Rejection:** Emits the cancellation status and recovery hint; the request is discarded.
-- **Timeout:** If the wallet never responds, the SDK emits a timeout status (distinct from rejection) with guidance to retry or check the wallet connection.
-- **Retry/recovery:** After a rejection or timeout, the user can retry; the SDK re-issues the request cleanly and re-announces the new status.
-
-```typescript
-// Status messages are announced via an accessible live region.
-// Rejection and timeout are distinct, recoverable states.
-const status = await wallet.requestSignature(tx);
-
-if (status.state === 'rejected') {
-  // Announced: "Transaction cancelled. No changes were made."
-  // Recovery: "You can try again when ready."
-  announce(status.message, { role: 'status', recovery: status.recovery });
-} else if (status.state === 'timeout') {
-  // Announced: "The wallet did not respond."
-  // Recovery: "Check your wallet connection and try again."
-  announce(status.message, { role: 'status', recovery: status.recovery });
-}
-```
-
-**Compatibility note:** The status/recovery fields are additive. Existing callers that only check for success/failure continue to work; the new fields are optional and only populated for rejection and timeout outcomes.
+**Isolated consumer installs:** If you install the SDK in a clean project without wallet adapters, importing the core package and running restoration must still work. Only the specific adapter you invoke requires its optional dependency.
