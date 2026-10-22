@@ -1,50 +1,78 @@
-# Proposal NNNN: <short title>
+# Proposal: <Title>
 
-- **Status:** Draft <!-- Draft | Accepted | Rejected | Implemented -->
-- **Author:** <name / @github>
-- **Created:** YYYY-MM-DD
-- **Related work:** <links to issues, CAPs, ADRs or other proposals>
-
----
+- **Issue:** #<number>
+- **Status:** Draft | Accepted | Rejected | Implemented
+- **Author:** <name / handle>
+- **Created:** <YYYY-MM-DD>
+- **Last updated:** <YYYY-MM-DD>
 
 ## Summary
 
-One paragraph describing the change and why it matters.
+One or two paragraphs describing the proposal and the problem it addresses.
 
 ## Motivation
 
-What problem does this solve? Who is affected, and what is the expected outcome?
+Why is this change needed? What is the current behavior, and what pain does it
+cause for users or maintainers? Link to related issues, discussions, or reports.
 
-## Guide-level explanation
+## Goals
 
-Explain the proposal as if teaching it to a contributor or dApp developer. Use examples.
+- <goal>
+- <goal>
 
-## Reference-level explanation
+## Non-goals
 
-The technical detail: API surface, types, XDR or RPC sketches, behavior, edge cases,
-and migration path.
+- <explicitly out of scope>
+- <explicitly out of scope>
 
-## Drawbacks
+## Proposed behavior
 
-Why should we not do this?
+Describe the supported behavior in detail. Include the public API surface
+(types, functions, configuration keys) and how it interacts with existing
+features. Keep modular boundaries and public API compatibility in view.
 
-## Rationale and alternatives
+### Configuration
 
-Why is this design preferred? What other designs were considered, and what is the
-impact of doing nothing?
+List any new configuration options, defaults, and compatibility constraints.
 
-## Security implications
+### Failure and edge cases
 
-What new attack surface, trust assumptions or failure modes does this introduce?
+Enumerate the important failure modes and edge cases, and define the expected
+behavior for each. Examples:
 
-## Prior art
+- What happens when a required provider is missing?
+- What happens when the same service is resolved from multiple contexts?
+- Are duplicate instances possible, and if so, under what conditions?
+- How are errors surfaced to the caller?
 
-Links to similar work in other projects or earlier discussion.
+## Alternatives considered
 
-## Unresolved questions
+- <alternative> — why it was rejected
+- <alternative> — why it was rejected
 
-What is still open, and where should it be settled (RFC discussion or implementation)?
+## API changes
 
-## Future possibilities
+Document any intentional API changes, including breaking changes and the
+migration path for existing users. If there are none, state that explicitly.
 
-What follow-up work does this enable? Keep it out of scope for this proposal.
+## Testing plan
+
+- Focused automated coverage for the expected behavior.
+- Coverage for important failure and edge paths.
+- Verification that affected workspace tests and type checks pass.
+
+## Documentation plan
+
+- User-facing documentation updates for new behavior, configuration, or
+  compatibility constraints.
+- Troubleshooting notes for the documented failure modes.
+
+## Open questions
+
+- <question>
+- <question>
+
+## Decision
+
+Record the outcome (accepted / rejected / deferred) and the rationale once the
+proposal has been reviewed.

@@ -46,6 +46,27 @@ import { RestorationService } from '@soroban-resurrect/sdk';
 import { RestorationService } from '@soroban-resurrect/core';
 ```
 
+## Angular Service Scope with Multiple Application Roots
+
+`@soroban-resurrect/angular` services are provided at the **root injector** by default (`providedIn: 'root'`). This means a single service instance is shared across the whole application, which is the supported behavior for the common single-root case.
+
+When an application hosts **multiple Angular application roots** (for example, several independently bootstrapped apps on one page, micro-frontends, or multiple `bootstrapApplication` calls), each root has its own injector tree. The supported behavior is:
+
+- **One instance per root injector.** Services provided at root are instantiated once per application root, not once per page. Two roots do not share a service instance.
+- **No cross-root state sharing.** State held by a root-scoped service (connection status, wallet selection, in-flight restoration state) is isolated to the root that created it. Do not assume a service resolved in root A reflects state from root B.
+- **Explicit sharing requires a shared provider.** To share a single instance across roots, provide the service in a shared parent injector (e.g. a platform injector or a manually created `Injector`) and pass it to each root via `bootstrapApplication`'s `providers`, or use a shared module-level singleton. Sharing is opt-in, never implicit.
+
+### Edge cases and failure modes
+
+- **Duplicate instances:** resolving the same root-provided service from two different roots yields two distinct instances. Code that relies on identity equality across roots will fail; compare state explicitly instead.
+- **Missing providers:** if a service is provided in a feature-level injector rather than at root, resolving it from a different root throws Angular's `NullInjectorError: No provider for ...`. Provide the service at the root (or a shared parent) of every root that needs it.
+- **Cross-root injection:** injecting a root-A service into a root-B component is not supported and will either fail resolution or silently bind to root B's own instance. Keep service usage within the root that provides it.
+- **Teardown:** destroying one root destroys only that root's service instances; instances in other roots remain alive. Do not hold references to a destroyed root's services.
+
+### Migration note
+
+If your v0.1.0 code assumed a single global service instance across multiple bootstrapped apps, move shared state into an explicitly shared provider (see above) or consolidate to a single application root. No API changes are required for single-root applications.
+
 ## Breaking Changes Summary
 
 ### 1. EventEmitter-Based Configuration
@@ -251,45 +272,13 @@ console.log('Restored keys:', results);
 ```typescript
 const preflight = new PreFlightConfig({
   onSuccess: (result) => handleSuccess(result),
-  onError: (error) => handleError(error),
-  onWarning: (warning) => handleWarning(warning) // Not available
+  onError: (error) => handleError(error)
 });
 ```
 
 **After (v1.0.0):**
 ```typescript
 const preflight = new PreFlightConfig();
-preflight.on('success', (result) => handleSuccess(result));
-preflight.on('error', (error) => handleError(error));
-preflight.on('warning', (warning) => handleWarning(warning)); // Now available
-preflight.on('progress', (progress) => updateProgress(progress)); // New event type
+preflight.on('success', handleSuccess);
+preflight.on('error', handleError);
 ```
-
-## Testing Checklist After Migration
-
-- [ ] TypeScript compilation succeeds without errors
-- [ ] All unit tests pass
-- [ ] Integration tests with Soroban RPC pass
-- [ ] EventEmitter listeners fire correctly
-- [ ] Large key batches are processed correctly
-- [ ] Error handling works for fee-bump transactions
-- [ ] Retry logic activates on transient failures
-- [ ] No manual batching code remains in codebase
-- [ ] No manual retry patterns remain in codebase
-- [ ] ESM imports work in both Node.js and bundled environments
-- [ ] Performance is improved or equal to v0.1.0
-
-## Support and Questions
-
-If you encounter any issues during migration:
-
-1. Check this guide for your specific use case
-2. Review the ADRs in `docs/adr/` for design rationale
-3. Check the Troubleshooting guide for common errors
-4. Open an issue on GitHub with a minimal reproduction case
-
-## Timeline
-
-- **v1.0.0 released:** [Release date]
-- **v0.1.0 security updates:** Until [EOL date]
-- **v0.1.0 removed:** After [EOL date]
