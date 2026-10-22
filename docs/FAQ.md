@@ -273,29 +273,42 @@ setInterval(() => {
    ```typescript
    const isSupported = await wallet.isConnected();
    if (!isSupported) {
-     throw new Error('Wallet does not support Soroban');
+     console.warn('Wallet does not support Soroban transactions');
    }
    ```
 
-### How is the selected account kept stable across multi-account wallet sessions?
+### How should I handle a wallet rejection?
 
-**Q:** When a wallet exposes multiple accounts, which account does the SDK use, and does it stay the same across reconnects and session restores?
+**Q:** What should happen when a user rejects a wallet signing request?
 
-**A:** The SDK keeps a single **selected account** per wallet session and preserves it across reconnects, account-list refreshes, and session restores. The supported behavior is:
+**A:** A wallet rejection is a normal, expected outcome — not an error to surface as a crash. The SDK treats a rejection as a recoverable state and exposes an accessible status message plus recovery guidance so assistive technology and sighted users get the same information.
 
-1. **Initial selection:** If no account has been selected yet, the SDK selects the first account returned by the wallet.
-2. **Stability:** Once an account is selected, it remains selected across reconnects and account-list refreshes as long as it is still present in the wallet's account list.
-3. **Selected account no longer present:** If the previously selected account disappears from the wallet (e.g. it was removed or the user switched wallets), the SDK falls back to the first available account.
-4. **Empty account list:** If the wallet returns no accounts, the selection is cleared (`null`) and no account is used until one becomes available.
-5. **Wallet switch:** Switching to a different wallet resets the selection to that wallet's first account; selections are not carried across wallets.
-6. **No prior selection:** With no stored selection, behavior is identical to initial selection (first account).
+**Supported behavior:**
+
+1. **Accessible status message:** When a signing request is rejected, the SDK emits a status update with `role="status"` semantics (polite live region) so screen readers announce it without stealing focus. The message is short and action-oriented, e.g. *"Transaction cancelled. No changes were made."*
+2. **Recovery guidance:** The status includes a recovery hint describing the next step (retry, reconnect the wallet, or wait and try again). Recovery guidance is announced together with the status so users are not left without a path forward.
+3. **No partial state:** A rejection must not leave the SDK in a half-signed state. The pending request is cleared and the previous stable state is restored.
+
+**Edge and failure paths:**
+
+- **Rejection:** Emits the cancellation status and recovery hint; the request is discarded.
+- **Timeout:** If the wallet never responds, the SDK emits a timeout status (distinct from rejection) with guidance to retry or check the wallet connection.
+- **Retry/recovery:** After a rejection or timeout, the user can retry; the SDK re-issues the request cleanly and re-announces the new status.
 
 ```typescript
-// The selected account is preserved across reconnects/refreshes
-const selected = selectAccount(accounts, previousSelection);
-// - previousSelection still present  -> previousSelection
-// - previousSelection missing        -> accounts[0]
-// - accounts empty                   -> null
+// Status messages are announced via an accessible live region.
+// Rejection and timeout are distinct, recoverable states.
+const status = await wallet.requestSignature(tx);
+
+if (status.state === 'rejected') {
+  // Announced: "Transaction cancelled. No changes were made."
+  // Recovery: "You can try again when ready."
+  announce(status.message, { role: 'status', recovery: status.recovery });
+} else if (status.state === 'timeout') {
+  // Announced: "The wallet did not respond."
+  // Recovery: "Check your wallet connection and try again."
+  announce(status.message, { role: 'status', recovery: status.recovery });
+}
 ```
 
-**Compatibility:** This behavior is additive and does not change the public API. Callers that previously relied on "always first account" will observe the same result unless they had explicitly selected a different account, in which case that selection is now preserved.
+**Compatibility note:** The status/recovery fields are additive. Existing callers that only check for success/failure continue to work; the new fields are optional and only populated for rejection and timeout outcomes.

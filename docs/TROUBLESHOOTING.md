@@ -169,6 +169,53 @@ const signWithTimeout = async (txn, timeout = 30000) => {
 };
 ```
 
+### Wallet Rejection: Accessible Status and Recovery Messages
+
+**Symptoms:** The user dismisses or rejects the wallet signing prompt and the UI gives no feedback, or feedback is not announced to assistive technology.
+
+**Supported behavior:**
+- A wallet rejection (`USER_REJECTION`) is a normal, recoverable outcome — not an error state. The dapp must surface a user-visible status message and recovery guidance.
+- The status message is announced to assistive technology via a polite live region (`role="status"` / `aria-live="polite"`), so screen reader users hear it without losing focus.
+- Recovery guidance tells the user the transaction was not submitted and that they can retry when ready.
+- A signing timeout (`TIMEOUT`) is treated as recoverable too, with guidance to check the wallet and retry.
+- Other failures (e.g. `WALLET_NOT_FOUND`, `NETWORK_ERROR`) remain error states and should use an assertive announcement (`role="alert"`).
+
+**Edge cases:**
+- Repeated rejections must not stack duplicate announcements; update the existing status region instead of appending.
+- Retrying after a rejection must clear the previous status once signing succeeds.
+- The status region must exist in the DOM before the message is set so the announcement is reliably picked up.
+
+**Solutions:**
+```typescript
+// Announce a rejection through a pre-existing polite live region
+const statusRegion = document.getElementById('wallet-status');
+
+async function signWithRecovery(txn) {
+  try {
+    const signature = await wallet.signTransaction(txn);
+    // Clear stale status on success
+    statusRegion.textContent = '';
+    return signature;
+  } catch (error) {
+    if (error.code === 'USER_REJECTION') {
+      statusRegion.textContent =
+        'Transaction cancelled. Nothing was submitted. You can retry when ready.';
+    } else if (error.code === 'TIMEOUT') {
+      statusRegion.textContent =
+        'The wallet did not respond. Check your wallet and try again.';
+    } else {
+      statusRegion.textContent =
+        'Wallet signing failed. Please try again or check your wallet connection.';
+    }
+    throw error;
+  }
+}
+```
+```html
+<!-- Polite live region for recoverable status; use role="alert" for hard errors -->
+<p id="wallet-status" role="status" aria-live="polite"></p>
+```
+
 ### Network/Firewall Configuration
 
 **Symptoms:** Connection refused, cannot reach RPC, timeout errors
@@ -247,7 +294,7 @@ const isOnline = async () => {
 | `RATE_LIMITED` | 429 | Too many requests | Implement backoff and batching |
 | `SERVICE_UNAVAILABLE` | 503 | RPC service down | Use fallback RPC or retry later |
 | `FEE_BUMP_NOT_SUPPORTED` | 400 | Fee-bump transaction rejected | Use standard transaction instead |
-| `USER_REJECTION` | - | User cancelled operation | Prompt user to retry |
+| `USER_REJECTION` | - | User cancelled operation | Announce recoverable status and prompt user to retry |
 | `WALLET_NOT_FOUND` | - | Wallet not available | Check wallet installation |
 | `NETWORK_ERROR` | - | Network connectivity issue | Check firewall and internet connection |
 
@@ -272,132 +319,6 @@ setDebugLogLevel('INFO');   // INFO, DEBUG, TRACE, ERROR
 // - Error stack traces
 ```
 
-Enable debug mode in the browser:
+Enable debug mode
 
-```typescript
-// localStorage
-localStorage.setItem('DEBUG', '@soroban-resurrect:*');
-
-// or via environment
-process.env.DEBUG = '@soroban-resurrect:*';
-```
-
-## Log Analysis Guide
-
-### Reading Debug Logs
-
-```
-[2024-01-15T10:30:45.123Z] DEBUG @soroban-resurrect:sdk
-  POST https://soroban-rpc.stellar.org:443/
-  {
-    "jsonrpc": "2.0",
-    "method": "simulateTransaction",
-    "params": ["...XDR..."],
-    "id": 1
-  }
-
-[2024-01-15T10:30:45.456Z] DEBUG @soroban-resurrect:sdk
-  Simulation failed: "The operation is outside the range [1500000, 8000000]"
-  Status: 400
-```
-
-**Analysis:**
-1. Check HTTP method and URL
-2. Review request parameters
-3. Look for error messages in response
-4. Check timestamp for timing issues
-5. Correlate with other services
-
-### Common Log Patterns
-
-**Pattern:** Multiple 429 responses
-- **Cause:** Rate limiting from RPC
-- **Fix:** Increase retry delays, implement backoff
-
-**Pattern:** Connection reset after N requests
-- **Cause:** Connection pooling issue or server limit
-- **Fix:** Implement connection pooling with proper limits
-
-**Pattern:** Inconsistent responses for same request
-- **Cause:** Load balancing across RPC nodes with different states
-- **Fix:** Use specific RPC node or implement request deduplication
-
-## Support Channels and How to File Good Bug Reports
-
-### Support Channels
-
-1. **GitHub Issues** - Bug reports and feature requests
-2. **GitHub Discussions** - Questions and community support
-3. **Discord** - Real-time community chat
-4. **Email** - Direct support for enterprise users
-
-### Filing Good Bug Reports
-
-Include these details:
-
-```markdown
-### Description
-Brief description of the issue
-
-### Environment
-- SDK version: 1.0.0
-- Node.js version: 18.x
-- Operating System: Linux/macOS/Windows
-- Soroban RPC URL: [your RPC endpoint]
-
-### Steps to Reproduce
-1. Step 1
-2. Step 2
-3. Step 3
-
-### Expected Behavior
-What should happen
-
-### Actual Behavior
-What actually happens
-
-### Error Message
-Full error message (if applicable)
-
-### Debug Logs
-Output from setDebugMode(true)
-
-### Minimal Reproduction
-Minimal code that reproduces the issue
-```
-
-### Good Bug Report Example
-
-```markdown
-### Description
-Transaction simulation fails when restoring keys for large account with 100+ signers
-
-### Environment
-- SDK version: 1.0.0
-- Node.js version: 18.12.0
-- Soroban RPC: https://soroban-testnet.stellar.org
-
-### Steps to Reproduce
-1. Create account with 100+ signers
-2. Call service.restoreKeys([...])
-3. Observe simulation failure
-
-### Error Message
-TransactionSimulationError: Host rejected the transaction (status=INVALID_STATE)
-
-### Debug Logs
-[Include relevant debug output]
-
-### Minimal Reproduction
-[Include minimal code]
-```
-
-## Getting More Help
-
-If you need additional help:
-
-1. **Check the FAQ** - Common questions answered
-2. **Read the ADRs** - Understand design decisions
-3. **Review examples** - Check example projects
-4. **Ask the community** - GitHub Discussions or Discord
-5. **File a detailed issue** - Include all information above
+/* … truncated 3021 chars — edit only what you need near the top … */
