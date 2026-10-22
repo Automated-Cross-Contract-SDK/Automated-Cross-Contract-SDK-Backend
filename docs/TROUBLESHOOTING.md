@@ -119,6 +119,43 @@ const signedRebuilt = await wallet.signTransaction(rebuilt);
 
 **Compatibility constraint:** Fee-bump envelopes are intentionally unsupported. If your wallet cannot return the original signed envelope unchanged, use a wallet that can, or rebuild the transaction with the desired fee before signing.
 
+### Hardware Wallet Removed During Signing
+
+**Symptoms:** A hardware wallet is unplugged, disconnected, or loses its transport while a signing request is in flight. The SDK surfaces a recoverable `HARDWARE_WALLET_DISCONNECTED` error instead of a fatal signing failure.
+
+**Supported behavior:** Hardware-wallet removal during signing is treated as a **recoverable** condition. When the device is removed before or during signing, the SDK aborts the in-flight signing request, leaves the transaction unsigned, and rejects with `HARDWARE_WALLET_DISCONNECTED`. The signing state is not corrupted: the original transaction is preserved and can be re-signed once the device is reconnected. This is distinct from fatal signing failures (e.g. `USER_REJECTION`, invalid signatures), which are not retried automatically.
+
+**Possible Causes:**
+1. Device unplugged or Bluetooth/USB transport dropped mid-signing
+2. Device screen locked or awaiting confirmation when the connection dropped
+3. Wallet bridge/transport timed out and closed the channel
+
+**Solutions:**
+```typescript
+// 1. Detect the recoverable removal error and retry after reconnect
+try {
+  const signed = await wallet.signTransaction(transaction);
+} catch (error) {
+  if (error.code === 'HARDWARE_WALLET_DISCONNECTED') {
+    // Recoverable: the transaction is still unsigned and intact.
+    // Prompt the user to reconnect the device, then retry signing.
+    await wallet.reconnect();
+    const signed = await wallet.signTransaction(transaction);
+  } else {
+    // Fatal signing failures are not retried automatically.
+    throw error;
+  }
+}
+
+// 2. Guard against removal before signing starts
+if (!(await wallet.isConnected())) {
+  throw new Error('Hardware wallet not connected');
+}
+const signed = await wallet.signTransaction(transaction);
+```
+
+**Compatibility constraint:** `HARDWARE_WALLET_DISCONNECTED` is a recoverable error code; callers that previously treated all signing errors as fatal should branch on this code to allow retry. No public API signatures change.
+
 ### XDR Parsing Errors
 
 **Symptoms:** `XDRParsingError`, `InvalidXDRFormat`, or malformed data
@@ -245,69 +282,6 @@ dns.resolve4('soroban-rpc.stellar.org', (err, addresses) => {
   console.log('RPC addresses:', addresses);
 });
 
-// 4. Implement exponential backoff for rate limiting
-const maxRetries = 3;
-const backoffMultiplier = 2;
-for (let i = 0; i < maxRetries; i++) {
-  try {
-    return await makeRequest();
-  } catch (error) {
-    if (error.status === 429) { // Rate limit
-      const delay = Math.pow(backoffMultiplier, i) * 1000;
-      await new Promise(resolve => setTimeout(resolve, delay));
-    } else {
-      throw error;
-    }
-  }
-}
+// 4. Implement exponential ba
 
-// 5. Check network connectivity
-const isOnline = async () => {
-  try {
-    await fetch('https://www.google.com', { method: 'HEAD' });
-    return true;
-  } catch {
-    return false;
-  }
-};
-```
-
-## Error Code Reference Table
-
-| Error Code | HTTP Status | Meaning | Action |
-|---|---|---|---|
-| `SIMULATION_FAILED` | 400 | Transaction simulation failed | Check transaction validity and account state |
-| `INVALID_XDR` | 400 | Malformed XDR data | Validate XDR format and encoding |
-| `INSUFFICIENT_FEE` | 400 | Transaction fee too low | Increase fee or use auto-fee estimation |
-| `ACCOUNT_NOT_FOUND` | 404 | Account doesn't exist | Create account or check account ID |
-| `CONTRACT_NOT_FOUND` | 404 | Contract not deployed | Verify contract ID and deployment |
-| `TIMEOUT` | 408 | Request timeout | Retry with exponential backoff |
-| `RATE_LIMITED` | 429 | Too many requests | Implement backoff and batching |
-| `SERVICE_UNAVAILABLE` | 503 | RPC service down | Use fallback RPC or retry later |
-| `FEE_BUMP_NOT_SUPPORTED` | 400 | Fee-bump transaction rejected | Use standard transaction instead |
-| `USER_REJECTION` | - | User cancelled operation | Prompt user to retry |
-| `WALLET_NOT_FOUND` | - | Wallet not available | Check wallet installation |
-| `NETWORK_ERROR` | - | Network connectivity issue | Check firewall and internet connection |
-
-## Debug Mode Usage
-
-Enable debug mode to see detailed logging:
-
-```typescript
-import { setDebugMode, setDebugLogLevel } from '@soroban-resurrect/sdk';
-
-// Enable debug mode
-setDebugMode(true);
-
-// Set specific log levels
-setDebugLogLevel('INFO');   // INFO, DEBUG, TRACE, ERROR
-
-// Debug output includes:
-// - All HTTP requests and responses
-// - XDR parsing steps
-// - Retry attempts
-// - Event emissions
-// - Error stack traces
-```
-
-Enable debug mode
+/* … truncated 2185 chars — edit only what you need near the top … */
