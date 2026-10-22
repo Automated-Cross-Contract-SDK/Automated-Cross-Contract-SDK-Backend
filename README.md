@@ -181,3 +181,6 @@ npm run test -w packages/sdk --if-present # integration tests via vitest config
 <!-- handsoff-issue-438 -->
 
 - #438: [react] Progress events not wired: IDLE_PROGRESS exists but restore:batch:complete is never mapped to setProgress
+
+<!-- handsoff-issue-549 -->
+- #549: Revalidate transaction time bounds after mobile deep-link signing
