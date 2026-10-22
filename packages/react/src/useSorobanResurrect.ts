@@ -12,6 +12,11 @@ import type {
 } from './types.js'
 
 const DEFAULT_HISTORY_STORAGE_KEY = 'soroban-resurrect:history'
+const DEFAULT_MAX_HISTORY_SIZE = 100
+
+function trimHistory(history: TransactionRecord[], max: number): TransactionRecord[] {
+  return history.length > max ? history.slice(history.length - max) : history
+}
 
 function resolveSigner(strategy: SigningStrategy | undefined): ((xdr: string) => Promise<string>) | undefined {
   if (!strategy) return undefined
@@ -117,15 +122,20 @@ export function useSorobanResurrect<TSigner extends SigningStrategy = SigningStr
   const historyStorageKey = options.persistHistory
     ? (typeof options.persistHistory === 'string' ? options.persistHistory : DEFAULT_HISTORY_STORAGE_KEY)
     : undefined
-  const [history, setHistory] = useState<TransactionRecord[]>(() => loadHistory(historyStorageKey))
+  const maxHistorySize = options.maxHistorySize !== undefined && options.maxHistorySize >= 0
+    ? options.maxHistorySize
+    : DEFAULT_MAX_HISTORY_SIZE
+  const [history, setHistory] = useState<TransactionRecord[]>(
+    () => trimHistory(loadHistory(historyStorageKey), maxHistorySize),
+  )
 
   const addHistoryRecord = useCallback((record: TransactionRecord) => {
     setHistory((prev) => {
-      const next = [...prev, record]
+      const next = trimHistory([...prev, record], maxHistorySize)
       saveHistory(historyStorageKey, next)
       return next
     })
-  }, [historyStorageKey])
+  }, [historyStorageKey, maxHistorySize])
 
   const clearHistory = useCallback(() => {
     setHistory([])

@@ -28,7 +28,8 @@ import {
   encodeLedgerKey,
 } from './footprint-parser.js'
 import { ExponentialBackoff, type RetryPolicy } from './retry-policy.js'
-import { SimulationCache, type SimulationCacheConfig } from './simulation-cache.js'
+import { SimulationCache, resolveSimulationCacheConfig, type SimulationCacheConfig } from './simulation-cache.js'
+import { planRestoreBatches } from './restore-batch-planner.js'
 
 const MAX_XDR_SIZE_BYTES = 100_000
 const DEFAULT_RESTORE_FEE = '100000'
@@ -69,8 +70,15 @@ function extractInnerTransaction(tx: any): any {
   return tx
 }
 
+/** Upper bound on cached `SorobanRpc.Server` instances per client. */
+const MAX_SERVER_CACHE_SIZE = 16
+
 export class SorobanResurrect {
   private server: SorobanRpc.Server
+  private simulationCache?: SimulationCache
+  private serverCache: Map<string, SorobanRpc.Server> = new Map()
+  /** Only enforced when the caller sets `maxRestoreBatchSize` explicitly (backward compatible). */
+  private readonly explicitMaxRestoreBatchSize?: number
   private config: Required<Omit<SorobanResurrectConfig, 'timeout'>> & { timeout?: number }
 
   constructor(config: SorobanResurrectConfig) {
@@ -84,8 +92,11 @@ export class SorobanResurrect {
       useWebSocket: false,
       pollIntervalMs: 1000,
       maxPollAttempts: 30,
+      restoreFeePerKey: 0,
+      maxRestoreFeePerBatch: Infinity,
       ...config,
     }
+    this.explicitMaxRestoreBatchSize = config.maxRestoreBatchSize
 
     const serverOptions: SorobanRpc.Server.Options = {
       allowHttp: this.config.allowHttp,
@@ -95,6 +106,13 @@ export class SorobanResurrect {
     }
 
     this.server = new SorobanRpc.Server(this.config.rpcUrl, serverOptions)
+
+    if (config.simulationCache) {
+      const cacheConfig = resolveSimulationCacheConfig(config.simulationCache, config.networkPassphrase)
+      if (cacheConfig.enabled) {
+        this.simulationCache = new SimulationCache(cacheConfig.maxSize, cacheConfig.ttlMs)
+      }
+    }
 
     void this.validateNetworkPassphrase()
   }
@@ -170,6 +188,10 @@ export class SorobanResurrect {
     let server = this.serverCache.get(targetUrl)
     if (!server) {
       server = new SorobanRpc.Server(targetUrl, { allowHttp: this.config.allowHttp })
+      if (this.serverCache.size >= MAX_SERVER_CACHE_SIZE) {
+        const oldest = this.serverCache.keys().next()
+        if (!oldest.done) this.serverCache.delete(oldest.value)
+      }
       this.serverCache.set(targetUrl, server)
     }
     return server
@@ -794,30 +816,12 @@ export class SorobanResurrect {
   }
 
   private batchKeys(keys: ArchivedKey[]): ArchivedKey[][] {
-    const batches: ArchivedKey[][] = []
-    let currentBatch: ArchivedKey[] = []
-    let currentSize = 0
-
-    for (const key of keys) {
-      const keySize = key.keyBase64.length
-      const headerOverhead = 200
-      const estimatedTotalSize = currentSize + keySize + headerOverhead
-
-      if (estimatedTotalSize > MAX_XDR_SIZE_BYTES && currentBatch.length > 0) {
-        batches.push(currentBatch)
-        currentBatch = [key]
-        currentSize = keySize
-      } else {
-        currentBatch.push(key)
-        currentSize = estimatedTotalSize
-      }
-    }
-
-    if (currentBatch.length > 0) {
-      batches.push(currentBatch)
-    }
-
-    return batches
+    return planRestoreBatches(keys, {
+      maxXdrBytes: MAX_XDR_SIZE_BYTES,
+      maxKeysPerBatch: this.explicitMaxRestoreBatchSize,
+      feePerKeyStroops: this.config.restoreFeePerKey,
+      maxFeePerBatchStroops: this.config.maxRestoreFeePerBatch,
+    })
   }
 
   private async buildSingleRestoreTransaction(

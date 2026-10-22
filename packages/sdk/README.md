@@ -94,3 +94,28 @@ const sacType = classifySacKey(scVal) // 'sacBalance' | 'sacAllowance' | ... | u
 ```
 
 Returns `undefined` when the `ScVal` does not match any known SAC pattern.
+
+## Simulation Cache
+
+Enable the in-memory simulation cache and size it per network (keyed by network passphrase):
+
+```ts
+new SorobanResurrect({
+  rpcUrl, networkPassphrase,
+  simulationCache: {
+    maxSize: 1000, ttlMs: 60_000,
+    perNetwork: { 'Public Global Stellar Network ; September 2015': { maxSize: 5000 } },
+  },
+})
+```
+
+Invalid capacities fall back to the default (`1000`). Eviction is O(1) LRU, so cache memory is bounded by `maxSize`. The internal RPC server cache is also capped (16 endpoints). Run `BENCH=1 npx vitest bench tests/benchmarks/cache-warmth.perf.test.ts` to compare cold vs warm cache behavior across networks and accounts.
+
+## Restore Batch Sizing
+
+Restore batches are split by estimated XDR size (`MAX_XDR_SIZE_BYTES`) and, optionally:
+
+- `maxRestoreBatchSize` — key cap per batch (only enforced when set explicitly, for backward compatibility).
+- `restoreFeePerKey` + `maxRestoreFeePerBatch` — keep `keys * restoreFeePerKey` within a per-batch fee budget.
+
+The planner is exported as `planRestoreBatches(keys, options)`. A single key that exceeds a limit is placed in its own batch rather than dropped.

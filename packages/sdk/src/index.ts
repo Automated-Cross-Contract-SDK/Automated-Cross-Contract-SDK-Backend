@@ -37,6 +37,8 @@ export {
   SimulationCache,
 } from './simulation-cache.js'
 export type { SimulationCacheConfig, CacheStatistics } from './simulation-cache.js'
+export { resolveSimulationCacheConfig, DEFAULT_SIMULATION_CACHE_CONFIG } from './simulation-cache.js'
+export { planRestoreBatches, type RestoreBatchPlanOptions } from './restore-batch-planner.js'
 
 export { VersionNegotiator, PROTOCOL_COMPATIBILITY_MATRIX, MIN_SUPPORTED_PROTOCOL, MAX_SUPPORTED_PROTOCOL } from './version-negotiator.js'
 export type { ProtocolSupport, ServerVersionInfo, XdrEncodingOptions } from './version-negotiator.js'

@@ -70,6 +70,21 @@ export interface SorobanResurrectConfig {
   restoreFee?: string
   maxRestoreBatchSize?: number
   /**
+   * Estimated fee (stroops) each restored key adds to a restore transaction.
+   * Combined with `maxRestoreFeePerBatch` to size batches. Defaults to `0`.
+   */
+  restoreFeePerKey?: number
+  /**
+   * Maximum fee (stroops) a single restore batch may require. Batches are
+   * split so `keys * restoreFeePerKey` stays within this budget.
+   */
+  maxRestoreFeePerBatch?: number
+  /**
+   * Enables the in-memory simulation cache. Use `perNetwork` (keyed by network
+   * passphrase) to give each network its own capacity/TTL.
+   */
+  simulationCache?: Partial<SimulationCacheConfig>
+  /**
    * Timeout in milliseconds for RPC requests made by SorobanRpc.Server.
    * Defaults to the Stellar SDK default when not set.
    */

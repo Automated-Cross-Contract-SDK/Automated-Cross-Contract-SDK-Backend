@@ -59,6 +59,12 @@ export interface UseSorobanResurrectOptions<TSigner extends SigningStrategy = Si
    * Pass `true` to use the default key, a string for a custom key, or omit/false to disable.
    */
   persistHistory?: boolean | string
+  /**
+   * Maximum number of transaction records kept in `history` (oldest dropped
+   * first). Bounds memory for long-lived components. Defaults to `100`;
+   * pass `Infinity` to keep everything.
+   */
+  maxHistorySize?: number
 }
 
 export interface UseSorobanResurrectReturn<TSigner extends SigningStrategy = SigningStrategy> {

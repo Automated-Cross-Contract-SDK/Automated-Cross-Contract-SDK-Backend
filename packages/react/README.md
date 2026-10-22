@@ -24,3 +24,7 @@ function App() {
   )
 }
 ```
+
+### Bounded history
+
+`useSorobanResurrect({ maxHistorySize })` caps the in-memory and persisted transaction history (default `100`, oldest dropped first). Pass `Infinity` to keep every record.
