@@ -41,3 +41,6 @@ export type {
   WalletProviderProps,
   WalletContextValue,
 } from './wallet/types.js'
+
+export { useBatchedProgress } from './useBatchedProgress.js'
+export type { UseBatchedProgressOptions } from './useBatchedProgress.js'
