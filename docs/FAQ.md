@@ -271,45 +271,37 @@ setInterval(() => {
 
 3. **Checking Support:**
    ```typescript
-   // Verify wallet supports required operations
-   const wallet = await connectWallet();
-   if (!wallet.supportsSoroban) {
+   // Verify wallet supports Soroban
+   const isSupported = await wallet.isSorobanSupported();
+   if (!isSupported) {
      throw new Error('Wallet does not support Soroban');
    }
    ```
 
-## Angular Integration Questions
+## Vue Plugin Questions
 
-### How does service scope behave with multiple application roots?
+### Are plugin listeners cleaned up when an app is unmounted?
 
-**Q:** What happens to Angular services when an app has more than one application root (e.g. multiple `bootstrapApplication` calls, micro-frontends, or several `NgModule` bootstraps on one page)?
+**Q:** If I mount and unmount a Vue app that uses the plugin, do its event listeners get removed?
 
-**A:** Service scope is tied to the **injector that owns the application root**, not to the page or the SDK module. The supported behavior is:
+**A:** Yes. The Vue plugin tracks every listener it registers and detaches them when the app instance is unmounted, so repeated mount/unmount cycles do not leak listeners.
 
-1. **One root injector per application root.** Each `bootstrapApplication` / `platformBrowserDynamic().bootstrapModule()` creates its own root injector. Services provided with `providedIn: 'root'` are instantiated **once per root injector**, so two roots produce two independent instances.
-2. **No cross-root sharing.** A service resolved in root A is never injected into root B. State held in a root-scoped service (caches, restoration queues, wallet sessions) is **not** shared across roots.
-3. **Explicit sharing requires a shared injector.** To share a single instance across roots, provide the service in a common parent injector (e.g. a shared `PlatformRef`-level provider or a manually created `Injector.create` passed to each root) rather than relying on `providedIn: 'root'`.
+**Supported behavior:**
 
-**Edge cases and failure modes:**
-
-- **Duplicate instances:** Two roots each resolving a root-scoped service get separate instances. Do not assume a singleton across roots; duplicate restoration schedulers may double-submit work.
-- **Missing providers:** A service provided only in root A is unavailable in root B and throws `NullInjectorError: No provider for <Service>`. Provide it in every root that needs it, or in a shared parent injector.
-- **Cross-root resolution:** Passing an injected service instance from one root into another root's component bypasses DI scope checks and can leak state; prefer passing plain data across root boundaries.
-- **Destroyed roots:** When a root is destroyed, its injector and root-scoped service instances are destroyed with it. Other roots are unaffected.
+1. **Per-App Tracking:** Listeners are tracked per app instance. Multiple apps can use the plugin independently, and unmounting one app only removes that app's listeners.
+2. **Unmount Hook:** Cleanup runs automatically via the app's `unmount` lifecycle — no manual teardown is required.
+3. **Repeated Mount/Unmount:** Each mount registers a fresh set of listeners; each unmount removes them. Cycles are safe to repeat.
+4. **Listeners Registered After Unmount:** Registering a listener after the app has been unmounted is a no-op (it is not attached), preventing leaks from late registrations.
 
 ```typescript
-// Each bootstrapApplication call gets its own root injector.
-// RestorationService (providedIn: 'root') is instantiated once per root.
-bootstrapApplication(AppA, { providers: [provideRestoration(config)] });
-bootstrapApplication(AppB, { providers: [provideRestoration(config)] });
-// AppA and AppB each have an independent RestorationService instance.
+const app = createApp(App);
+app.use(plugin);
+app.mount('#app');
 
-// To share one instance across roots, provide it in a shared parent injector:
-const sharedInjector = Injector.create({
-  providers: [{ provide: RestorationService, useFactory: () => new RestorationService(config) }],
-});
-bootstrapApplication(AppA, { providers: [{ provide: RestorationService, useValue: sharedInjector.get(RestorationService) }] });
-bootstrapApplication(AppB, { providers: [{ provide: RestorationService, useValue: sharedInjector.get(RestorationService) }] });
+// ... later
+app.unmount(); // plugin-registered listeners are detached here
 ```
 
-**Compatibility note:** This behavior follows standard Angular DI semantics and introduces no API changes. Existing single-root applications are unaffected.
+**Edge cases:**
+- Unmounting an app that never registered listeners is a safe no-op.
+- Calling `unmount()` more than once does not throw or double-remove listeners.
