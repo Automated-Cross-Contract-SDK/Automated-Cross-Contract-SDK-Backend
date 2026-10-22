@@ -271,165 +271,37 @@ setInterval(() => {
 
 3. **Checking Support:**
    ```typescript
-   const capabilities = await wallet.getCapabilities?.();
-   if (capabilities?.includes('soroban')) {
-     console.log('Wallet supports Soroban');
-   }
+   const isSupported = await wallet.isConnected();
+   if (!isSupported) throw new Error('Wallet not connected');
    ```
 
-4. **Adding New Wallets:**
-   See [Wallet Adapter Documentation](./docs/wallet_adapters.md)
+### Does the SDK check the network before opening a signing prompt?
 
-### How do I contribute?
+**Q:** Will the SDK verify the wallet is on the correct network before asking me to sign?
 
-**Q:** How can I contribute to the project?
+**A:** Yes. Before any wallet signing prompt is opened, the SDK verifies the wallet's network identity (its chain/network passphrase) matches the network the transaction targets. This prevents signing a transaction on the wrong network, which would otherwise fail or, worse, be submitted to an unintended network.
 
-**A:** We welcome contributions:
+**Supported behavior:**
 
-1. **Report Issues:**
-   - Use GitHub Issues for bugs and feature requests
-   - Include reproduction steps and environment details
-
-2. **Submit Pull Requests:**
-   - Fork the repository
-   - Create a feature branch
-   - Follow the contributing guidelines
-   - Ensure tests pass
-
-3. **Contribute Documentation:**
-   - Fix typos and improve clarity
-   - Add examples
-   - Expand guides
-
-4. **Community:**
-   - Join Discord for discussions
-   - Participate in GitHub Discussions
-   - Help others troubleshoot
-
-**Contributing Guidelines:**
-```markdown
-# Before contributing
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Make changes with tests
-4. Ensure all tests pass: `npm test`
-5. Submit a pull request
-
-# Commit message format
-
-feat: Add new feature
-fix: Fix bug
-docs: Update documentation
-test: Add/modify tests
-refactor: Code refactoring
-
-Include issue number: "Closes #123"
-```
-
-## Performance and Optimization Questions
-
-### What's the expected performance?
-
-**Q:** How fast can keys be restored?
-
-**A:** Performance depends on several factors:
-
-1. **Network Latency:** ~500ms-2s per batch
-2. **RPC Performance:** RPC node response time
-3. **Batch Size:** 50 keys per 1-2 seconds
-
-**Benchmark Results:**
-```
-Environment: Testnet
-RPC: soroban-testnet.stellar.org
-Batch Size: 50 keys
-Average Time: 1.5 seconds per batch
-Throughput: ~33 keys/second
-
-For 1000 keys: ~45 seconds (20 batches)
-For 10000 keys: ~7.5 minutes (200 batches)
-```
-
-4. **Optimization Tips:**
-   ```typescript
-   // Use scheduled restoration during low-load periods
-   const lowFeeHour = 3; // 3 AM UTC
-   
-   // Batch keys smartly
-   const smartBatch = keys.slice(0, 50);
-   
-   // Monitor performance
-   const startTime = performance.now();
-   const result = await service.restoreKeys(smartBatch);
-   const duration = performance.now() - startTime;
-   console.log(`Restored ${smartBatch.length} keys in ${duration}ms`);
-   ```
-
-### How do I minimize costs?
-
-**Q:** What's the most cost-effective restoration strategy?
-
-**A:** Cost optimization strategies:
-
-1. **Batch Efficiently:** Use automatic batching (50 keys per transaction)
-2. **Time Selection:** Restore during network low-fee periods
-3. **Proactive Restoration:** Avoid emergency restorations
-4. **Monitoring:** Track TTL and restore before expiration
+1. **Network identity check:** The wallet's reported network passphrase is compared against the expected network passphrase for the operation.
+2. **Mismatch:** If the wallet is on a different network, the signing prompt is **not** opened and a `NetworkMismatchError` is thrown.
+3. **Unknown/unavailable identity:** If the wallet cannot report its network, the SDK treats this as a failure and does not open the prompt (fail-closed).
+4. **Missing connection:** If the wallet is not connected, a `WalletNotConnectedError` is thrown before any network check.
 
 ```typescript
-// Cost tracking
-async function trackCost(service, keys) {
-  const feeStats = await server.feeStats();
-  const estimatedCost = Math.ceil(keys.length / 50) * feeStats.sorobanNetworkFee;
-  
-  console.log(`Estimated cost: ${estimatedCost} stroops`);
-  
-  const result = await service.restoreKeys(keys);
-  console.log(`Actual cost: ${result.actualCost} stroops`);
+import { assertWalletNetwork } from '@automated-cross-contract/sdk';
+
+try {
+  // Throws before opening the signing prompt if the network does not match
+  await assertWalletNetwork(wallet, { networkPassphrase: Networks.TESTNET });
+  await wallet.signTransaction(transaction);
+} catch (err) {
+  if (err instanceof NetworkMismatchError) {
+    // Prompt the user to switch networks in their wallet
+  } else if (err instanceof WalletNotConnectedError) {
+    // Ask the user to connect their wallet
+  }
 }
 ```
 
-## Troubleshooting Questions
-
-### What if something still doesn't work?
-
-**Q:** I've tried everything and restoration still fails. What now?
-
-**A:** Follow these steps:
-
-1. **Enable Debug Mode:**
-   ```typescript
-   import { setDebugMode } from '@soroban-resurrect/sdk';
-   setDebugMode(true);
-   ```
-
-2. **Check Prerequisites:**
-   - Verify account exists and has balance
-   - Ensure keys are valid Soroban entries
-   - Check network connectivity
-   - Confirm RPC endpoint accessibility
-
-3. **Review Logs:**
-   - Look for specific error codes
-   - Check RPC responses
-   - Verify transaction XDR
-
-4. **File a Detailed Issue:**
-   - Include debug logs
-   - Provide minimal reproduction
-   - Share environment details
-
-5. **Get Community Help:**
-   - Ask on GitHub Discussions
-   - Join Discord community
-   - Contact support for enterprise users
-
-## Additional Resources
-
-- **[Migration Guide](./MIGRATION_GUIDE.md)** - Upgrade from v0.1.0 to v1.0.0
-- **[Troubleshooting Guide](./TROUBLESHOOTING.md)** - Detailed error solutions
-- **[Architecture Decisions](./adr/)** - Design rationale
-- **[API Documentation](./api/)** - Complete API reference
-- **[Examples](../examples/)** - Example projects
-- **[GitHub Discussions](https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend/discussions)** - Community support
+**Compatibility note:** This is an additive check. Existing signing flows keep their public API; the network assertion is opt-in via `assertWalletNetwork` and is also applied automatically by the restoration service before it requests a signature.

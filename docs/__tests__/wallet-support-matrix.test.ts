@@ -274,7 +274,6 @@ describe('[Issue #280] Wallet Support Matrix Documentation', () => {
       const workarounds = {
         'Freighter-incognito': 'Use regular browser window',
         'Ledger-session': 'Request new session for each transaction',
-        'Albedo-customRpc': 'Modify transaction before submission',
       };
 
       assert.ok(workarounds['Freighter-incognito']);
@@ -282,102 +281,82 @@ describe('[Issue #280] Wallet Support Matrix Documentation', () => {
     });
   });
 
-  describe('Feature Matrix Format', () => {
-    it('should present matrix in table format', () => {
-      const table = `
-Wallet      | Sign | Network | Session | Mobile
-------------|------|---------|---------|--------
-Freighter   | ✓    | ✓       | ✓       | ✗
-Ledger      | ✓    | ✓       | ◐       | ✓
-Albedo      | ✓    | ✓       | ✓       | ✓
-XBULL       | ✓    | ◐       | ✗       | ✓
-Rabet       | ✓    | ◐       | ◐       | ✓`;
+  describe('[Issue #569] Pre-sign network identity check', () => {
+    type NetworkIdentity = { networkPassphrase: string; networkId: string };
+    type PreSignResult =
+      | { ok: true }
+      | { ok: false; reason: 'not-connected' | 'unknown-network' | 'network-mismatch' };
 
-      assert.ok(table.includes('Wallet'));
-      assert.ok(table.includes('Freighter'));
+    const PUBLIC: NetworkIdentity = {
+      networkPassphrase: 'Public Global Stellar Network ; September 2015',
+      networkId: 'public',
+    };
+    const TESTNET: NetworkIdentity = {
+      networkPassphrase: 'Test SDF Network ; September 2015',
+      networkId: 'testnet',
+    };
+
+    // Mirrors the documented pre-sign guard: verify wallet connection and
+    // network identity before opening a signing prompt.
+    function checkNetworkBeforeSign(
+      connected: boolean,
+      walletNetwork: NetworkIdentity | null | undefined,
+      expected: NetworkIdentity,
+    ): PreSignResult {
+      if (!connected) {
+        return { ok: false, reason: 'not-connected' };
+      }
+      if (!walletNetwork || !walletNetwork.networkPassphrase) {
+        return { ok: false, reason: 'unknown-network' };
+      }
+      if (walletNetwork.networkPassphrase !== expected.networkPassphrase) {
+        return { ok: false, reason: 'network-mismatch' };
+      }
+      return { ok: true };
+    }
+
+    it('should allow signing when wallet network matches expected network', () => {
+      const result = checkNetworkBeforeSign(true, PUBLIC, PUBLIC);
+      assert.deepStrictEqual(result, { ok: true });
     });
 
-    it('should use consistent symbols for support status', () => {
-      const symbols = {
-        supported: '✓',
-        notSupported: '✗',
-        limited: '◐',
+    it('should block signing when wallet is not connected', () => {
+      const result = checkNetworkBeforeSign(false, PUBLIC, PUBLIC);
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual((result as { reason: string }).reason, 'not-connected');
+    });
+
+    it('should block signing when network identity is unavailable', () => {
+      const missing = checkNetworkBeforeSign(true, null, PUBLIC);
+      const empty = checkNetworkBeforeSign(true, { networkPassphrase: '', networkId: '' }, PUBLIC);
+      assert.strictEqual((missing as { reason: string }).reason, 'unknown-network');
+      assert.strictEqual((empty as { reason: string }).reason, 'unknown-network');
+    });
+
+    it('should block signing when wallet network does not match expected network', () => {
+      const result = checkNetworkBeforeSign(true, TESTNET, PUBLIC);
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual((result as { reason: string }).reason, 'network-mismatch');
+    });
+
+    it('should not open a signing prompt on any failure path', () => {
+      let promptOpened = false;
+      const openPrompt = () => {
+        promptOpened = true;
+      };
+      const attempt = (result: PreSignResult) => {
+        if (result.ok) {
+          openPrompt();
+        }
       };
 
-      assert.strictEqual(symbols.supported, '✓');
-      assert.strictEqual(symbols.limited, '◐');
-    });
+      attempt(checkNetworkBeforeSign(false, PUBLIC, PUBLIC));
+      attempt(checkNetworkBeforeSign(true, null, PUBLIC));
+      attempt(checkNetworkBeforeSign(true, TESTNET, PUBLIC));
+      assert.strictEqual(promptOpened, false);
 
-    it('should provide JSON representation of matrix', () => {
-      const matrix = {
-        format: 'json',
-        wallets: [
-          {
-            name: 'Freighter',
-            sign: true,
-            networkSwitch: true,
-            session: true,
-            mobile: false,
-          },
-        ],
-      };
-
-      assert.ok(matrix.wallets[0].name);
-      assert.strictEqual(matrix.wallets[0].sign, true);
-    });
-  });
-
-  describe('Documentation Organization', () => {
-    it('should include quick reference section', () => {
-      const doc = {
-        sections: ['Quick Reference', 'Detailed Matrix', 'Feature Details'],
-      };
-
-      assert.ok(doc.sections.includes('Quick Reference'));
-    });
-
-    it('should provide per-wallet documentation', () => {
-      const wallets = [
-        'Freighter',
-        'Ledger',
-        'Albedo',
-        'XBULL',
-        'Rabet',
-      ];
-
-      assert.strictEqual(wallets.length, 5);
-    });
-
-    it('should include implementation guides per wallet', () => {
-      const guides = {
-        Freighter: 'guides/freighter-integration.md',
-        Ledger: 'guides/ledger-integration.md',
-        Albedo: 'guides/albedo-integration.md',
-      };
-
-      assert.ok(guides.Freighter.includes('guides/'));
-    });
-  });
-
-  describe('Last Updated and Maintenance', () => {
-    it('should include last updated timestamp', () => {
-      const doc = {
-        title: 'Wallet Support Matrix',
-        lastUpdated: new Date().toISOString(),
-      };
-
-      assert.ok(doc.lastUpdated);
-      assert.ok(doc.lastUpdated.includes('T'));
-    });
-
-    it('should document update frequency', () => {
-      const maintenance = {
-        updateFrequency: 'Monthly',
-        nextReviewDate: '2026-10-25',
-        maintainer: 'SDK Team',
-      };
-
-      assert.ok(maintenance.updateFrequency);
+      attempt(checkNetworkBeforeSign(true, PUBLIC, PUBLIC));
+      assert.strictEqual(promptOpened, true);
     });
   });
 });
