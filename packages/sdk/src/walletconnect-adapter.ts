@@ -6,9 +6,19 @@
  * transaction signing. Pairing is initiated via a URI that mobile wallets
  * scan as a QR code (rendered through the optional `@walletconnect/modal`
  * package, or handed back via `onPairingUri` for custom UI).
+ *
+ * Besides signing, the adapter can hand the signed envelope to the wallet for
+ * broadcast via `stellar_signAndSubmitXDR` (see `signAndSubmit`), so dApps
+ * behind restrictive firewalls never need their own path to Soroban RPC.
  */
 
-import type { SorobanWalletAdapter, SignTransactionOptions, WalletConnectionResult } from './wallet-adapter.js'
+import type {
+  SorobanWalletAdapter,
+  SignTransactionOptions,
+  SignAndSubmitOptions,
+  SignAndSubmitResult,
+  WalletConnectionResult,
+} from './wallet-adapter.js'
 import { WalletAdapterError, loadOptionalWalletDependency } from './wallet-adapter.js'
 
 const WEB3WALLET_MODULE_NAME = '@walletconnect/web3wallet'
@@ -58,6 +68,18 @@ interface WalletSession {
   namespaces: Record<string, SessionNamespace>
 }
 
+/** Result shape of the `stellar_signAndSubmitXDR` request, per the Stellar WalletConnect namespace spec. */
+interface WalletSignAndSubmitResponse {
+  /** Hex transaction hash (spec field). */
+  tx_hash?: string
+  /** Some wallets echo the hash as `hash` instead. */
+  hash?: string
+  /** Final signed envelope XDR. */
+  signedXDR?: string
+  /** Present only when waitForInclusion was requested. */
+  successful?: boolean
+}
+
 interface QrModal {
   openModal(opts: { uri: string }): Promise<void>
   closeModal(): void
@@ -81,6 +103,7 @@ export class WalletConnectAdapter implements SorobanWalletAdapter {
   private client: Web3WalletClient | null = null
   private session: WalletSession | null = null
   private qrModal: QrModal | null = null
+  private connectedAccount: string | null = null
 
   constructor(private readonly config: WalletConnectAdapterConfig) {
     this.chainId = config.chainId ?? STELLAR_MAINNET_CHAIN_ID
@@ -100,8 +123,9 @@ export class WalletConnectAdapter implements SorobanWalletAdapter {
       const session = await this.awaitSessionApproval(client, topic)
       this.session = session
 
-      const address = firstStellarAddress(session)
-      return { address, network: this.chainId }
+      const account = firstStellarCaip10(session)
+      this.connectedAccount = account
+      return { address: addressFromCaip10(account), network: this.chainId }
     } catch (cause) {
       throw mapWalletConnectError(cause)
     } finally {
@@ -116,21 +140,66 @@ export class WalletConnectAdapter implements SorobanWalletAdapter {
         .catch(() => undefined)
     }
     this.session = null
+    this.connectedAccount = null
   }
 
   async signTransaction(xdr: string, opts?: SignTransactionOptions): Promise<string> {
-    if (!this.client || !this.session) {
-      throw new WalletAdapterError('WalletConnect session not established; call connect() first', 'CONNECTION_FAILED')
-    }
+    const { client, session } = this.requireSession()
     try {
-      return await this.client.request<string>({
-        topic: this.session.topic,
+      return await client.request<string>({
+        topic: session.topic,
         chainId: this.chainId,
         request: { method: 'stellar_signXDR', params: { xdr, address: opts?.accountToSign } },
       })
     } catch (cause) {
       throw mapWalletConnectError(cause)
     }
+  }
+
+  /**
+   * Signs and submits through the wallet via `stellar_signAndSubmitXDR`. The
+   * wallet broadcasts over its own RPC and replies with the transaction hash,
+   * so the dApp needs no direct Soroban RPC connectivity — only the relay
+   * websocket it already holds for the session.
+   */
+  async signAndSubmit(xdr: string, opts?: SignAndSubmitOptions): Promise<SignAndSubmitResult> {
+    const { client, session } = this.requireSession()
+    const account = this.resolveCaip10Account(opts?.accountToSign)
+    try {
+      const response = await client.request<WalletSignAndSubmitResponse | string>({
+        topic: session.topic,
+        chainId: this.chainId,
+        request: {
+          method: 'stellar_signAndSubmitXDR',
+          params: {
+            xdr,
+            chain: this.chainId,
+            account,
+            ...(opts?.waitForInclusion === undefined ? {} : { waitForInclusion: opts.waitForInclusion }),
+          },
+        },
+      })
+      return normalizeSignAndSubmitResponse(response)
+    } catch (cause) {
+      throw mapWalletConnectError(cause)
+    }
+  }
+
+  /** Returns the live client/session pair or fails with an actionable error. */
+  private requireSession(): { client: Web3WalletClient; session: WalletSession } {
+    if (!this.client || !this.session) {
+      throw new WalletAdapterError('WalletConnect session not established; call connect() first', 'CONNECTION_FAILED')
+    }
+    return { client: this.client, session: this.session }
+  }
+
+  /** Normalizes a G... address or CAIP-10 account into the CAIP-10 form the wallet expects. */
+  private resolveCaip10Account(accountToSign?: string): string {
+    if (accountToSign) {
+      return accountToSign.includes(':') ? accountToSign : `${this.chainId}:${accountToSign}`
+    }
+    if (this.connectedAccount) return this.connectedAccount
+    return firstStellarCaip10(this.requireSession().session)
   }
 
   private async showPairingUri(uri: string): Promise<void> {
@@ -188,17 +257,32 @@ export class WalletConnectAdapter implements SorobanWalletAdapter {
   }
 }
 
-/** Extracts the first Stellar address from a session's CAIP-10 accounts (`stellar:pubnet:G...`). */
-function firstStellarAddress(session: WalletSession): string {
+/** Returns the first CAIP-10 account (`stellar:pubnet:G...`) from a session's Stellar namespace. */
+function firstStellarCaip10(session: WalletSession): string {
   const caip10 = session.namespaces[STELLAR_CAIP2_NAMESPACE]?.accounts[0]
   if (!caip10) {
     throw new WalletAdapterError('WalletConnect session has no Stellar accounts', 'CONNECTION_FAILED')
   }
+  return caip10
+}
+
+/** Extracts the bare G... address from a CAIP-10 account string. */
+function addressFromCaip10(caip10: string): string {
   const address = caip10.split(':')[2]
   if (!address) {
     throw new WalletAdapterError(`Malformed CAIP-10 account: ${caip10}`, 'CONNECTION_FAILED')
   }
   return address
+}
+
+/** Normalizes the wallet's sign-and-submit reply, tolerating wallets that return a bare hash string. */
+function normalizeSignAndSubmitResponse(response: WalletSignAndSubmitResponse | string): SignAndSubmitResult {
+  if (typeof response === 'string') return { hash: response }
+  const hash = response.tx_hash ?? response.hash
+  if (!hash) {
+    throw new WalletAdapterError('WalletConnect wallet did not return a transaction hash', 'CONNECTION_FAILED')
+  }
+  return { hash, signedXdr: response.signedXDR, successful: response.successful }
 }
 
 /** Maps WalletConnect session/request errors — including rejections and expiry — onto WalletAdapterError. */

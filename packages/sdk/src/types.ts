@@ -1,6 +1,8 @@
 import { xdr } from '@stellar/stellar-sdk'
-import type { RetryPolicy } from './retry-policy.js'
-import type { SimulationCacheConfig } from './simulation-cache.js'
+import type { RetryPolicy } from '@soroban-resurrect/rpc'
+import type { SimulationCacheConfig } from '@soroban-resurrect/rpc'
+import type { FootprintCacheConfig } from '@soroban-resurrect/rpc'
+import type { TracingConfig } from './tracing.js'
 
 /**
  * SAC (Stellar Asset Contract) specific key types.
@@ -43,10 +45,12 @@ export interface ArchivedKey {
    * - `contractInstance` – the contract's own instance entry (new, issue #48)
    * - `contractData`     – generic contract data (includes SAC entries, issue #47)
    * - `contractCode`     – the contract's WASM bytecode entry
+   * - `liquidityPool`    – a liquidity pool entry
+   * - `claimableBalance` – a claimable balance entry
    * - `ttlEntry`         – a TTL / expiry ledger entry
    * - `unknown`          – unrecognised entry type
    */
-  keyType: 'contractInstance' | 'contractData' | 'contractCode' | 'ttlEntry' | 'unknown'
+  keyType: 'contractInstance' | 'contractData' | 'contractCode' | 'liquidityPool' | 'claimableBalance' | 'ttlEntry' | 'unknown'
   /**
    * SAC-specific sub-classification, only present when `keyType === 'contractData'`
    * and the entry belongs to a Stellar Asset Contract.
@@ -62,6 +66,8 @@ export interface ArchivedKey {
   restorePriority: RestorePriority
 }
 
+import type { Logger } from './logger.js'
+
 export interface SorobanResurrectConfig {
   /** Single RPC URL or an ordered list of fallback URLs */
   rpcUrl: string | string[]
@@ -70,15 +76,14 @@ export interface SorobanResurrectConfig {
   restoreFee?: string
   maxRestoreBatchSize?: number
   /**
-   * Estimated fee (stroops) each restored key adds to a restore transaction.
-   * Combined with `maxRestoreFeePerBatch` to size batches. Defaults to `0`.
+   * Maximum fee budget in stroops for a single restore batch.
+   * When set, batching stops adding entries once the estimated restore fee
+   * would exceed this budget. The limit is applied alongside `maxRestoreBatchSize`,
+   * with whichever constraint is hit first determining the actual batch boundary.
+   * Requires `dynamicFeeEstimation` to be enabled for accurate fee tracking.
+   * When omitted or undefined, batching uses only `maxRestoreBatchSize`.
    */
-  restoreFeePerKey?: number
-  /**
-   * Maximum fee (stroops) a single restore batch may require. Batches are
-   * split so `keys * restoreFeePerKey` stays within this budget.
-   */
-  maxRestoreFeePerBatch?: number
+  maxRestoreFeeStroops?: string
   /**
    * Enables the in-memory simulation cache. Use `perNetwork` (keyed by network
    * passphrase) to give each network its own capacity/TTL.
@@ -89,6 +94,16 @@ export interface SorobanResurrectConfig {
    * Defaults to the Stellar SDK default when not set.
    */
   timeout?: number
+  /**
+   * Structured logger used throughout the SDK. Any object providing `info`,
+   * `warn`, `error`, and `debug` methods can be used here.
+   */
+  logger?: Logger
+  /**
+   * Legacy callback kept for backwards compatibility.
+   *
+   * Prefer `logger` for new integrations. When both are present, `logger` wins.
+   */
   onLog?: (level: 'info' | 'warn' | 'error', message: string, data?: unknown) => void
   /**
    * When `true`, the SDK attempts to subscribe to transaction status updates
@@ -98,11 +113,12 @@ export interface SorobanResurrectConfig {
    */
   useWebSocket?: boolean
   /**
-   * When `true`, a mismatch between `networkPassphrase` and the passphrase
-   * reported by the RPC server's `getNetwork()` throws a `SorobanResurrectError`
-   * with code `NETWORK_ERROR` instead of only logging a warning.
+   * Network passphrase validation mode:
+   * - `false` or `undefined`: Log warning on mismatch, continue execution
+   * - `'warn'`: Log error-level warning on mismatch, continue execution
+   * - `true`: Throw `NETWORK_ERROR` on mismatch, halt execution
    */
-  strictNetworkValidation?: boolean
+  strictNetworkValidation?: boolean | 'warn'
   /**
    * Delay in milliseconds between polling attempts when waiting for a
    * transaction to reach a terminal status. Defaults to `1000`.
@@ -113,6 +129,68 @@ export interface SorobanResurrectConfig {
    * Defaults to `30`.
    */
   maxPollAttempts?: number
+  /**
+   * When set, caches `extractFootprintFromTransaction` results keyed by the
+   * SHA-256 hash of the transaction XDR.  This avoids redundant XDR parsing
+   * when the same transaction is passed to multiple SDK methods (e.g.
+   * `simulate` and `checkTransaction`).
+   *
+   * Call `invalidateFootprintCache()` / `onLedgerClose()` to flush stale
+   * entries when a new ledger closes.
+   */
+  footprintCache?: FootprintCacheConfig
+  /**
+   * Enables W3C Trace Context (`traceparent` / `tracestate`) header propagation
+   * to Soroban RPC calls. Provide the incoming request headers (or an explicit
+   * parent context) and an optional span exporter to integrate with
+   * OpenTelemetry, Datadog, Jaeger or Zipkin.
+   */
+  tracing?: TracingConfig
+}
+
+/**
+ * A single ledger entry's state transition observed during a simulation diff.
+ */
+export interface LedgerEntryDiff {
+  /** The archived / inspected ledger key. */
+  key: ArchivedKey
+  /** Base64 XDR of the key, for stable identification and logging. */
+  keyBase64: string
+  /** Current on-chain `LedgerEntryData` XDR (base64), when the entry is still live. */
+  before?: string
+  /** Expected `LedgerEntryData` XDR (base64) after a restore, when known. */
+  after?: string
+  /**
+   * - `live`     — entry is present and not archived; no restore needed
+   * - `archived` — entry is archived and would be restored by the SDK
+   * - `restored` — entry was archived and a restore transaction was built for it
+   */
+  status: 'live' | 'archived' | 'restored'
+}
+
+export interface TtlChange {
+  /** Base64 XDR of the ledger key whose TTL changes. */
+  key: string
+  /** Current `liveUntilLedgerSeq`, or `0` when the entry is archived. */
+  oldTTL: number
+  /** Projected `liveUntilLedgerSeq` after restoration. */
+  newTTL: number
+}
+
+/**
+ * Before/after report of ledger-entry state produced by
+ * `SorobanResurrect.simulateDiff()`. Useful for debugging which entries are
+ * being restored and how their state / TTL changes.
+ */
+export interface SimulationDiff {
+  entries: LedgerEntryDiff[]
+  /** Sum of the byte size of every archived entry that would be restored. */
+  totalBytesRestored: number
+  ttlChanges: TtlChange[]
+  /** Ledger sequence the simulation was evaluated against, when reported by the RPC. */
+  latestLedger?: number
+  /** Whether any entry in the footprint needs restoration. */
+  needsRestoration: boolean
 }
 
 /**
@@ -154,6 +232,12 @@ export interface ContractKeyGroup {
 
 export interface SimulationCheckResult {
   needsRestoration: boolean
+  /**
+   * Keys detected as archived.  Classification (keyType, sacKeyType,
+   * restorePriority) is deferred — call `classifyDeferredKeys()` from
+   * `footprint-parser` to resolve them into full `ArchivedKey` objects
+   * before batch building.
+   */
   archivedKeys: ArchivedKey[]
   totalKeysInFootprint: number
 }
@@ -162,6 +246,52 @@ export interface RestoreTransactionResult {
   transactionXDR: string
   keysRestored: number
 }
+
+export interface RestoreBatchResult {
+  batchIndex: number
+  transactionXDR: string
+  keysRestored: number
+  status: 'pending' | 'success' | 'failed'
+  txHash?: string
+  error?: string
+}
+
+export interface RestoreAllBatchesResult {
+  success: boolean
+  batches: RestoreBatchResult[]
+  totalKeysRestored: number
+  failedAtBatchIndex?: number
+  error?: string
+  /**
+   * True when the failing batch was accepted by the network but its outcome
+   * could not be confirmed (for example a confirmation timeout). The batch may
+   * have landed, so callers must not treat the failure as a clean rejection.
+   */
+  ambiguous?: boolean
+}
+
+/**
+ * JSON-serializable record of a multi-batch restore. Persist it after
+ * `executeRestoreBatches` (or a failed run) and pass it to
+ * `resumeRestoreBatches` to submit only the batches that never succeeded.
+ */
+export interface RestoreExecutionReceipt {
+  version: 1
+  sourceAccountID: string
+  batches: RestoreBatchResult[]
+}
+
+export interface ConcurrentRestoreResult {
+  success: boolean
+  batches: RestoreBatchResult[]
+  totalKeysRestored: number
+  failedBatchCount?: number
+  failedBatchIndices?: number[]
+  error?: string
+  concurrencyUsed?: number
+}
+
+export type { RpcEndpointHealth } from '@soroban-resurrect/types'
 
 export interface FeeBumpMetadata {
   isFeeBump: boolean
@@ -179,6 +309,39 @@ export interface ExecutionResult {
   error?: string
   batchResults?: RestoreAllBatchesResult
   concurrentBatchResults?: ConcurrentRestoreResult
+  /**
+   * Index of the first batch that failed during a multi-batch restore (0-based).
+   * Populated when a restore fails partway through; undefined on full success.
+   */
+  failedBatchIndex?: number
+  /**
+   * Number of entries that were successfully restored before the failure.
+   * Differs from `entriesRestored` when a partial failure occurred.
+   */
+  partialEntriesRestored?: number
+}
+
+/**
+ * Captured state from a partially-failed multi-batch restore, returned by
+ * `getFailedKeys()` and consumed by `retryFailedRestore()`.
+ */
+export interface FailedRestoreState {
+  /** The source account that was used for the original restore attempt. */
+  sourceAccountID: string
+  /**
+   * Batches that were not successfully submitted (status !== 'success').
+   * These are the exact `RestoreBatchResult` objects that need to be retried.
+   */
+  failedBatches: RestoreBatchResult[]
+  /**
+   * Keys that remain unrestored — flattened from all failed batches.
+   * Useful for reporting and logging purposes.
+   */
+  failedKeys: ArchivedKey[]
+  /** Zero-based index of the first batch that failed. */
+  failedBatchIndex: number
+  /** Number of entries that were successfully restored before the failure. */
+  partialEntriesRestored: number
 }
 
 export interface PreFlightConfig {
@@ -198,6 +361,10 @@ export interface SorobanResurrectErrorContext {
   txHash?: string
   /** Archived ledger-key details that triggered the failure, when available. */
   archivedKeys?: Array<{ keyBase64: string; keyType: string; contractId?: string }>
+  /** Number of attempts made before exhausting retries. */
+  attempts?: number
+  /** The final underlying error that caused retry exhaustion. */
+  lastError?: unknown
 }
 
 export class SorobanResurrectError extends Error {
@@ -207,6 +374,10 @@ export class SorobanResurrectError extends Error {
   public txHash?: string
   /** Archived key details when detection/restore fails. */
   public archivedKeys?: Array<{ keyBase64: string; keyType: string; contractId?: string }>
+  /** Number of retry attempts made before exhaustion. */
+  public attempts?: number
+  /** The final underlying error from the last retry attempt. */
+  public lastError?: unknown
 
   constructor(
     message: string,
@@ -220,6 +391,8 @@ export class SorobanResurrectError extends Error {
       this.rpcUrl = context.rpcUrl
       this.txHash = context.txHash
       this.archivedKeys = context.archivedKeys
+      this.attempts = context.attempts
+      this.lastError = context.lastError
     }
   }
 }
@@ -240,4 +413,24 @@ export interface SorobanResurrectEvents {
   'original:complete': (hash: string) => void
   /** Fired whenever a SorobanResurrectError is thrown during execution. */
   'error': (error: SorobanResurrectError) => void
+}
+
+/**
+ * True when a transaction was accepted by the network (it has a hash) but its
+ * final outcome could not be confirmed, such as a confirmation timeout. The
+ * transaction may still have landed, so it is not safe to assume it failed.
+ */
+export function isAmbiguousSubmissionError(err: unknown): boolean {
+  return err instanceof SorobanResurrectError && err.code === 'NETWORK_ERROR' && typeof err.txHash === 'string'
+}
+
+/**
+ * True when the network rejected a submission before applying it because the
+ * sequence number was stale (`txBadSeq`) or the transaction was too late
+ * (`txTooLate`). Such a transaction did not land, so its batch can be rebuilt
+ * with a fresh sequence number safely.
+ */
+export function isStaleSequenceError(err: unknown): boolean {
+  if (!(err instanceof SorobanResurrectError) || err.code !== 'ORIGINAL_TX_FAILED') return false
+  return /result=(txBadSeq|txTooLate)\b/.test(err.message)
 }

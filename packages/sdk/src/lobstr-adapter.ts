@@ -2,6 +2,8 @@
  * Lobstr Wallet Adapter
  *
  * Integrates the Lobstr browser extension via `lobstr-wallet-sdk`.
+ *
+ * @deprecated use @soroban-resurrect/wallet-adapters
  */
 
 import type { SorobanWalletAdapter, SignTransactionOptions, WalletConnectionResult } from './wallet-adapter.js'
@@ -20,6 +22,9 @@ interface LobstrModule {
   default: new () => LobstrClient
 }
 
+/**
+ * @deprecated use @soroban-resurrect/wallet-adapters
+ */
 export class LobstrAdapter implements SorobanWalletAdapter {
   readonly id = 'lobstr'
   readonly name = 'Lobstr'

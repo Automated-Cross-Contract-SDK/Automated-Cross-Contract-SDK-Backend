@@ -1,6 +1,6 @@
 import { describe, it, expect, bench } from 'vitest'
-import { SimulationCache, resolveSimulationCacheConfig } from '../../src/simulation-cache.js'
-import type { SimulationCheckResult } from '../../src/types.js'
+import { SimulationCache, resolveSimulationCacheConfig } from '@soroban-resurrect/rpc'
+import type { SimulationCheckResult } from '@soroban-resurrect/types'
 
 const NETWORKS = ['Test SDF Network ; September 2015', 'Public Global Stellar Network ; September 2015']
 const ACCOUNTS = Array.from({ length: 20 }, (_, i) => `G${i.toString().padStart(55, 'A')}`)

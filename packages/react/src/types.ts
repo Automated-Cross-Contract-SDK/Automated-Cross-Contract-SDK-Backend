@@ -38,6 +38,17 @@ export interface TransactionRecord {
   durationMs: number
 }
 
+/**
+ * Progress state for a restore operation, tracked by useSorobanResurrect.
+ */
+export interface RestoreProgress {
+  status: 'idle' | 'checking' | 'restoring' | 'complete' | 'error'
+  currentBatch: number
+  totalBatches: number
+  keysRestored: number
+  totalKeys: number
+}
+
 export interface UseSorobanResurrectOptions<TSigner extends SigningStrategy = SigningStrategy> {
   rpcUrl: string
   networkPassphrase: string
@@ -59,12 +70,6 @@ export interface UseSorobanResurrectOptions<TSigner extends SigningStrategy = Si
    * Pass `true` to use the default key, a string for a custom key, or omit/false to disable.
    */
   persistHistory?: boolean | string
-  /**
-   * Maximum number of transaction records kept in `history` (oldest dropped
-   * first). Bounds memory for long-lived components. Defaults to `100`;
-   * pass `Infinity` to keep everything.
-   */
-  maxHistorySize?: number
 }
 
 export interface UseSorobanResurrectReturn<TSigner extends SigningStrategy = SigningStrategy> {

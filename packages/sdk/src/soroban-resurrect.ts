@@ -7,6 +7,7 @@ import {
   xdr,
   SorobanDataBuilder,
   BASE_FEE,
+  Keypair,
 } from '@stellar/stellar-sdk'
 import {
   ArchivedKey,
@@ -15,27 +16,56 @@ import {
   RestoreTransactionResult,
   RestoreBatchResult,
   RestoreAllBatchesResult,
+  RestoreExecutionReceipt,
   ConcurrentRestoreResult,
   ContractKeyGroup,
   ExecutionResult,
+  FailedRestoreState,
   SorobanResurrectError,
+  isAmbiguousSubmissionError,
+  isStaleSequenceError,
   FeeBumpMetadata,
+  SorobanResurrectEvents,
+  WsTransactionStatusEvent,
+  TransactionWaitResult,
+  SimulationDiff,
+  LedgerEntryDiff,
+  TtlChange,
 } from './types.js'
+import { NOOP_LOGGER, onLogToLogger, type Logger } from './logger.js'
+import { EventDeduplicator } from './event-deduplicator.js'
 import {
   FootprintKeys,
   extractKeysFromFootprint,
-  classifyLedgerKey,
+  extractFootprintFromTransaction,
+  classifyDeferredKeys,
   encodeLedgerKey,
 } from './footprint-parser.js'
-import { ExponentialBackoff, type RetryPolicy } from './retry-policy.js'
-import { SimulationCache, resolveSimulationCacheConfig, type SimulationCacheConfig } from './simulation-cache.js'
-import { planRestoreBatches } from './restore-batch-planner.js'
+import { ExponentialBackoff, type RetryPolicy } from '@soroban-resurrect/rpc'
+import { SimulationCache, resolveSimulationCacheConfig, type SimulationCacheConfig } from '@soroban-resurrect/rpc'
+import { RpcFailoverManager, type RpcEndpointHealth } from '@soroban-resurrect/rpc'
+import { FootprintCache, type FootprintCacheStatistics } from '@soroban-resurrect/rpc'
+import { Tracer } from './tracing.js'
+import { DEFAULT_MAX_CONCURRENCY, MAX_RETRIES, RESTORED_ENTRY_TTL_LEDGERS, TRANSACTION_STATUS } from '@soroban-resurrect/utils'
 
 const MAX_XDR_SIZE_BYTES = 100_000
 const DEFAULT_RESTORE_FEE = '100000'
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/**
+ * Reads the result code (for example `txBadSeq`) from a failed submission's
+ * `errorResultXdr`. Returns `unknown` when it cannot be decoded.
+ */
+function decodeSubmissionResultCode(errorResultXdr: string | undefined): string {
+  if (!errorResultXdr) return 'unknown'
+  try {
+    return xdr.TransactionResult.fromXDR(errorResultXdr, 'base64').result().switch().name
+  } catch {
+    return 'unknown'
+  }
 }
 
 function isFeeBumpTx(tx: ReturnType<typeof TransactionBuilder.fromXDR>): tx is ReturnType<typeof TransactionBuilder.fromXDR> & { innerTransaction: any } {
@@ -75,28 +105,55 @@ const MAX_SERVER_CACHE_SIZE = 16
 
 export class SorobanResurrect {
   private server: SorobanRpc.Server
-  private simulationCache?: SimulationCache
+  private config: Required<Omit<SorobanResurrectConfig, 'timeout' | 'logger' | 'onLog'>> & {
+    timeout?: number
+    logger: Logger
+    onLog?: (level: 'info' | 'warn' | 'error', message: string, data?: unknown) => void
+  }
+  private listeners: Record<string, Set<any>> = {}
+  private failoverManager!: RpcFailoverManager
   private serverCache: Map<string, SorobanRpc.Server> = new Map()
-  /** Only enforced when the caller sets `maxRestoreBatchSize` explicitly (backward compatible). */
-  private readonly explicitMaxRestoreBatchSize?: number
-  private config: Required<Omit<SorobanResurrectConfig, 'timeout'>> & { timeout?: number }
+  private simulationCache?: SimulationCache
+  private tracer?: Tracer
+  private footprintCache?: FootprintCache
+  /** Trace-propagation headers for the RPC call currently in flight. */
+  private activeTraceHeaders: Record<string, string> = {}
+  private _lastFailedRestoreState: FailedRestoreState | null = null
+  /** In-flight submissions keyed by unsigned transaction XDR (see #513). */
+  private inFlightSubmissions: Map<string, Promise<string>> = new Map()
+
+  private readonly startedAt = Date.now()
+  private networkPassphraseValid = true
+  private lastRestoreSuccess = false
+  private lastRestoreTimestamp?: number
+  private telemetry?: TelemetryReporter
+  private alertManager?: AlertManager
+
+  private _events$!: Observable<SorobanResurrectEvents[keyof SorobanResurrectEvents]>
+  private _state$!: Observable<'idle' | 'restoring' | 'original' | 'complete' | 'error'>
+  private _progress$!: Observable<{ batchIndex: number; totalBatches: number }>
 
   constructor(config: SorobanResurrectConfig) {
+    const legacyOnLog = config.onLog
+    const resolvedLogger = config.logger ?? (legacyOnLog ? onLogToLogger(legacyOnLog) : NOOP_LOGGER)
+
     this.config = {
       allowHttp: false,
       restoreFee: DEFAULT_RESTORE_FEE,
       maxRestoreBatchSize: 50,
       simulateOnly: false,
       retryPolicy: new ExponentialBackoff(3, 500),
-      onLog: () => {},
+      logger: resolvedLogger,
+      onLog: legacyOnLog,
       useWebSocket: false,
       pollIntervalMs: 1000,
       maxPollAttempts: 30,
-      restoreFeePerKey: 0,
-      maxRestoreFeePerBatch: Infinity,
+      debug: false,
       ...config,
     }
-    this.explicitMaxRestoreBatchSize = config.maxRestoreBatchSize
+
+    this.config.logger = this.config.logger ?? resolvedLogger
+    this.config.onLog = this.config.onLog ?? legacyOnLog
 
     const serverOptions: SorobanRpc.Server.Options = {
       allowHttp: this.config.allowHttp,
@@ -105,7 +162,27 @@ export class SorobanResurrect {
       serverOptions.timeout = this.config.timeout
     }
 
-    this.server = new SorobanRpc.Server(this.config.rpcUrl, serverOptions)
+    this.server = new SorobanRpc.Server(
+      Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl,
+      serverOptions,
+    )
+
+    this.failoverManager = new RpcFailoverManager(
+      Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl : [this.config.rpcUrl],
+    )
+
+    // Initialize ledger event deduplicator (2-second window for duplicate suppression)
+    this.ledgerEventDeduplicator = new EventDeduplicator({ windowMs: 2000 })
+
+    // Initialize footprint cache when configured
+    if (this.config.footprintCache) {
+      this.footprintCache = new FootprintCache(this.config.footprintCache)
+    }
+
+    // Initialize distributed tracing when configured
+    if (this.config.tracing) {
+      this.tracer = new Tracer(this.config.tracing)
+    }
 
     if (config.simulationCache) {
       const cacheConfig = resolveSimulationCacheConfig(config.simulationCache, config.networkPassphrase)
@@ -120,27 +197,149 @@ export class SorobanResurrect {
   /**
    * Confirms the configured `networkPassphrase` matches what the RPC server
    * reports via `getNetwork()`. Runs fire-and-forget from the constructor:
-   * mismatches are logged as a warning, or thrown as a `NETWORK_ERROR` when
-   * `strictNetworkValidation` is enabled.
+   * mismatches are logged as a warning, logged as error in 'warn' mode, or
+   * thrown as a `NETWORK_ERROR` when `strictNetworkValidation` is `true`.
    */
   private async validateNetworkPassphrase(): Promise<void> {
     try {
       const network = await this.server.getNetwork()
       if (network.passphrase !== this.config.networkPassphrase) {
+        this.networkPassphraseValid = false
         const rpcUrl = Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl
-        const message = `Network passphrase mismatch: configured "${this.config.networkPassphrase}" but RPC server reports "${network.passphrase}"`
-        if (this.config.strictNetworkValidation) {
+        const message = `Network passphrase mismatch: configured "${this.config.networkPassphrase}" but RPC server reports "${network.passphrase}". Fix: set networkPassphrase to match the RPC endpoint (e.g. Networks.TESTNET / Networks.PUBLIC) or point rpcUrl at the correct network.`
+        if (this.config.strictNetworkValidation === true) {
           throw new SorobanResurrectError(message, 'NETWORK_ERROR', undefined, { rpcUrl })
         }
-        this.config.onLog('warn', message)
+        this.logger.warn(message, { rpcUrl })
       }
     } catch (err) {
       if (err instanceof SorobanResurrectError) {
-        this.config.onLog('error', err.message)
+        this.logger.error(err.message, { code: err.code })
         throw err
       }
-      this.config.onLog('warn', `Failed to validate network passphrase: ${err instanceof Error ? err.message : String(err)}`)
+      this.logger.warn(
+        `Failed to validate network passphrase: ${err instanceof Error ? err.message : String(err)}`,
+      )
     }
+  }
+
+  /**
+   * Initialize RxJS Observables by wrapping the internal event listener system.
+   * Observables are created on-demand and adapt the existing callback-based lifecycle.
+   */
+  private initializeObservables(): void {
+    this._events$ = new Observable((subscriber) => {
+      const handlers: Partial<Record<keyof SorobanResurrectEvents, any>> = {
+        'restore:start': (keys: ArchivedKey[]) => subscriber.next({ event: 'restore:start', keys }),
+        'restore:batch:complete': (batchIndex: number, totalBatches: number) =>
+          subscriber.next({ event: 'restore:batch:complete', batchIndex, totalBatches }),
+        'restore:complete': (result: RestoreTransactionResult) => subscriber.next({ event: 'restore:complete', result }),
+        'original:start': () => subscriber.next({ event: 'original:start' }),
+        'original:complete': (hash: string) => subscriber.next({ event: 'original:complete', hash }),
+        'error': (error: SorobanResurrectError) => subscriber.next({ event: 'error', error }),
+      }
+
+      Object.entries(handlers).forEach(([eventKey, handler]) => {
+        this.on(eventKey as keyof SorobanResurrectEvents, handler)
+      })
+
+      return () => {
+        Object.entries(handlers).forEach(([eventKey, handler]) => {
+          this.off(eventKey as keyof SorobanResurrectEvents, handler)
+        })
+      }
+    })
+
+    let currentState: 'idle' | 'restoring' | 'original' | 'complete' | 'error' = 'idle'
+    this._state$ = new Observable((subscriber) => {
+      subscriber.next(currentState)
+
+      const onRestoreStart = () => {
+        currentState = 'restoring'
+        subscriber.next(currentState)
+      }
+      const onRestoreComplete = () => {
+        currentState = 'original'
+        subscriber.next(currentState)
+      }
+      const onOriginalComplete = () => {
+        currentState = 'complete'
+        subscriber.next(currentState)
+      }
+      const onError = () => {
+        currentState = 'error'
+        subscriber.next(currentState)
+      }
+
+      this.on('restore:start', onRestoreStart)
+      this.on('restore:complete', onRestoreComplete)
+      this.on('original:complete', onOriginalComplete)
+      this.on('error', onError)
+
+      return () => {
+        this.off('restore:start', onRestoreStart)
+        this.off('restore:complete', onRestoreComplete)
+        this.off('original:complete', onOriginalComplete)
+        this.off('error', onError)
+      }
+    })
+
+    this._progress$ = new Observable((subscriber) => {
+      const onBatchComplete = (batchIndex: number, totalBatches: number) => {
+        subscriber.next({ batchIndex, totalBatches })
+      }
+
+      this.on('restore:batch:complete', onBatchComplete)
+
+      return () => {
+        this.off('restore:batch:complete', onBatchComplete)
+      }
+    })
+  }
+
+  /**
+   * Observable stream of all restoration lifecycle events.
+   * Subscribing to this stream taps into the underlying event listener system;
+   * unsubscribing automatically cleans up the listener registration.
+   *
+   * Example:
+   * ```
+   * sdk.events$.pipe(
+   *   filter(evt => evt.event === 'restore:complete'),
+   *   map(evt => evt.result.entriesRestored)
+   * ).subscribe(count => console.log(`Restored ${count} entries`))
+   * ```
+   */
+  get events$(): Observable<any> {
+    return this._events$
+  }
+
+  /**
+   * Observable stream of the restoration lifecycle state.
+   * Emits one of: 'idle' | 'restoring' | 'original' | 'complete' | 'error'.
+   *
+   * Example:
+   * ```
+   * sdk.state$.subscribe(state => console.log(`Current state: ${state}`))
+   * ```
+   */
+  get state$(): Observable<'idle' | 'restoring' | 'original' | 'complete' | 'error'> {
+    return this._state$
+  }
+
+  /**
+   * Observable stream of restoration progress (batch completion events).
+   * Emits `{ batchIndex, totalBatches }` for each completed restore batch.
+   *
+   * Example:
+   * ```
+   * sdk.progress$.pipe(
+   *   map(p => Math.round((p.batchIndex / p.totalBatches) * 100))
+   * ).subscribe(pct => console.log(`${pct}% complete`))
+   * ```
+   */
+  get progress$(): Observable<{ batchIndex: number; totalBatches: number }> {
+    return this._progress$
   }
 
   /**
@@ -175,8 +374,48 @@ export class SorobanResurrect {
     }
   }
 
-  private log(level: 'info' | 'warn' | 'error', message: string, data?: unknown): void {
-    this.config.onLog(level, message, data)
+  private get logger(): Logger {
+    return this.config.logger ?? NOOP_LOGGER
+  }
+
+  private log(level: 'info' | 'warn' | 'error' | 'debug', message: string, meta?: Record<string, unknown>): void {
+    this.logger[level](message, meta)
+  }
+
+  /**
+   * Emits a verbose `debug`-level log through `onLog`, but only when the
+   * `debug` config option is enabled. Callers may pass a lazy `data` factory
+   * to avoid building expensive payloads when debugging is off.
+   */
+  private debug(message: string, data?: unknown | (() => unknown)): void {
+    if (!this.config.debug) return
+    this.log('debug', message, typeof data === 'function' ? (data as () => unknown)() : data)
+  }
+
+  /**
+   * Records the outcome of a restoration attempt for {@link getHealth} and
+   * feeds the configured telemetry reporter and alert manager.
+   */
+  private recordRestoreOutcome(
+    success: boolean,
+    latencyMs: number,
+    keys: ArchivedKey[],
+    batchSizes: number[],
+  ): void {
+    this.lastRestoreSuccess = success
+    this.lastRestoreTimestamp = Date.now()
+
+    this.alertManager?.recordRestore(success, latencyMs)
+
+    if (this.telemetry) {
+      const contractIds = [...new Set(keys.map(k => k.contractId).filter((id): id is string => !!id))]
+      void this.telemetry.report({
+        contractIdHashes: contractIds.map(hashContractId),
+        keyCount: keys.length,
+        batchSizes,
+        outcome: success ? 'success' : 'failure',
+      })
+    }
   }
 
   /**
@@ -185,6 +424,18 @@ export class SorobanResurrect {
    */
   private getServer(url?: string): SorobanRpc.Server {
     const targetUrl = url ?? this.failoverManager.getCurrentUrl()
+
+    // When a trace span is in flight, build an un-cached server that carries the
+    // current `traceparent` / `tracestate` headers so the RPC call is linked to
+    // the active span end-to-end.
+    const traceHeaders = this.activeTraceHeaders
+    if (this.tracer?.enabled && Object.keys(traceHeaders).length > 0) {
+      return new SorobanRpc.Server(targetUrl, {
+        allowHttp: this.config.allowHttp,
+        headers: traceHeaders,
+      } as SorobanRpc.Server.Options)
+    }
+
     let server = this.serverCache.get(targetUrl)
     if (!server) {
       server = new SorobanRpc.Server(targetUrl, { allowHttp: this.config.allowHttp })
@@ -198,16 +449,47 @@ export class SorobanResurrect {
   }
 
   private async retryOnFailure<T>(fn: () => Promise<T>, context: string): Promise<T> {
+    if (this.tracer?.enabled) {
+      const span = this.tracer.startSpan(`soroban.rpc ${context}`, {
+        'rpc.system': 'soroban',
+        'rpc.method': context,
+        'server.address': this.failoverManager.getCurrentUrl(),
+      })
+      const previousHeaders = this.activeTraceHeaders
+      this.activeTraceHeaders = span.headers()
+      try {
+        const result = await this.retryLoop(fn, context, span)
+        span.end('ok')
+        return result
+      } catch (err) {
+        span.end('error', err)
+        throw err
+      } finally {
+        this.activeTraceHeaders = previousHeaders
+      }
+    }
+    return this.retryLoop(fn, context)
+  }
+
+  private async retryLoop<T>(
+    fn: () => Promise<T>,
+    context: string,
+    span?: { setAttribute: (k: string, v: string | number | boolean) => void },
+  ): Promise<T> {
     let lastError: SorobanResurrectError | undefined
     const policy = this.config.retryPolicy
 
     for (let attempt = 1; attempt <= policy.maxRetries + 1; attempt++) {
+      const startedAt = Date.now()
       try {
+        span?.setAttribute('rpc.attempts', attempt)
         const result = await fn()
         // Reset circuit breaker on success
         if (policy.reset) {
           policy.reset()
         }
+        this.debug(`RPC ${context} succeeded in ${Date.now() - startedAt}ms (attempt ${attempt})`)
+        this.alertManager?.recordRpcCall(true)
         return result
       } catch (err) {
         const sorobanErr = err instanceof SorobanResurrectError
@@ -215,6 +497,8 @@ export class SorobanResurrect {
           : new SorobanResurrectError(String(err), 'NETWORK_ERROR', err)
 
         lastError = sorobanErr
+        this.debug(`RPC ${context} failed in ${Date.now() - startedAt}ms (attempt ${attempt}): ${sorobanErr.message}`, () => sorobanErr.stack)
+        this.alertManager?.recordRpcCall(false)
 
         if (attempt <= policy.maxRetries && policy.shouldRetry(sorobanErr, attempt)) {
           const delayMs = policy.getDelay(attempt)
@@ -224,57 +508,66 @@ export class SorobanResurrect {
           )
           await delay(delayMs)
         } else {
+          // Enhance error with retry context on exhaustion
+          sorobanErr.attempts = attempt
+          sorobanErr.lastError = lastError?.cause ?? lastError
           throw sorobanErr
         }
       }
     }
     throw new SorobanResurrectError(
-      `Operation failed after ${MAX_RETRIES} retries: ${context}`,
+      `Operation failed after ${MAX_RETRIES} retries: ${context}. Fix: check the RPC endpoint is reachable, or configure additional rpcUrl fallbacks.`,
       'NETWORK_ERROR',
       lastError,
-      { rpcUrl: this.config.rpcUrl },
+      {
+        rpcUrl: this.config.rpcUrl,
+        attempts: policy.maxRetries + 1,
+        lastError: lastError?.cause ?? lastError,
+      },
     )
   }
 
   async simulate(txXDR: string, source?: string): Promise<SimulationCheckResult> {
-    // Check cache first if enabled
-    if (this.simulationCache) {
-      const cacheKey = SimulationCache.generateKey(txXDR, source)
-      const cachedResult = this.simulationCache.get(cacheKey)
-      if (cachedResult) {
-        this.log('info', 'Simulation result retrieved from cache')
-        return cachedResult
+    return this.telemetry.trace('simulate', { 'rpc.url': Array.isArray(this.config.rpcUrl) ? this.config.rpcUrl[0] : this.config.rpcUrl }, async (span) => {
+      // Check cache first if enabled
+      if (this.simulationCache) {
+        const cacheKey = SimulationCache.generateKey(txXDR, source)
+        const cachedResult = this.simulationCache.get(cacheKey)
+        if (cachedResult) {
+          this.log('debug', 'Simulation result retrieved from cache')
+          span.setAttribute('cache.hit', true)
+          return cachedResult
+        }
       }
-    }
 
-    let tx: ReturnType<typeof TransactionBuilder.fromXDR>
-    try {
-      tx = TransactionBuilder.fromXDR(txXDR, this.config.networkPassphrase)
-    } catch (err) {
-      throw new SorobanResurrectError(
-        'Invalid transaction XDR',
-        'INVALID_XDR',
-        err,
-        { rpcUrl: this.config.rpcUrl },
-      )
-    }
+      let tx: ReturnType<typeof TransactionBuilder.fromXDR>
+      try {
+        tx = TransactionBuilder.fromXDR(txXDR, this.config.networkPassphrase)
+      } catch (err) {
+        throw new SorobanResurrectError(
+          'Invalid transaction XDR. Fix: pass a base64-encoded transaction envelope built for the configured networkPassphrase.',
+          'INVALID_XDR',
+          err,
+          { rpcUrl: this.config.rpcUrl },
+        )
+      }
 
-    let innerTx = tx
-    let feeBumpMetadata: FeeBumpMetadata = { isFeeBump: false }
+      let innerTx = tx
+      let feeBumpMetadata: FeeBumpMetadata = { isFeeBump: false }
 
-    if (isFeeBumpTx(tx)) {
-      throw new SorobanResurrectError(
-        'Fee bump transactions are not supported',
-        'INVALID_XDR',
-        undefined,
-        { rpcUrl: this.config.rpcUrl },
-      )
-    }
+      if (isFeeBumpTx(tx)) {
+        throw new SorobanResurrectError(
+          'Fee bump transactions are not supported. Fix: pass the inner transaction and apply the fee bump after restoration.',
+          'INVALID_XDR',
+          undefined,
+          { rpcUrl: this.config.rpcUrl },
+        )
+      }
 
     let simResult: SorobanRpc.Api.SimulateTransactionResponse
     try {
       simResult = await this.retryOnFailure(
-        () => this.server.simulateTransaction(innerTx as any),
+        () => this.getServer().simulateTransaction(innerTx as any),
         'simulateTransaction',
       )
     } catch (err) {
@@ -287,42 +580,48 @@ export class SorobanResurrect {
       )
     }
 
-    if (SorobanRpc.Api.isSimulationError(simResult)) {
-      throw new SorobanResurrectError(
-        `Simulation error (rpcUrl=${this.config.rpcUrl}): ${simResult.error}`,
-        'SIMULATION_FAILED',
-        simResult,
-        { rpcUrl: this.config.rpcUrl },
-      )
-    }
-
-    let footprint: xdr.LedgerFootprint | null = null
-
-    if (SorobanRpc.Api.isSimulationSuccess(simResult)) {
-      footprint = simResult.transactionData.getFootprint()
-    }
-
-    if (!footprint) {
-      const sorobanData = (innerTx as any).sorobanData as xdr.SorobanTransactionData | undefined
-      if (sorobanData) {
-        footprint = sorobanData.resources().footprint()
+      if (SorobanRpc.Api.isSimulationError(simResult)) {
+        this.sdkMetrics?.recordRpcError('simulation')
+        throw new SorobanResurrectError(
+          `Simulation error (rpcUrl=${this.config.rpcUrl}): ${simResult.error}. Fix: verify the contract ID, function arguments and source account, then retry.`,
+          'SIMULATION_FAILED',
+          simResult,
+          { rpcUrl: this.config.rpcUrl },
+        )
       }
-    }
 
-    if (!footprint) {
-      return { needsRestoration: false, archivedKeys: [], totalKeysInFootprint: 0 }
-    }
+      let footprint: xdr.LedgerFootprint | null = null
 
-    const keys = extractKeysFromFootprint(footprint)
-    const result = await this.detectArchivedKeys(keys, source)
+      if (SorobanRpc.Api.isSimulationSuccess(simResult)) {
+        footprint = simResult.transactionData.getFootprint()
+      }
 
-    // Cache the result if caching is enabled
-    if (this.simulationCache) {
-      const cacheKey = SimulationCache.generateKey(txXDR, source)
-      this.simulationCache.set(cacheKey, result)
-    }
+      if (!footprint) {
+        const sorobanData = (innerTx as any).sorobanData as xdr.SorobanTransactionData | undefined
+        if (sorobanData) {
+          footprint = sorobanData.resources().footprint()
+        }
+      }
 
-    return result
+      if (!footprint) {
+        span.setAttribute('key.count', 0)
+        return { needsRestoration: false, archivedKeys: [], totalKeysInFootprint: 0 }
+      }
+
+      const keys = extractKeysFromFootprint(footprint)
+      const result = await this.detectArchivedKeys(keys, source)
+
+      span.setAttribute('key.count', result.totalKeysInFootprint)
+      span.setAttribute('success', result.needsRestoration ? 'needs_restore' : 'ok')
+
+      // Cache the result if caching is enabled
+      if (this.simulationCache) {
+        const cacheKey = SimulationCache.generateKey(txXDR, source)
+        this.simulationCache.set(cacheKey, result)
+      }
+
+      return result
+    })
   }
 
   private async detectArchivedKeys(
@@ -333,59 +632,217 @@ export class SorobanResurrect {
       return { needsRestoration: false, archivedKeys: [], totalKeysInFootprint: 0 }
     }
 
-    let existingKeys: SorobanRpc.Api.GetLedgerEntriesResponse
-    try {
-      existingKeys = await this.retryOnFailure(
-        () => this.getServer().getLedgerEntries(...keys.all),
-        'getLedgerEntries',
-      )
-    } catch (err) {
-      // Build key context for richer error
-      const keyContext = keys.all.map(k => {
-        const classification = classifyLedgerKey(k)
-        return { keyBase64: encodeLedgerKey(k), ...classification }
-      })
-      throw new SorobanResurrectError(
-        `Failed to query ${keys.all.length} ledger entries (rpcUrl=${this.config.rpcUrl}): ${err instanceof Error ? err.message : String(err)}`,
-        'ARCHIVE_DETECTION_FAILED',
-        err,
-        { rpcUrl: this.config.rpcUrl, archivedKeys: keyContext },
-      )
-    }
-
-    const existingEntries = new Set<string>()
-    for (const entry of existingKeys.entries) {
-      existingEntries.add(encodeLedgerKey(entry.key))
-    }
-
-    const archivedKeys: ArchivedKey[] = []
-    for (const key of keys.all) {
-      const encoded = encodeLedgerKey(key)
-      if (!existingEntries.has(encoded)) {
-        const classification = classifyLedgerKey(key)
-        archivedKeys.push({
-          key,
-          keyBase64: encoded,
-          ...classification,
-        })
+    return this.telemetry.trace('detect-archived', { 'key.count': keys.all.length }, async (span) => {
+      let existingKeys: SorobanRpc.Api.GetLedgerEntriesResponse
+      try {
+        existingKeys = await this.retryOnFailure(
+          () => this.getServer().getLedgerEntries(...keys.all),
+          'getLedgerEntries',
+        )
+      } catch (err) {
+        this.sdkMetrics?.recordRpcError('network')
+        // On error, classify lazily only for the error context
+        const keyContext = keys.all.map(k => ({
+          keyBase64: encodeLedgerKey(k),
+          keyType: 'unknown' as const,
+        }))
+        throw new SorobanResurrectError(
+          `Failed to query ${keys.all.length} ledger entries (rpcUrl=${this.config.rpcUrl}): ${err instanceof Error ? err.message : String(err)}. Fix: check the RPC endpoint is reachable and supports getLedgerEntries.`,
+          'ARCHIVE_DETECTION_FAILED',
+          err,
+          { rpcUrl: this.config.rpcUrl, archivedKeys: keyContext },
+        )
       }
-    }
 
-    // Sort by restorePriority so contractInstance (0) entries come before
-    // contractCode (1) and contractData (2) entries.  This guarantees that a
-    // contract's instance is live before we attempt to restore its data, which
-    // is required by the Soroban VM (issue #48).
-    archivedKeys.sort((a, b) => a.restorePriority - b.restorePriority)
+      const existingEntries = new Set<string>()
+      for (const entry of existingKeys.entries) {
+        existingEntries.add(encodeLedgerKey(entry.key))
+      }
 
-    return {
-      needsRestoration: archivedKeys.length > 0,
-      archivedKeys,
-      totalKeysInFootprint: keys.all.length,
-    }
+      const archivedKeys: ArchivedKey[] = []
+      for (const key of keys.all) {
+        const encoded = encodeLedgerKey(key)
+        if (!existingEntries.has(encoded)) {
+          // Store keys without classification — classification is deferred
+          // until buildRestoreTransaction or the caller explicitly classifies.
+          archivedKeys.push({
+            key,
+            keyBase64: encoded,
+            keyType: 'unknown',
+            restorePriority: 3,
+          })
+        }
+      }
+
+      span.setAttribute('key.count', archivedKeys.length)
+      span.setAttribute('success', archivedKeys.length === 0 ? 'no_archived' : 'archived_detected')
+
+      return {
+        needsRestoration: archivedKeys.length > 0,
+        archivedKeys,
+        totalKeysInFootprint: keys.all.length,
+      }
+    })
   }
 
   async checkTransaction(txXDR: string, source?: string): Promise<SimulationCheckResult> {
     return this.simulate(txXDR, source)
+  }
+
+  /**
+   * Produce a before/after diff of every ledger entry in a transaction's
+   * footprint: which entries are live, which are archived, the on-chain data
+   * that would be restored, the total bytes involved and the projected TTL
+   * change for each restored entry.
+   *
+   * This is a read-only debugging aid — it never submits a transaction.
+   *
+   * @param txXDR   Base64 transaction envelope XDR.
+   * @param source  Optional source account override.
+   * @param options `restoredTtlLedgers` overrides the network's assumed
+   *   `minimumPersistentEntryLifetime` used to project restored TTLs.
+   */
+  async simulateDiff(
+    txXDR: string,
+    source?: string,
+    options?: { restoredTtlLedgers?: number },
+  ): Promise<SimulationDiff> {
+    let tx: ReturnType<typeof TransactionBuilder.fromXDR>
+    try {
+      tx = TransactionBuilder.fromXDR(txXDR, this.config.networkPassphrase)
+    } catch (err) {
+      throw new SorobanResurrectError('Invalid transaction XDR. Fix: pass a base64-encoded transaction envelope built for the configured networkPassphrase.', 'INVALID_XDR', err, {
+        rpcUrl: this.config.rpcUrl,
+      })
+    }
+    if (isFeeBumpTx(tx)) {
+      throw new SorobanResurrectError(
+        'Fee bump transactions are not supported. Fix: pass the inner transaction and apply the fee bump after restoration.',
+        'INVALID_XDR',
+        undefined,
+        { rpcUrl: this.config.rpcUrl },
+      )
+    }
+
+    // Resolve the footprint — prefer the transaction's own Soroban data, fall
+    // back to an RPC simulation when it is not pre-populated.
+    let footprint: xdr.LedgerFootprint | null = null
+    const sorobanData = (tx as any).sorobanData as xdr.SorobanTransactionData | undefined
+    if (sorobanData) {
+      footprint = sorobanData.resources().footprint()
+    }
+    if (!footprint) {
+      const simResult = await this.retryOnFailure(
+        () => this.getServer().simulateTransaction(tx as any),
+        'simulateTransaction(diff)',
+      )
+      if (
+        !SorobanRpc.Api.isSimulationError(simResult) &&
+        SorobanRpc.Api.isSimulationSuccess(simResult)
+      ) {
+        footprint = simResult.transactionData.getFootprint()
+      }
+    }
+
+    if (!footprint) {
+      return {
+        entries: [],
+        totalBytesRestored: 0,
+        ttlChanges: [],
+        needsRestoration: false,
+      }
+    }
+
+    const keys = extractKeysFromFootprint(footprint)
+    if (keys.all.length === 0) {
+      return {
+        entries: [],
+        totalBytesRestored: 0,
+        ttlChanges: [],
+        needsRestoration: false,
+      }
+    }
+
+    const ledgerResponse = await this.retryOnFailure(
+      () => this.getServer().getLedgerEntries(...keys.all),
+      'getLedgerEntries(diff)',
+    )
+    const latestLedger = (ledgerResponse as { latestLedger?: number }).latestLedger
+
+    // Index the returned entries by their base64 key.
+    const onChain = new Map<
+      string,
+      { data?: xdr.LedgerEntryData; liveUntilLedgerSeq?: number }
+    >()
+    for (const entry of ledgerResponse.entries) {
+      onChain.set(encodeLedgerKey(entry.key), {
+        data: (entry as any).val as xdr.LedgerEntryData | undefined,
+        liveUntilLedgerSeq: (entry as any).liveUntilLedgerSeq as number | undefined,
+      })
+    }
+
+    const classified = classifyDeferredKeys(
+      keys.all.map(k => ({ key: k, keyBase64: encodeLedgerKey(k) })),
+    )
+
+    const restoredTtl = options?.restoredTtlLedgers ?? RESTORED_ENTRY_TTL_LEDGERS
+    const projectedTtl =
+      latestLedger !== undefined ? latestLedger + restoredTtl : restoredTtl
+
+    const entries: LedgerEntryDiff[] = []
+    const ttlChanges: TtlChange[] = []
+    let totalBytesRestored = 0
+
+    for (const key of classified) {
+      const record = onChain.get(key.keyBase64)
+      const isLive =
+        record !== undefined &&
+        (record.liveUntilLedgerSeq === undefined ||
+          latestLedger === undefined ||
+          record.liveUntilLedgerSeq >= latestLedger)
+
+      const beforeXdr = record?.data
+        ? Buffer.from(record.data.toXDR()).toString('base64')
+        : undefined
+
+      if (isLive) {
+        entries.push({
+          key,
+          keyBase64: key.keyBase64,
+          before: beforeXdr,
+          after: beforeXdr,
+          status: 'live',
+        })
+        continue
+      }
+
+      // Archived — this entry is part of the restore plan.
+      const entryBytes = record?.data ? record.data.toXDR().length : key.key.toXDR().length
+      totalBytesRestored += entryBytes
+
+      entries.push({
+        key,
+        keyBase64: key.keyBase64,
+        before: beforeXdr,
+        // Restoration does not mutate entry data, only its TTL.
+        after: beforeXdr,
+        status: 'restored',
+      })
+
+      ttlChanges.push({
+        key: key.keyBase64,
+        oldTTL: record?.liveUntilLedgerSeq ?? 0,
+        newTTL: projectedTtl,
+      })
+    }
+
+    return {
+      entries,
+      totalBytesRestored,
+      ttlChanges,
+      latestLedger,
+      needsRestoration: ttlChanges.length > 0,
+    }
   }
 
   async buildRestoreTransaction(
@@ -394,27 +851,35 @@ export class SorobanResurrect {
   ): Promise<RestoreTransactionResult> {
     if (archivedKeys.length === 0) {
       throw new SorobanResurrectError(
-        'No archived keys to restore',
+        'No archived keys to restore. Fix: call detectArchived()/simulate first and pass the archived keys it returns.',
         'INVALID_XDR',
         undefined,
         { rpcUrl: this.config.rpcUrl },
       )
     }
 
-    const batches = this.batchKeys(archivedKeys)
+    return this.telemetry.trace('build-restore', { 'key.count': archivedKeys.length }, async (span) => {
+      // Classify keys on demand before batch building (deferred from simulation)
+      const classified = classifyDeferredKeys(
+        archivedKeys.map(k => ({ key: k.key, keyBase64: k.keyBase64 })),
+      )
 
-    if (batches.length > 1) {
-      this.log('info', `Splitting restore into ${batches.length} batches (${archivedKeys.length} total keys)`)
-    }
+      const batches = this.batchKeys(classified)
+      span.setAttribute('batch.count', batches.length)
 
-    this.emit('restore:start', archivedKeys)
+      if (batches.length > 1) {
+        this.log('info', `Splitting restore into ${batches.length} batches (${archivedKeys.length} total keys)`)
+      }
 
-    const result = await this.buildSingleRestoreTransaction(batches[0], sourceAccountID)
+      this.emit('restore:start', classified)
 
-    this.emit('restore:batch:complete', 0, batches.length)
-    this.emit('restore:complete', result)
+      const result = await this.buildSingleRestoreTransaction(batches[0], sourceAccountID)
 
-    return result
+      this.emit('restore:batch:complete', 0, batches.length)
+      this.emit('restore:complete', result)
+
+      return result
+    })
   }
 
   async buildRestoreTransactionBatches(
@@ -422,10 +887,16 @@ export class SorobanResurrect {
     sourceAccountID: string,
   ): Promise<RestoreBatchResult[]> {
     if (archivedKeys.length === 0) {
-      throw new SorobanResurrectError('No archived keys to restore', 'INVALID_XDR')
+      throw new SorobanResurrectError('No archived keys to restore. Fix: call detectArchived()/simulate first and pass the archived keys it returns.', 'INVALID_XDR')
     }
 
-    const batches = this.batchKeys(archivedKeys)
+    // Classify keys on demand before batch building (deferred from simulation)
+    const classified = classifyDeferredKeys(
+      archivedKeys.map(k => ({ key: k.key, keyBase64: k.keyBase64 })),
+      this.config.restorePriorityMap,
+    )
+
+    const batches = await this.batchKeys(classified)
 
     if (batches.length > 1) {
       this.log(
@@ -436,7 +907,7 @@ export class SorobanResurrect {
 
     // Fetch account once to get initial sequence number
     const sourceAccount = await this.retryOnFailure(
-      () => this.server.getAccount(sourceAccountID),
+      () => this.getServer().getAccount(sourceAccountID),
       `getAccount(${sourceAccountID})`,
     )
 
@@ -457,8 +928,10 @@ export class SorobanResurrect {
 
       const sorobanDataXdr = dataBuilder.build().toXDR('base64') as string
 
+      const fee = await this.estimateRestoreFee(batchKeys.length)
+
       const tx = new TransactionBuilder(batchAccount, {
-        fee: this.config.restoreFee!,
+        fee,
         networkPassphrase: this.config.networkPassphrase,
         sorobanData: sorobanDataXdr,
       })
@@ -466,9 +939,15 @@ export class SorobanResurrect {
         .setTimeout(0)
         .build()
 
+      let transactionXDR = tx.toXDR()
+
+      if (this.config.feeBumpSponsor) {
+        transactionXDR = this.wrapRestoreTransactionInFeeBump(tx, this.config.feeBumpSponsor, fee)
+      }
+
       batchResults.push({
         batchIndex: i,
-        transactionXDR: tx.toXDR(),
+        transactionXDR,
         keysRestored: batchKeys.length,
         status: 'pending',
       })
@@ -482,13 +961,16 @@ export class SorobanResurrect {
   async executeRestoreBatches(
     batches: RestoreBatchResult[],
     signTransaction: (xdr: string) => Promise<string>,
+    sourceAccountID?: string,
   ): Promise<RestoreAllBatchesResult> {
     const results: RestoreBatchResult[] = []
     let totalKeysRestored = 0
+    let queue = batches
+    let sequenceRefreshed = false
 
-    for (let i = 0; i < batches.length; i++) {
-      const batch = batches[i]
-      this.log('info', `Executing restore batch ${i + 1}/${batches.length} (${batch.keysRestored} keys)`)
+    for (let i = 0; i < queue.length; i++) {
+      const batch = queue[i]
+      this.log('info', `Executing restore batch ${i + 1}/${queue.length} (${batch.keysRestored} keys)`)
 
       try {
         const txHash = await this.submitSignedTransaction(batch.transactionXDR, signTransaction)
@@ -501,6 +983,20 @@ export class SorobanResurrect {
         this.log('info', `Batch ${i + 1} confirmed: ${txHash}`)
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err)
+
+        // A stale sequence number or expired transaction was rejected, so it
+        // did not apply. Rebuild this batch and the ones after it with fresh
+        // sequence numbers and retry once. Ambiguous outcomes are not refreshed
+        // because the original transaction may already have landed.
+        if (sourceAccountID && !sequenceRefreshed && isStaleSequenceError(err)) {
+          sequenceRefreshed = true
+          this.log('warn', `Batch ${i + 1} rejected with a stale sequence or expired transaction; refreshing sequence numbers and retrying`)
+          const rebuilt = await this.rebuildRestoreBatches(queue.slice(i), sourceAccountID)
+          queue = [...queue.slice(0, i), ...rebuilt]
+          i--
+          continue
+        }
+
         this.log('error', `Batch ${i + 1} failed: ${errorMsg}`)
 
         results.push({
@@ -509,6 +1005,18 @@ export class SorobanResurrect {
           error: errorMsg,
         })
 
+        // Collect the remaining batches (current + unexecuted) as failed batches
+        const failedBatches = [results[results.length - 1], ...queue.slice(i + 1)]
+
+        // Capture failed state for recovery via getFailedKeys() / retryFailedRestore()
+        this._lastFailedRestoreState = {
+          sourceAccountID: sourceAccountID ?? '',
+          failedBatches,
+          failedKeys: [],  // populated lazily if caller needs individual keys
+          failedBatchIndex: i,
+          partialEntriesRestored: totalKeysRestored,
+        }
+
         // Return early with partial success tracking
         return {
           success: false,
@@ -516,9 +1024,13 @@ export class SorobanResurrect {
           totalKeysRestored,
           failedAtBatchIndex: i,
           error: `Batch ${i + 1} failed: ${errorMsg}`,
+          ambiguous: isAmbiguousSubmissionError(err),
         }
       }
     }
+
+    // All batches succeeded — clear any stale failure state
+    this._lastFailedRestoreState = null
 
     // All batches succeeded
     return {
@@ -649,20 +1161,26 @@ export class SorobanResurrect {
     sourceAccountID: string,
   ): Promise<RestoreBatchResult[]> {
     if (archivedKeys.length === 0) {
-      throw new SorobanResurrectError('No archived keys to restore', 'INVALID_XDR')
+      throw new SorobanResurrectError('No archived keys to restore. Fix: call detectArchived()/simulate first and pass the archived keys it returns.', 'INVALID_XDR')
     }
 
-    const groups = this.groupKeysByContract(archivedKeys)
-    const batches = this.batchKeyGroups(groups)
+    // Classify keys on demand before batch building (deferred from simulation)
+    const classified = classifyDeferredKeys(
+      archivedKeys.map(k => ({ key: k.key, keyBase64: k.keyBase64 })),
+      this.config.restorePriorityMap,
+    )
+
+    const groups = this.groupKeysByContract(classified)
+    const batches = await this.batchKeyGroups(groups)
 
     this.log(
       'info',
-      `Concurrent build: ${archivedKeys.length} keys → ${groups.length} contract groups → ${batches.length} batches`,
+      `Concurrent build: ${classified.length} keys → ${groups.length} contract groups → ${batches.length} batches`,
     )
 
     // Fetch account once for the initial sequence number
     const sourceAccount = await this.retryOnFailure(
-      () => this.server.getAccount(sourceAccountID),
+      () => this.getServer().getAccount(sourceAccountID),
       `getAccount(${sourceAccountID})`,
     )
 
@@ -679,8 +1197,10 @@ export class SorobanResurrect {
       const dataBuilder = new SorobanDataBuilder().setFootprint([], ledgerKeys)
       const sorobanDataXdr = dataBuilder.build().toXDR('base64') as string
 
+      const fee = await this.estimateRestoreFee(batchKeys.length)
+
       const tx = new TransactionBuilder(batchAccount, {
-        fee: this.config.restoreFee!,
+        fee,
         networkPassphrase: this.config.networkPassphrase,
         sorobanData: sorobanDataXdr,
       })
@@ -719,8 +1239,14 @@ export class SorobanResurrect {
   ): Promise<ExecutionResult> {
     const { requireAllBatches = true, concurrency } = options
 
+    // Classify keys on demand before batch building (deferred from simulation)
+    const classified = classifyDeferredKeys(
+      archivedKeys.map(k => ({ key: k.key, keyBase64: k.keyBase64 })),
+      this.config.restorePriorityMap,
+    )
+
     const restoreBatches = await this.buildRestoreTransactionBatchesConcurrent(
-      archivedKeys,
+      classified,
       sourceAccountID,
     )
 
@@ -803,25 +1329,135 @@ export class SorobanResurrect {
    * into multiple sub-batches that will be executed sequentially (since they
    * share a contract).  Sub-batches from different groups remain independent.
    */
-  private batchKeyGroups(groups: ContractKeyGroup[]): ArchivedKey[][] {
+  private async batchKeyGroups(groups: ContractKeyGroup[]): Promise<ArchivedKey[][]> {
     const allBatches: ArchivedKey[][] = []
 
     for (const group of groups) {
       // Split this group's keys by XDR size, just like batchKeys does
-      const subBatches = this.batchKeys(group.keys)
+      const subBatches = await this.batchKeys(group.keys)
       allBatches.push(...subBatches)
     }
 
     return allBatches
   }
 
-  private batchKeys(keys: ArchivedKey[]): ArchivedKey[][] {
-    return planRestoreBatches(keys, {
-      maxXdrBytes: MAX_XDR_SIZE_BYTES,
-      maxKeysPerBatch: this.explicitMaxRestoreBatchSize,
-      feePerKeyStroops: this.config.restoreFeePerKey,
-      maxFeePerBatchStroops: this.config.maxRestoreFeePerBatch,
-    })
+  private async batchKeys(keys: ArchivedKey[]): Promise<ArchivedKey[][]> {
+    const batches: ArchivedKey[][] = []
+    let currentBatch: ArchivedKey[] = []
+    let currentSize = 0
+    const maxFeeStroops = this.config.maxRestoreFeeStroops ? BigInt(this.config.maxRestoreFeeStroops) : null
+    const maxBatchSize = this.config.maxRestoreBatchSize || 50
+
+    for (const key of keys) {
+      const keySize = key.keyBase64.length
+      const headerOverhead = 200
+      const estimatedTotalSize = currentSize + keySize + headerOverhead
+
+      // Check XDR size limit
+      const xdrSizeExceeded = estimatedTotalSize > MAX_XDR_SIZE_BYTES && currentBatch.length > 0
+
+      // Check batch entry count limit
+      const batchSizeExceeded = currentBatch.length >= maxBatchSize
+
+      // Estimate fee for the batch with the new key if fee budget is set
+      let feeBudgetExceeded = false
+      if (maxFeeStroops !== null && currentBatch.length > 0) {
+        // Estimate fee for batch size including the new key
+        const estimatedFeeForBatchWithKey = BigInt(await this.estimateRestoreFee(currentBatch.length + 1))
+        feeBudgetExceeded = estimatedFeeForBatchWithKey > maxFeeStroops
+      }
+
+      // Start a new batch if any limit would be exceeded
+      if ((xdrSizeExceeded || batchSizeExceeded || feeBudgetExceeded) && currentBatch.length > 0) {
+        batches.push(currentBatch)
+        currentBatch = [key]
+        currentSize = keySize
+      } else {
+        currentBatch.push(key)
+        currentSize = estimatedTotalSize
+      }
+    }
+
+    if (currentBatch.length > 0) {
+      batches.push(currentBatch)
+    }
+
+    return batches
+  }
+
+  /**
+   * Estimate the fee required for a restore operation.
+   *
+   * When `dynamicFeeEstimation` is enabled in config, this method builds a
+   * minimal restore transaction for `batchSize` keys and runs
+   * `simulateTransaction` against it to extract the resource fee from the
+   * simulation response.  A 10 % buffer is added on top of the simulated fee
+   * to account for ledger-state variance between simulation time and submission.
+   *
+   * If `dynamicFeeEstimation` is disabled, or if the simulation call fails for
+   * any reason, the method falls back to returning `config.restoreFee`.
+   *
+   * @param batchSize  Number of ledger keys in the restore batch.
+   * @returns          Fee string (stroops) to use for `TransactionBuilder`.
+   */
+  async estimateRestoreFee(batchSize: number): Promise<string> {
+    if (!this.config.dynamicFeeEstimation) {
+      return this.config.restoreFee!
+    }
+
+    try {
+      // Build a placeholder restore transaction with dummy ledger keys so the
+      // RPC node can estimate resource consumption for the given batch size.
+      // We use a throw-away source account representation; the simulation only
+      // needs a valid transaction envelope to compute resource fees.
+      const placeholderAccountId = 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN'
+      const placeholderAccount = new Account(placeholderAccountId, '0')
+
+      // Build a minimal footprint — the ledger keys themselves don't matter for
+      // fee estimation since the RPC considers only the count and transaction
+      // structure when computing the resource fee.
+      const dataBuilder = new SorobanDataBuilder().setFootprint([], [])
+
+      const candidateTx = new TransactionBuilder(placeholderAccount, {
+        fee: this.config.restoreFee!,
+        networkPassphrase: this.config.networkPassphrase,
+        sorobanData: dataBuilder.build().toXDR('base64'),
+      })
+        .addOperation(Operation.restoreFootprint({}))
+        .setTimeout(0)
+        .build()
+
+      const simResult = await this.retryOnFailure(
+        () => this.getServer().simulateTransaction(candidateTx as any),
+        'simulateTransaction(estimateRestoreFee)',
+      )
+
+      if (
+        !SorobanRpc.Api.isSimulationError(simResult) &&
+        SorobanRpc.Api.isSimulationSuccess(simResult) &&
+        simResult.minResourceFee
+      ) {
+        // Add a 10 % buffer on top of the minimum resource fee to ensure the
+        // transaction doesn't get rejected due to small ledger-state changes
+        // between simulation time and submission time.
+        const minFee = BigInt(simResult.minResourceFee)
+        const buffer = minFee / 10n
+        const estimatedFee = (minFee + buffer).toString()
+        this.log(
+          'info',
+          `Dynamic fee estimate for batch of ${batchSize}: ${estimatedFee} stroops (min=${simResult.minResourceFee})`,
+        )
+        return estimatedFee
+      }
+    } catch (err) {
+      this.log(
+        'warn',
+        `Dynamic fee estimation failed, falling back to restoreFee: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+
+    // Fall back to the configured restoreFee
+    return this.config.restoreFee!
   }
 
   private async buildSingleRestoreTransaction(
@@ -838,8 +1474,12 @@ export class SorobanResurrect {
     const dataBuilder = new SorobanDataBuilder()
       .setFootprint([], ledgerKeys)
 
+    // Build a candidate transaction to estimate the fee against, then rebuild
+    // with the final fee once we have it.
+    const fee = await this.estimateRestoreFee(keys.length)
+
     const tx = new TransactionBuilder(sourceAccount, {
-      fee: this.config.restoreFee!,
+      fee,
       networkPassphrase: this.config.networkPassphrase,
       sorobanData: dataBuilder.build().toXDR('base64'),
     })
@@ -892,6 +1532,38 @@ export class SorobanResurrect {
     }
   }
 
+  private wrapRestoreTransactionInFeeBump(
+    innerTx: any,
+    sponsorAccountID: string,
+    innerFee: string,
+  ): string {
+    try {
+      // Create a dummy account for the sponsor to construct the fee-bump transaction
+      // The sequence number doesn't matter here as it's not signed yet
+      const sponsorAccount = new Account(sponsorAccountID, '0')
+
+      // Build the fee-bump transaction wrapping the inner restore transaction
+      // The fee bump fee should be higher than the inner transaction fee
+      const feeBumpFee = (BigInt(innerFee) * 2n).toString()
+
+      const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
+        sponsorAccount,
+        feeBumpFee,
+        innerTx,
+        this.config.networkPassphrase,
+      )
+
+      this.log('info', `Wrapped restore transaction in fee-bump with sponsor ${sponsorAccountID}`)
+      return feeBumpTx.toXDR()
+    } catch (err) {
+      throw new SorobanResurrectError(
+        `Failed to wrap restore transaction in fee-bump: ${err instanceof Error ? err.message : String(err)}`,
+        'INVALID_XDR',
+        err,
+      )
+    }
+  }
+
   private preserveFeeBumpSignatures(originalTx: any, newInnerTx: any): any {
     if (!isFeeBumpTx(originalTx)) {
       return newInnerTx
@@ -926,117 +1598,132 @@ export class SorobanResurrect {
     originalXDR: string,
     signTransaction: (xdr: string) => Promise<string>,
   ): Promise<ExecutionResult> {
-    if (this.config.simulateOnly) {
-      this.log('info', 'simulateOnly mode: skipping transaction submission')
-      
-      let keysRestored = 0
+    const startTime = Date.now()
+    return this.telemetry.trace('submit-restore', {}, async (span) => {
+      if (this.config.simulateOnly) {
+        this.log('info', 'simulateOnly mode: skipping transaction submission')
+
+        let keysRestored = 0
+        try {
+          const restoreTx = TransactionBuilder.fromXDR(restoreXDR, this.config.networkPassphrase)
+          const sorobanRaw = 'sorobanData' in restoreTx ? (restoreTx as any).sorobanData : null
+          const sorobanDataSD = sorobanRaw as xdr.SorobanTransactionData | null
+          const resources = sorobanDataSD?.resources()
+          const footprint = resources?.footprint()
+          keysRestored = footprint ? extractKeysFromFootprint(footprint).all.length : 0
+        } catch {
+          this.log('warn', 'Could not parse restore transaction XDR for key counting')
+        }
+
+        span.setAttribute('success', 'simulate_only')
+        return {
+          success: true,
+          entriesRestored: keysRestored,
+          simulateOnly: true,
+        }
+      }
+
+      let restoreTxHash: string | undefined
+      let originalTxHash: string | undefined
+
+      // Parse original transaction to detect fee-bump
+      let originalTx: any
+      let isOriginalFeeBump = false
       try {
-        const restoreTx = TransactionBuilder.fromXDR(restoreXDR, this.config.networkPassphrase)
-        const sorobanRaw = 'sorobanData' in restoreTx ? (restoreTx as any).sorobanData : null
-        const sorobanDataSD = sorobanRaw as xdr.SorobanTransactionData | null
-        const resources = sorobanDataSD?.resources()
-        const footprint = resources?.footprint()
-        keysRestored = footprint ? extractKeysFromFootprint(footprint).all.length : 0
-      } catch {
-        this.log('warn', 'Could not parse restore transaction XDR for key counting')
-      }
-
-      return {
-        success: true,
-        entriesRestored: keysRestored,
-        simulateOnly: true,
-      }
-    }
-
-    let restoreTxHash: string | undefined
-    let originalTxHash: string | undefined
-
-    // Parse original transaction to detect fee-bump
-    let originalTx: any
-    let isOriginalFeeBump = false
-    try {
-      originalTx = TransactionBuilder.fromXDR(originalXDR, this.config.networkPassphrase)
-      isOriginalFeeBump = isFeeBumpTx(originalTx)
-      if (isOriginalFeeBump) {
-        this.log('info', 'Original transaction is a fee-bump, will re-wrap after restoration')
-      }
-    } catch (err) {
-      this.log('warn', `Could not parse original transaction for fee-bump detection: ${err instanceof Error ? err.message : String(err)}`)
-      // Continue without fee-bump detection
-    }
-
-    // Execute restore transaction
-    try {
-      this.log('info', 'Executing restore transaction')
-      restoreTxHash = await this.submitSignedTransaction(restoreXDR, signTransaction)
-      this.log('info', `Restore transaction confirmed: ${restoreTxHash}`)
-    } catch (err) {
-      throw new SorobanResurrectError(
-        `Restore transaction failed (rpcUrl=${this.config.rpcUrl}): ${err instanceof Error ? err.message : String(err)}`,
-        'RESTORE_FAILED',
-        err,
-        { rpcUrl: this.config.rpcUrl, txHash: restoreTxHash },
-      )
-      this.emit('error', resurrErr)
-      throw resurrErr
-    }
-
-    // Execute original transaction (may need to re-wrap if it was fee-bump)
-    let txToSubmit = originalXDR
-    if (isOriginalFeeBump) {
-      try {
-        const innerTx = extractInnerTransaction(originalTx)
-        const innerTxXDR = innerTx.toXDR()
-        txToSubmit = this.reWrapFeeBumpTransaction(innerTxXDR, originalTx)
-        this.log('info', 'Re-wrapped fee-bump transaction for submission')
+        originalTx = TransactionBuilder.fromXDR(originalXDR, this.config.networkPassphrase)
+        isOriginalFeeBump = isFeeBumpTx(originalTx)
+        if (isOriginalFeeBump) {
+          this.log('info', 'Original transaction is a fee-bump, will re-wrap after restoration')
+        }
       } catch (err) {
-        this.log('warn', `Failed to re-wrap fee-bump, attempting submission with original: ${err instanceof Error ? err.message : String(err)}`)
-        txToSubmit = originalXDR
+        this.log('warn', `Could not parse original transaction for fee-bump detection: ${err instanceof Error ? err.message : String(err)}`)
+        // Continue without fee-bump detection
       }
-    }
 
-    try {
-      this.log('info', 'Executing original transaction')
-      this.emit('original:start')
-      originalTxHash = await this.submitSignedTransaction(txToSubmit, signTransaction)
-      this.log('info', `Original transaction confirmed: ${originalTxHash}`)
-      this.emit('original:complete', originalTxHash)
-    } catch (err) {
-      throw new SorobanResurrectError(
-        `Original transaction failed after successful restore (rpcUrl=${this.config.rpcUrl}, restoreTxHash=${restoreTxHash}): ${err instanceof Error ? err.message : String(err)}`,
-        'ORIGINAL_TX_FAILED',
-        err,
-        { rpcUrl: this.config.rpcUrl, txHash: restoreTxHash },
-      )
-      this.emit('error', resurrErr)
-      throw resurrErr
-    }
+      // Execute restore transaction
+      try {
+        this.log('info', 'Executing restore transaction')
+        restoreTxHash = await this.submitSignedTransaction(restoreXDR, signTransaction)
+        this.log('info', `Restore transaction confirmed: ${restoreTxHash}`, { txHash: restoreTxHash })
+        span.setAttribute('restore.tx.hash', restoreTxHash)
+      } catch (err) {
+        this.sdkMetrics?.recordRestore('failure')
+        this.sdkMetrics?.recordRestoreDuration(Date.now() - startTime)
+        throw new SorobanResurrectError(
+          `Restore transaction failed (rpcUrl=${this.config.rpcUrl}): ${err instanceof Error ? err.message : String(err)}`,
+          'RESTORE_FAILED',
+          err,
+          { rpcUrl: this.config.rpcUrl, txHash: restoreTxHash },
+        )
+      }
 
-    let keysRestored = 0
-    try {
-      const restoreTx = TransactionBuilder.fromXDR(restoreXDR, this.config.networkPassphrase)
-      const sorobanRaw = 'sorobanData' in restoreTx ? (restoreTx as any).sorobanData : null
-      const sorobanDataSD = sorobanRaw as xdr.SorobanTransactionData | null
-      const resources = sorobanDataSD?.resources()
-      const footprint = resources?.footprint()
-      keysRestored = footprint ? extractKeysFromFootprint(footprint).all.length : 0
-    } catch {
-      this.log('warn', 'Could not parse restore transaction XDR for key counting')
-    }
+      // Execute original transaction (may need to re-wrap if it was fee-bump)
+      let txToSubmit = originalXDR
+      if (isOriginalFeeBump) {
+        try {
+          const innerTx = extractInnerTransaction(originalTx)
+          const innerTxXDR = innerTx.toXDR()
+          txToSubmit = this.reWrapFeeBumpTransaction(innerTxXDR, originalTx)
+          this.log('info', 'Re-wrapped fee-bump transaction for submission')
+        } catch (err) {
+          this.log('warn', `Failed to re-wrap fee-bump, attempting submission with original: ${err instanceof Error ? err.message : String(err)}`)
+          txToSubmit = originalXDR
+        }
+      }
 
-    return {
-      success: true,
-      restoreTxHash,
-      originalTxHash,
-      entriesRestored: keysRestored,
-    }
+      return this.telemetry.trace('submit-original', {}, async (origSpan) => {
+        try {
+          this.log('info', 'Executing original transaction')
+          this.emit('original:start')
+          originalTxHash = await this.submitSignedTransaction(txToSubmit, signTransaction)
+          this.log('info', `Original transaction confirmed: ${originalTxHash}`, { txHash: originalTxHash })
+          this.emit('original:complete', originalTxHash)
+          origSpan.setAttribute('success', 'true')
+        } catch (err) {
+          this.sdkMetrics?.recordRestore('failure')
+          this.sdkMetrics?.recordRestoreDuration(Date.now() - startTime)
+          throw new SorobanResurrectError(
+            `Original transaction failed after successful restore (rpcUrl=${this.config.rpcUrl}, restoreTxHash=${restoreTxHash}): ${err instanceof Error ? err.message : String(err)}`,
+            'ORIGINAL_TX_FAILED',
+            err,
+            { rpcUrl: this.config.rpcUrl, txHash: restoreTxHash },
+          )
+        }
+
+        let keysRestored = 0
+        try {
+          const restoreTx = TransactionBuilder.fromXDR(restoreXDR, this.config.networkPassphrase)
+          const sorobanRaw = 'sorobanData' in restoreTx ? (restoreTx as any).sorobanData : null
+          const sorobanDataSD = sorobanRaw as xdr.SorobanTransactionData | null
+          const resources = sorobanDataSD?.resources()
+          const footprint = resources?.footprint()
+          keysRestored = footprint ? extractKeysFromFootprint(footprint).all.length : 0
+        } catch {
+          this.log('warn', 'Could not parse restore transaction XDR for key counting')
+        }
+
+        this.sdkMetrics?.recordRestore('success')
+        this.sdkMetrics?.recordRestoreDuration(Date.now() - startTime)
+        this.sdkMetrics?.recordKeysRestored(keysRestored)
+        span.setAttribute('success', 'true')
+
+        return {
+          success: true,
+          restoreTxHash,
+          originalTxHash,
+          entriesRestored: keysRestored,
+        }
+      })
+    })
   }
 
   async executeRestoreThenOriginalBatches(
     restoreBatches: RestoreBatchResult[],
     originalXDR: string,
     signTransaction: (xdr: string) => Promise<string>,
+    options: { requireAllBatches?: boolean } = {},
   ): Promise<ExecutionResult> {
+    const { requireAllBatches = true } = options
     let originalTxHash: string | undefined
     let batchResults: RestoreAllBatchesResult
 
@@ -1045,49 +1732,101 @@ export class SorobanResurrect {
       batchResults = await this.executeRestoreBatches(restoreBatches, signTransaction)
 
       if (!batchResults.success) {
-        throw new SorobanResurrectError(
-          batchResults.error || `Batch ${batchResults.failedAtBatchIndex} failed`,
-          'RESTORE_FAILED',
-          batchResults,
-        )
+        // An ambiguous batch may have landed on-chain. Submitting the original
+        // transaction now could run it against a partially restored footprint,
+        // so stop here even when partial success is allowed.
+        if (batchResults.ambiguous) {
+          throw new SorobanResurrectError(
+            `Restore batch ${(batchResults.failedAtBatchIndex ?? 0) + 1} has an unconfirmed outcome; original transaction was not submitted. Fix: confirm the batch transaction on-chain, then call getFailedKeys() and retryFailedRestore() before resubmitting the original.`,
+            'RESTORE_FAILED',
+            batchResults,
+          )
+        }
+
+        // When batches fail partway through, expose partial-failure state
+        if (requireAllBatches) {
+          // Original behavior: throw on any batch failure
+          throw new SorobanResurrectError(
+            batchResults.error || `Batch ${batchResults.failedAtBatchIndex} failed`,
+            'RESTORE_FAILED',
+            batchResults,
+          )
+        } else {
+          // New behavior: return partial success so caller can retry via getFailedKeys/retryFailedRestore
+          this.log(
+            'warn',
+            `Batches partially failed at index ${batchResults.failedAtBatchIndex}, proceeding with original tx`,
+          )
+          // Proceed with original transaction despite partial restore failure
+        }
       }
 
-      this.log(
-        'info',
-        `All ${restoreBatches.length} batches succeeded, restored ${batchResults.totalKeysRestored} keys`,
-      )
+      if (batchResults.success) {
+        this.log(
+          'info',
+          `All ${restoreBatches.length} batches succeeded, restored ${batchResults.totalKeysRestored} keys`,
+        )
+      }
     } catch (err) {
       const isRestoreError = err instanceof SorobanResurrectError && err.code === 'RESTORE_FAILED'
-      throw isRestoreError
-        ? err
-        : new SorobanResurrectError(
-            `Restore batches failed: ${err instanceof Error ? err.message : String(err)}`,
-            'RESTORE_FAILED',
-            err,
-          )
+      if (isRestoreError) {
+        throw err
+      }
+      throw new SorobanResurrectError(
+        `Restore batches failed: ${err instanceof Error ? err.message : String(err)}`,
+        'RESTORE_FAILED',
+        err,
+      )
     }
 
     try {
-      this.log('info', 'Executing original transaction after all batches confirmed')
+      this.log('info', 'Executing original transaction after restore batches')
       originalTxHash = await this.submitSignedTransaction(originalXDR, signTransaction)
       this.log('info', `Original transaction confirmed: ${originalTxHash}`)
     } catch (err) {
       throw new SorobanResurrectError(
-        `Original transaction failed after successful restore batches: ${err instanceof Error ? err.message : String(err)}`,
+        `Original transaction failed: ${err instanceof Error ? err.message : String(err)}`,
         'ORIGINAL_TX_FAILED',
         err,
       )
     }
 
     return {
-      success: true,
+      success: batchResults.success,
       originalTxHash,
       entriesRestored: batchResults.totalKeysRestored,
       batchResults,
+      failedBatchIndex: batchResults.failedAtBatchIndex,
+      partialEntriesRestored: batchResults.failedAtBatchIndex !== undefined ? batchResults.totalKeysRestored : undefined,
     }
   }
 
-  private async submitSignedTransaction(
+  /**
+   * Signs and submits a transaction, then waits for confirmation.
+   *
+   * Concurrent calls with the same unsigned XDR share one in-flight submission,
+   * so the wallet is prompted once and the network sees the transaction once.
+   * The entry is removed when the submission settles, success or failure, so a
+   * later call after a failure starts a fresh submission.
+   */
+  private submitSignedTransaction(
+    txXDR: string,
+    signTransaction: (xdr: string) => Promise<string>,
+  ): Promise<string> {
+    const existing = this.inFlightSubmissions.get(txXDR)
+    if (existing) {
+      this.log('debug', 'Coalescing with an in-flight submission for the same transaction')
+      return existing
+    }
+
+    const submission = this.sendSignedTransaction(txXDR, signTransaction).finally(() => {
+      this.inFlightSubmissions.delete(txXDR)
+    })
+    this.inFlightSubmissions.set(txXDR, submission)
+    return submission
+  }
+
+  private async sendSignedTransaction(
     txXDR: string,
     signTransaction: (xdr: string) => Promise<string>,
   ): Promise<string> {
@@ -1100,15 +1839,15 @@ export class SorobanResurrect {
       'sendTransaction',
     )
 
-    if (sendResult.status === 'PENDING' || sendResult.status === 'DUPLICATE') {
+    if (sendResult.status === TRANSACTION_STATUS.PENDING || sendResult.status === TRANSACTION_STATUS.DUPLICATE) {
       const hash = sendResult.hash
       const { hash: confirmedHash } = await this.waitForTransaction(hash)
       return confirmedHash
     }
 
-    if (sendResult.status === 'ERROR') {
+    if (sendResult.status === TRANSACTION_STATUS.ERROR) {
       throw new SorobanResurrectError(
-        `Transaction submission error (rpcUrl=${this.config.rpcUrl})`,
+        `Transaction submission error (rpcUrl=${this.config.rpcUrl}, result=${decodeSubmissionResultCode(sendResult.errorResultXdr)})`,
         'ORIGINAL_TX_FAILED',
         sendResult,
         { rpcUrl: this.config.rpcUrl },
@@ -1226,15 +1965,18 @@ export class SorobanResurrect {
     maxPollAttempts: number,
   ): Promise<void> {
     const timeoutMs = maxPollAttempts * (this.config.pollIntervalMs ?? 1000)
+    const silentDropTimeoutMs = (this.config.pollIntervalMs ?? 1000) * 5
+    let silentDropLogged = false
 
     return new Promise<void>((resolve, reject) => {
       let settled = false
       let ws: WebSocket
 
-      const finish = (err?: SorobanResurrectError): void => {
+      const finish = (err?: SorobanResurrectError | Error): void => {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        clearTimeout(silentDropTimer)
         try { ws.close() } catch { /* ignore */ }
         if (err) reject(err)
         else resolve()
@@ -1246,6 +1988,14 @@ export class SorobanResurrect {
           'NETWORK_ERROR',
         ))
       }, timeoutMs)
+
+      const silentDropTimer = setTimeout(() => {
+        if (!settled && !silentDropLogged) {
+          silentDropLogged = true
+          this.log('warn', `WebSocket connection for ${hash} appears to have silently dropped, falling back to polling`)
+          finish(new Error(`Silent WebSocket drop detected for ${hash}`))
+        }
+      }, silentDropTimeoutMs)
 
       try {
         ws = new WebSocket(wsUrl)
@@ -1277,11 +2027,14 @@ export class SorobanResurrect {
         if (msg.method !== 'transaction_status') return
         if (msg.params?.hash !== hash) return
 
+        // Clear the silent drop timer since we received a message
+        clearTimeout(silentDropTimer)
+
         const status = msg.params.status
-        if (status === 'SUCCESS') {
+        if (status === TRANSACTION_STATUS.SUCCESS) {
           this.log('info', `Transaction ${hash} confirmed via WebSocket`)
           finish()
-        } else if (status === 'FAILED') {
+        } else if (status === TRANSACTION_STATUS.FAILED) {
           finish(new SorobanResurrectError(
             `Transaction ${hash} failed: ${msg.params.error ?? 'unknown error'}`,
             'ORIGINAL_TX_FAILED',
@@ -1315,8 +2068,8 @@ export class SorobanResurrect {
     const intervalMs = this.config.pollIntervalMs ?? 1000
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const receipt = await this.getServer().getTransaction(hash)
-      if (receipt.status !== 'NOT_FOUND') {
-        if (receipt.status === 'SUCCESS') {
+      if (receipt.status !== TRANSACTION_STATUS.NOT_FOUND) {
+        if (receipt.status === TRANSACTION_STATUS.SUCCESS) {
           return hash
         }
         const result = 'result' in receipt ? (receipt as any).result : receipt
@@ -1337,6 +2090,266 @@ export class SorobanResurrect {
     )
   }
 
+  /**
+   * Builds a JSON-serializable receipt so the caller can persist it and resume
+   * later with `resumeRestoreBatches`.
+   *
+   * `executeRestoreBatches` stops at the first failure and only reports the
+   * batches it reached, so pass the full planned batch list as well. Every
+   * planned batch appears in the receipt: executed ones take their result
+   * status, unexecuted ones stay `pending`.
+   */
+  createExecutionReceipt(
+    result: RestoreAllBatchesResult,
+    sourceAccountID: string,
+    plannedBatches: RestoreBatchResult[],
+  ): RestoreExecutionReceipt {
+    const executed = new Map(result.batches.map(batch => [batch.batchIndex, batch]))
+    return {
+      version: 1,
+      sourceAccountID,
+      batches: plannedBatches.map(batch => ({ ...(executed.get(batch.batchIndex) ?? batch) })),
+    }
+  }
+
+  /**
+   * Parses and validates a receipt previously produced by
+   * `createExecutionReceipt` and serialized with `JSON.stringify`.
+   *
+   * @throws {SorobanResurrectError} `INVALID_XDR` when the payload does not match
+   *   the receipt shape.
+   */
+  parseExecutionReceipt(json: string): RestoreExecutionReceipt {
+    const invalid = (reason: string): never => {
+      throw new SorobanResurrectError(
+        `Invalid execution receipt: ${reason}. Fix: pass the JSON produced by JSON.stringify(createExecutionReceipt(...)).`,
+        'INVALID_XDR',
+      )
+    }
+
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(json)
+    } catch {
+      return invalid('not valid JSON')
+    }
+
+    if (typeof parsed !== 'object' || parsed === null) return invalid('expected an object')
+    const candidate = parsed as Partial<RestoreExecutionReceipt>
+    if (candidate.version !== 1) return invalid('unsupported version')
+    if (typeof candidate.sourceAccountID !== 'string') return invalid('missing sourceAccountID')
+    if (!Array.isArray(candidate.batches)) return invalid('missing batches array')
+
+    for (const batch of candidate.batches) {
+      if (typeof batch.batchIndex !== 'number') return invalid('batch is missing batchIndex')
+      if (typeof batch.transactionXDR !== 'string') return invalid(`batch ${batch.batchIndex} is missing transactionXDR`)
+      if (typeof batch.keysRestored !== 'number') return invalid(`batch ${batch.batchIndex} is missing keysRestored`)
+      if (!['pending', 'success', 'failed'].includes(batch.status)) return invalid(`batch ${batch.batchIndex} has an unknown status`)
+    }
+
+    return candidate as RestoreExecutionReceipt
+  }
+
+  /**
+   * Resumes a multi-batch restore from a receipt. Batches that already
+   * succeeded (status `success` or a recorded `txHash`) are never resubmitted;
+   * every other batch is executed in `batchIndex` order.
+   *
+   * The returned result lists all batches in receipt order, so `batches` and
+   * `totalKeysRestored` cover the whole restore, not just the resumed part.
+   */
+  async resumeRestoreBatches(
+    receipt: RestoreExecutionReceipt,
+    signTransaction: (xdr: string) => Promise<string>,
+  ): Promise<RestoreAllBatchesResult> {
+    const ordered = [...receipt.batches].sort((a, b) => a.batchIndex - b.batchIndex)
+    const pending = ordered.filter(batch => batch.status !== 'success' && !batch.txHash)
+    const alreadyDone = ordered.length - pending.length
+
+    this.log('info', `Resuming restore: ${pending.length} of ${ordered.length} batches remaining (${alreadyDone} already succeeded)`)
+
+    if (pending.length === 0) {
+      return {
+        success: true,
+        batches: ordered,
+        totalKeysRestored: ordered.reduce((sum, batch) => sum + batch.keysRestored, 0),
+      }
+    }
+
+    const resumed = await this.executeRestoreBatches(
+      pending.map(batch => ({ ...batch, status: 'pending', txHash: undefined, error: undefined })),
+      signTransaction,
+      receipt.sourceAccountID,
+    )
+
+    const resultsByIndex = new Map(resumed.batches.map(batch => [batch.batchIndex, batch]))
+    const merged = ordered.map(batch => resultsByIndex.get(batch.batchIndex) ?? batch)
+
+    return {
+      success: resumed.success,
+      batches: merged,
+      totalKeysRestored: merged
+        .filter(batch => batch.status === 'success')
+        .reduce((sum, batch) => sum + batch.keysRestored, 0),
+      failedAtBatchIndex: resumed.failedAtBatchIndex,
+      error: resumed.error,
+    }
+  }
+
+  /**
+   * Returns the captured partial-failure state from the most recent
+   * `executeRestoreBatches` call that failed mid-way through a batch sequence,
+   * or `null` when the last execution succeeded (or no execution has run yet).
+   *
+   * Use this after catching a `RESTORE_FAILED` error from
+   * `executeRestoreThenOriginalBatches` to inspect which keys still need to be
+   * restored and to obtain the batch objects needed by `retryFailedRestore`.
+   *
+   * @example
+   * ```ts
+   * try {
+   *   await client.executeRestoreThenOriginalBatches(batches, originalXDR, sign)
+   * } catch (err) {
+   *   const state = client.getFailedKeys()
+   *   if (state) {
+   *     console.log(`${state.failedKeys.length} keys remain unrestored`)
+   *     await client.retryFailedRestore(state, sign)
+   *   }
+   * }
+   * ```
+   */
+  getFailedKeys(): FailedRestoreState | null {
+    return this._lastFailedRestoreState
+  }
+
+  /**
+   * Rebuilds restore transactions with sequence numbers fetched from the RPC.
+   * Each batch keeps its footprint; fees are re-estimated when
+   * `dynamicFeeEstimation` is enabled. Batches that cannot be parsed keep their
+   * original XDR, with a warning.
+   */
+  private async rebuildRestoreBatches(
+    batches: RestoreBatchResult[],
+    sourceAccountID: string,
+  ): Promise<RestoreBatchResult[]> {
+    // Re-fetch current sequence number so rebuilt transactions are valid
+    const sourceAccount = await this.retryOnFailure(
+      () => this.getServer().getAccount(sourceAccountID),
+      `getAccount(${sourceAccountID})`,
+    )
+
+    let currentSequence = BigInt(sourceAccount.sequenceNumber())
+
+    // Rebuild each failed batch with an updated sequence number and, if
+    // dynamicFeeEstimation is enabled, a freshly estimated fee.
+    const rebuiltBatches: RestoreBatchResult[] = []
+    for (const batch of batches) {
+      // We can't recover the original ArchivedKey objects from the XDR here,
+      // so we reconstruct a minimal transaction with the same footprint by
+      // parsing the stored XDR.
+      let rebuildXDR = batch.transactionXDR
+      try {
+        const existingTx = TransactionBuilder.fromXDR(
+          batch.transactionXDR,
+          this.config.networkPassphrase,
+        ) as any
+        const sorobanData = existingTx.sorobanData as xdr.SorobanTransactionData | undefined
+        const batchAccount = new Account(sourceAccountID, currentSequence.toString())
+        currentSequence += 1n
+
+        const fee = await this.estimateRestoreFee(batch.keysRestored)
+
+        const rebuiltTx = new TransactionBuilder(batchAccount, {
+          fee,
+          networkPassphrase: this.config.networkPassphrase,
+          sorobanData: sorobanData?.toXDR('base64') ?? batch.transactionXDR,
+        })
+          .addOperation(Operation.restoreFootprint({}))
+          .setTimeout(0)
+          .build()
+
+        rebuildXDR = rebuiltTx.toXDR()
+      } catch (err) {
+        this.log(
+          'warn',
+          `Could not rebuild batch ${batch.batchIndex}, retrying with original XDR: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+
+      rebuiltBatches.push({
+        ...batch,
+        transactionXDR: rebuildXDR,
+        status: 'pending',
+        txHash: undefined,
+        error: undefined,
+      })
+    }
+
+    return rebuiltBatches
+  }
+
+  /**
+   * Retry only the failed batches from a previous partial restore.
+   *
+   * Rebuilds each failed batch transaction with a fresh sequence number
+   * (fetched from the RPC) and re-submits them.  On success the internal
+   * `_lastFailedRestoreState` is cleared.  On failure the state is updated to
+   * reflect any newly failed batches so the caller can keep retrying
+   * incrementally.
+   *
+   * @param state            State object returned by `getFailedKeys()`.
+   * @param signTransaction  Wallet signing callback.
+   * @returns                `ExecutionResult` summarising the retry outcome.
+   */
+  async retryFailedRestore(
+    state: FailedRestoreState,
+    signTransaction: (xdr: string) => Promise<string>,
+  ): Promise<ExecutionResult> {
+    if (state.failedBatches.length === 0) {
+      this.log('info', 'retryFailedRestore: no failed batches to retry')
+      return {
+        success: true,
+        entriesRestored: state.partialEntriesRestored,
+      }
+    }
+
+    this.log(
+      'info',
+      `Retrying ${state.failedBatches.length} failed restore batches (source=${state.sourceAccountID})`,
+    )
+
+    const rebuiltBatches = await this.rebuildRestoreBatches(state.failedBatches, state.sourceAccountID)
+
+    const retryResult = await this.executeRestoreBatches(
+      rebuiltBatches,
+      signTransaction,
+      state.sourceAccountID,
+    )
+
+    const totalRestored = state.partialEntriesRestored + retryResult.totalKeysRestored
+
+    if (retryResult.success) {
+      this._lastFailedRestoreState = null
+      this.log('info', `Retry succeeded, total entries restored: ${totalRestored}`)
+      return {
+        success: true,
+        entriesRestored: totalRestored,
+        batchResults: retryResult,
+      }
+    }
+
+    // Partial retry failure — update the state for the next retry
+    this.log('warn', `Retry partially failed at batch ${retryResult.failedAtBatchIndex}`)
+    return {
+      success: false,
+      entriesRestored: totalRestored,
+      failedBatchIndex: retryResult.failedAtBatchIndex,
+      partialEntriesRestored: totalRestored,
+      error: retryResult.error,
+      batchResults: retryResult,
+    }
+  }
+
   async checkAndPrepare(
     txXDR: string,
     sourceAccountID: string,
@@ -1345,22 +2358,30 @@ export class SorobanResurrect {
     simulationResult: SimulationCheckResult
     restoreTransactionXDR?: string
   }> {
-    const simulationResult = await this.simulate(txXDR, sourceAccountID)
+    return this.telemetry.trace('check-and-prepare', {}, async (span) => {
+      const simulationResult = await this.simulate(txXDR, sourceAccountID)
 
-    if (!simulationResult.needsRestoration) {
-      return { needsRestoration: false, simulationResult }
-    }
+      span.setAttribute('key.count', simulationResult.totalKeysInFootprint)
 
-    const restoreTx = await this.buildRestoreTransaction(
-      simulationResult.archivedKeys,
-      sourceAccountID,
-    )
+      if (!simulationResult.needsRestoration) {
+        span.setAttribute('success', 'no_restore_needed')
+        return { needsRestoration: false, simulationResult }
+      }
 
-    return {
-      needsRestoration: true,
-      simulationResult,
-      restoreTransactionXDR: restoreTx.transactionXDR,
-    }
+      const restoreTx = await this.buildRestoreTransaction(
+        simulationResult.archivedKeys,
+        sourceAccountID,
+      )
+
+      span.setAttribute('key.types', simulationResult.archivedKeys.map(k => k.keyType).join(','))
+      span.setAttribute('success', 'restore_prepared')
+
+      return {
+        needsRestoration: true,
+        simulationResult,
+        restoreTransactionXDR: restoreTx.transactionXDR,
+      }
+    })
   }
 
   /**
@@ -1368,6 +2389,33 @@ export class SorobanResurrect {
    * @param txXDR Transaction XDR to invalidate
    * @param source Optional source account
    */
+  /**
+   * Render all collected Prometheus metrics as a text-format string suitable
+   * for serving on a `/metrics` HTTP endpoint.
+   *
+   * Returns an empty string when metrics are not configured.
+   *
+   * @example
+   * ```ts
+   * const resurrect = new SorobanResurrect({ metrics: {} });
+   * // Serve metrics endpoint:
+   * res.setHeader('Content-Type', 'text/plain; version=0.0.4');
+   * res.end(resurrect.collectMetrics());
+   * ```
+   */
+  collectMetrics(): string {
+    return this.sdkMetrics?.collect() ?? ''
+  }
+
+  /**
+   * Expose the underlying MetricsRegistry for consumers who need direct
+   * access (e.g. to add custom metrics or integrate with a larger registry).
+   * Returns `undefined` when metrics are not configured.
+   */
+  get metricsRegistry() {
+    return this.sdkMetrics?.registry
+  }
+
   invalidateSimulationCache(txXDR?: string, source?: string): void {
     if (!this.simulationCache) {
       this.log('warn', 'Simulation cache is not enabled')
@@ -1375,7 +2423,7 @@ export class SorobanResurrect {
     }
 
     if (txXDR) {
-      const cacheKey = SimulationCache.generateKey(txXDR, source)
+      const cacheKey = SimulationCache.generateKey(txXDR, source, undefined, this.config.networkPassphrase)
       this.simulationCache.invalidate(cacheKey)
       this.log('info', 'Invalidated simulation cache for specific transaction')
     } else {
@@ -1394,6 +2442,107 @@ export class SorobanResurrect {
     return this.simulationCache.getStatistics()
   }
 
+  /**
+   * Parse a transaction XDR and extract its footprint keys, with caching.
+   *
+   * When a `footprintCache` is configured, the result is stored keyed by the
+   * SHA-256 hash of the XDR string.  Subsequent calls with the same XDR will
+   * return the cached result instantly, avoiding redundant CPU-heavy XDR
+   * deserialization.
+   *
+   * Cache entries are **not** time-bounded — they are invalidated only when
+   * `invalidateFootprintCache()` / `onLedgerClose()` is called, because
+   * footprint keys derived from a transaction XDR are deterministic and do
+   * not change across ledgers.
+   */
+  extractFootprintCached(txXDR: string): FootprintKeys | null {
+    if (this.footprintCache) {
+      const cached = this.footprintCache.get(txXDR)
+      if (cached !== undefined) {
+        return cached
+      }
+    }
+
+    const result = extractFootprintFromTransaction(txXDR, this.config.networkPassphrase)
+
+    if (this.footprintCache) {
+      this.footprintCache.set(txXDR, result)
+    }
+
+    return result
+  }
+
+  /**
+   * Invalidate stale entries in the footprint cache on ledger close.
+   *
+   * Call this whenever the ledger closes with the newly closed ledger's sequence number.
+   * If sequence is provided, only entries older than 1 ledger are flushed; otherwise,
+   * all entries are invalidated for backwards compatibility.
+   *
+   * Cached footprint keys are only valid for the current ledger.
+   *
+   * @param closedLedgerSequence Optional sequence number of the newly closed ledger
+   */
+  onLedgerClose(closedLedgerSequence?: number): void {
+    if (this.footprintCache) {
+      if (closedLedgerSequence !== undefined) {
+        this.footprintCache.onLedgerClose(closedLedgerSequence)
+        this.log('info', `Footprint cache flushed for ledger close at sequence ${closedLedgerSequence}`)
+      } else {
+        this.footprintCache.invalidateAll()
+        this.log('info', 'Footprint cache invalidated (ledger close)')
+      }
+    }
+  }
+
+  /**
+   * Invalidate the footprint cache entry for a specific transaction XDR.
+   * Pass no arguments to invalidate the entire cache.
+   */
+  invalidateFootprintCache(txXDR?: string): void {
+    if (!this.footprintCache) {
+      this.log('warn', 'Footprint cache is not enabled')
+      return
+    }
+
+    if (txXDR) {
+      this.footprintCache.invalidate(txXDR)
+      this.log('info', 'Invalidated footprint cache for specific transaction')
+    } else {
+      this.footprintCache.invalidateAll()
+      this.log('info', 'Cleared all footprint cache entries')
+    }
+  }
+
+  /**
+   * Emit a ledger-close event with automatic deduplication within a 2-second window.
+   * Call this when receiving ledger-close events from Soroban RPC to suppress
+   * duplicate emissions from reconnects or event re-delivery.
+   *
+   * @param sequence The ledger sequence number of the closed ledger.
+   * @returns true if the event is a duplicate (suppressed), false if emitted.
+   */
+  emitLedgerClose(sequence: number): boolean {
+    if (this.ledgerEventDeduplicator.isDuplicate(sequence)) {
+      this.log('info', `Suppressed duplicate ledger-close event for sequence ${sequence}`)
+      return true
+    }
+    this.log('info', `Ledger closed: sequence ${sequence}`)
+    this.onLedgerClose()
+    return false
+  }
+
+  /**
+   * Get footprint cache statistics.
+   * Returns `null` when the cache is not enabled.
+   */
+  getFootprintCacheStats(): FootprintCacheStatistics | null {
+    if (!this.footprintCache) {
+      return null
+    }
+    return this.footprintCache.getStatistics()
+  }
+
   getRpcServer(): SorobanRpc.Server {
     return this.getServer()
   }
@@ -1403,6 +2552,57 @@ export class SorobanResurrect {
    */
   getFailoverStatus(): RpcEndpointHealth[] {
     return this.failoverManager.getHealthStatus()
+  }
+
+  /**
+   * Runs a self-diagnostic probe verifying the SDK can reach its RPC endpoint
+   * and is configured correctly. Suitable for monitoring endpoints and
+   * container readiness probes.
+   *
+   * @param accountId Optional account to verify is accessible via the RPC
+   *   server. When omitted, `accountAccessible` mirrors `rpcConnected`.
+   */
+  async getHealth(accountId?: string): Promise<HealthCheckResult> {
+    const startedAt = Date.now()
+    let rpcConnected = false
+    try {
+      await this.server.getHealth()
+      rpcConnected = true
+    } catch (err) {
+      this.debug(`Health check: RPC probe failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    const rpcLatencyMs = Date.now() - startedAt
+
+    let accountAccessible = rpcConnected
+    if (rpcConnected && accountId) {
+      try {
+        await this.server.getAccount(accountId)
+        accountAccessible = true
+      } catch {
+        accountAccessible = false
+      }
+    }
+
+    let status: HealthCheckResult['status']
+    if (!rpcConnected) {
+      status = 'unhealthy'
+    } else if (!this.networkPassphraseValid || !accountAccessible) {
+      status = 'degraded'
+    } else {
+      status = 'healthy'
+    }
+
+    return {
+      status,
+      rpcConnected,
+      rpcLatencyMs,
+      networkPassphraseValid: this.networkPassphraseValid,
+      accountAccessible,
+      sdkVersion: VERSION,
+      uptimeMs: Date.now() - this.startedAt,
+      lastRestoreSuccess: this.lastRestoreSuccess,
+      lastRestoreTimestamp: this.lastRestoreTimestamp,
+    }
   }
 
   /**

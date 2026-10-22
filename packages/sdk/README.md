@@ -22,6 +22,64 @@ const { needsRestoration, restoreTransactionXDR } =
   await client.checkAndPrepare(txXDR, sourceAccount)
 ```
 
+## Multi-batch restoration
+
+For large restores (more keys than `maxRestoreBatchSize`), see
+[Multi-Batch and Concurrent Restoration](../../docs/multi-batch-restoration.md) for
+the sequential vs concurrent decision, fee math, and resuming after a partial failure.
+
+## Dependency injection
+
+The SDK ships a lightweight DI container (`Container`, `Token`, `BindingBuilder`,
+`ContainerError`). It is used internally and is exported so downstream packages
+(e.g. the React provider) can register and resolve their own dependencies.
+
+### Lifetimes
+
+`bind(X).to(Foo)` registers a **transient** binding: a new `Foo` is constructed
+on **every** `resolve(X)` call. Use `.singleton()` to cache the first instance
+and return it for all subsequent resolves.
+
+| Registration | Lifetime |
+|--------------|----------|
+| `bind(X).to(Foo)` | transient — new instance per `resolve` |
+| `bind(X).to(Foo).singleton()` | singleton — one instance, cached |
+| `bind(X).toValue(v)` | singleton — the exact value `v` is returned |
+| `bind(X).toFactory(fn)` | transient — `fn(container)` runs per `resolve` |
+
+### Register and resolve
+
+```typescript
+import { Container, Token } from '@soroban-resurrect/sdk'
+
+const RPC_URL = new Token<string>('RPC_URL')
+const container = new Container()
+
+// Transient: a fresh value each resolve.
+container.bind(RPC_URL).toFactory(() => 'https://soroban-testnet.stellar.org')
+
+// Singleton: cached after the first resolve.
+container.bind(RPC_URL).toValue('https://soroban-testnet.stellar.org')
+
+const url = container.resolve(RPC_URL)
+```
+
+### Override for tests
+
+```typescript
+const container = new Container()
+container.bind(RPC_URL).toValue('https://soroban-testnet.stellar.org')
+
+// Swap in a fake for the test — later bindings replace earlier ones.
+container.bind(RPC_URL).toValue('https://mock.local')
+
+const url = container.resolve(RPC_URL) // 'https://mock.local'
+```
+
+Resolving an unbound token throws a `ContainerError` with code
+`UNBOUND_TOKEN`; resolving a binding whose factory throws wraps the cause in a
+`ContainerError` with code `FACTORY_ERROR`.
+
 ## Stellar Asset Contract (SAC) Support
 
 Stellar Asset Contracts (SACs) are system contracts for classic Stellar assets
@@ -95,6 +153,41 @@ const sacType = classifySacKey(scVal) // 'sacBalance' | 'sacAllowance' | ... | u
 
 Returns `undefined` when the `ScVal` does not match any known SAC pattern.
 
+## Interactive REPL Playground
+
+For experimentation and rapid prototyping, use the interactive REPL with pre-imported SDK modules:
+
+```bash
+npm run repl
+```
+
+This launches Node.js with the `--experimental-repl-await` flag and loads the
+TypeScript entrypoint through the ESM `tsx` loader (`--import tsx`), giving you
+access to:
+
+- `SorobanResurrect` — main SDK class
+- `extractKeysFromFootprint` — extract keys from transaction footprints
+- `classifyLedgerKey` — classify ledger key types
+- `FootprintCache` — cache footprint operations
+- `SimulationCache` — cache simulation results
+- `RpcFailoverManager` — manage multiple RPC endpoints
+- `VersionNegotiator` — handle protocol version compatibility
+- `createTestConfig(rpcUrl?, networkPassphrase?)` — helper to create test configuration
+- `help()` — display available functions
+
+Example session:
+
+```javascript
+const config = createTestConfig()
+const sdk = new SorobanResurrect(config)
+
+// Simulate a transaction to check for archived keys
+const result = await sdk.simulate(txXdrString)
+console.log('Archived keys:', result.archivedKeys.length)
+```
+
+The REPL provides a convenient environment for offline experimentation with mock RPC server support.
+
 ## Simulation Cache
 
 Enable the in-memory simulation cache and size it per network (keyed by network passphrase):
@@ -110,12 +203,3 @@ new SorobanResurrect({
 ```
 
 Invalid capacities fall back to the default (`1000`). Eviction is O(1) LRU, so cache memory is bounded by `maxSize`. The internal RPC server cache is also capped (16 endpoints). Run `BENCH=1 npx vitest bench tests/benchmarks/cache-warmth.perf.test.ts` to compare cold vs warm cache behavior across networks and accounts.
-
-## Restore Batch Sizing
-
-Restore batches are split by estimated XDR size (`MAX_XDR_SIZE_BYTES`) and, optionally:
-
-- `maxRestoreBatchSize` — key cap per batch (only enforced when set explicitly, for backward compatibility).
-- `restoreFeePerKey` + `maxRestoreFeePerBatch` — keep `keys * restoreFeePerKey` within a per-batch fee budget.
-
-The planner is exported as `planRestoreBatches(keys, options)`. A single key that exceeds a limit is placed in its own batch rather than dropped.

@@ -1,0 +1,40 @@
+export const MAX_XDR_SIZE_BYTES = 100_000
+export const DEFAULT_RESTORE_FEE = '100000'
+export const MAX_RETRIES = 3
+export const RETRY_DELAY_MS = 500
+export const DEFAULT_POLL_ATTEMPTS = 30
+export const POLL_INTERVAL_MS = 1000
+/** Default number of restore batches executed concurrently. */
+export const DEFAULT_MAX_CONCURRENCY = 5
+
+/**
+ * Estimated number of ledgers a persistent entry's TTL is extended to when it is
+ * restored via `RestoreFootprintOp`. Mirrors the network's
+ * `minimumPersistentEntryLifetime` setting and is used only for the projected TTL
+ * shown in `simulateDiff()`. Override per-call with `simulateDiff(xdr, src, { restoredTtlLedgers })`.
+ */
+export const RESTORED_ENTRY_TTL_LEDGERS = 4096
+
+/**
+ * Canonical source of truth for the restore tuning constants shared across the
+ * SDK and core packages. `MAX_XDR_SIZE_BYTES` and `DEFAULT_RESTORE_FEE` are
+ * declared above and re-exported here so consumers can import the whole tuning
+ * surface from a single module without redeclaring the literals.
+ */
+export const RESTORE_TUNING = {
+  MAX_XDR_SIZE_BYTES,
+  DEFAULT_RESTORE_FEE,
+} as const
+
+/**
+ * Status strings returned by Soroban RPC `sendTransaction` and `getTransaction`.
+ * Frozen so callers cannot change them at runtime.
+ */
+export const TRANSACTION_STATUS = Object.freeze({
+  PENDING: 'PENDING',
+  SUCCESS: 'SUCCESS',
+  FAILED: 'FAILED',
+  ERROR: 'ERROR',
+  DUPLICATE: 'DUPLICATE',
+  NOT_FOUND: 'NOT_FOUND',
+} as const)

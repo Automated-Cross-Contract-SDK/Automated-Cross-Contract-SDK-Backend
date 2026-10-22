@@ -30,6 +30,13 @@ export interface XdrEncodingOptions {
 // Protocol compatibility matrix
 // ---------------------------------------------------------------------------
 
+export interface ProtocolCompatibilityConfig {
+  /** Global protocol version support matrix */
+  matrix: Record<number, ProtocolSupport>
+  /** Per-network minimum protocol version overrides */
+  minProtocolPerNetwork?: Record<string, number>
+}
+
 export const PROTOCOL_COMPATIBILITY_MATRIX: Record<number, ProtocolSupport> = {
   20: { supported: true, xdrVariant: 'v20', notes: 'Initial Soroban release' },
   21: { supported: true, xdrVariant: 'v21', notes: 'Contract auth improvements' },
@@ -38,6 +45,9 @@ export const PROTOCOL_COMPATIBILITY_MATRIX: Record<number, ProtocolSupport> = {
 
 export const MIN_SUPPORTED_PROTOCOL = 20
 export const MAX_SUPPORTED_PROTOCOL = 22
+
+/** Per-network minimum protocol version overrides (e.g., testnet may require v21+) */
+export const MIN_PROTOCOL_PER_NETWORK: Record<string, number> = {}
 
 // ---------------------------------------------------------------------------
 // VersionNegotiator
@@ -48,9 +58,17 @@ type LogFn = (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => 
 export class VersionNegotiator {
   private cachedVersionInfo: ServerVersionInfo | null = null
   private readonly onLog: LogFn
+  private readonly networkId: string | null
+  private readonly minProtocolPerNetwork: Record<string, number>
 
-  constructor(onLog: LogFn) {
+  constructor(
+    onLog: LogFn,
+    networkId?: string,
+    minProtocolPerNetwork?: Record<string, number>,
+  ) {
     this.onLog = onLog
+    this.networkId = networkId || null
+    this.minProtocolPerNetwork = minProtocolPerNetwork || {}
   }
 
   /**
@@ -89,10 +107,15 @@ export class VersionNegotiator {
       rawResponse = undefined
     }
 
+    // Determine minimum protocol version for this network
+    const minProtocol = this.getMinimumProtocolForNetwork()
+
     // Bounds checking
-    if (protocolVersion < MIN_SUPPORTED_PROTOCOL) {
-      const msg = `Unsupported Soroban protocol version ${protocolVersion}. Minimum supported: ${MIN_SUPPORTED_PROTOCOL}`
-      this.onLog('error', msg, { protocolVersion })
+    if (protocolVersion < minProtocol) {
+      const msg = `Unsupported Soroban protocol version ${protocolVersion}. Minimum supported: ${minProtocol}${
+        this.networkId ? ` (for network: ${this.networkId})` : ''
+      }`
+      this.onLog('error', msg, { protocolVersion, networkId: this.networkId })
       throw Object.assign(new Error(msg), { code: 'UNSUPPORTED_PROTOCOL' })
     }
 
@@ -152,6 +175,17 @@ export class VersionNegotiator {
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * Determines the minimum supported protocol version for the current network.
+   * Checks for a network-specific override first, then falls back to the global minimum.
+   */
+  private getMinimumProtocolForNetwork(): number {
+    if (this.networkId && this.minProtocolPerNetwork[this.networkId] !== undefined) {
+      return this.minProtocolPerNetwork[this.networkId]
+    }
+    return MIN_SUPPORTED_PROTOCOL
+  }
 
   private parseProtocolVersion(raw: unknown): number {
     if (raw === null || raw === undefined) {

@@ -24,6 +24,18 @@ export interface UseSorobanResurrectReturn {
   reset: () => void
 }
 
+export interface SorobanResurrectPluginConfig {
+  rpcUrl: string | string[]
+  networkPassphrase: string
+  allowHttp?: boolean
+  timeout?: number
+}
+
+export interface SorobanResurrectPluginContextValue {
+  resurrect: UseSorobanResurrectReturn | null
+  config: SorobanResurrectPluginConfig | null
+}
+
 export interface SorobanResurrectPluginOptions extends UseSorobanResurrectOptions {}
 
-export const SOROBAN_RESURRECT_INJECTION_KEY = Symbol('SorobanResurrect') as import('vue').InjectionKey<UseSorobanResurrectReturn>
+export const SOROBAN_RESURRECT_INJECTION_KEY = Symbol('SorobanResurrect') as import('vue').InjectionKey<SorobanResurrectPluginContextValue>
