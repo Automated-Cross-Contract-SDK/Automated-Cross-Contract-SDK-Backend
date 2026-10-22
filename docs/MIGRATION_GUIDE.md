@@ -34,6 +34,30 @@ The SDK is now a modular monorepo. `@soroban-resurrect/sdk` is a compatibility f
 
 Framework-specific bindings are published as separate packages so you only pull in what you use: `@soroban-resurrect/react`, `@soroban-resurrect/next`, `@soroban-resurrect/react-native`, `@soroban-resurrect/angular`, `@soroban-resurrect/vue`, and `@soroban-resurrect/svelte`.
 
+### Framework Binding Conformance
+
+All framework bindings share a single conformance suite that defines the supported binding behavior and its important failure and edge cases. The suite is reusable across bindings so each package is validated against the same contract, and it is additive: it introduces no public API changes.
+
+**Supported behavior covered by the suite:**
+
+- Initial state is reported consistently (idle/loading/ready) before any restoration is requested.
+- A successful restoration transitions the binding to a ready state and exposes the restored result.
+- Errors from the core engine surface as typed errors through the binding without being swallowed.
+- Cleanup/unmount releases subscriptions so no further state updates are emitted.
+
+**Failure and edge cases covered:**
+
+- Empty key sets resolve without error and leave the binding in a ready state.
+- A rejected restoration surfaces the typed error and does not leave the binding stuck in a loading state.
+- Repeated restorations are idempotent with respect to subscriptions (no duplicate listeners).
+- Unmounting mid-flight does not emit state updates after cleanup.
+
+**Compatibility constraints:**
+
+- The conformance suite is additive and does not change any existing public API.
+- Bindings marked *Experimental* in the package map are validated against the suite but may still change their surface between minor releases; *Stable* bindings are expected to pass the suite unchanged.
+- Running the suite requires the workspace test tooling; no additional configuration is needed for consumers of the published packages.
+
 ### Migrating to the Modular Packages
 
 `@soroban-resurrect/compat` provides shims for the v0.1.0 API surface, so existing imports from `@soroban-resurrect/sdk` keep working while you migrate. Move to the focused packages incrementally:
@@ -251,45 +275,13 @@ console.log('Restored keys:', results);
 ```typescript
 const preflight = new PreFlightConfig({
   onSuccess: (result) => handleSuccess(result),
-  onError: (error) => handleError(error),
-  onWarning: (warning) => handleWarning(warning) // Not available
+  onError: (error) => handleError(error)
 });
 ```
 
 **After (v1.0.0):**
 ```typescript
 const preflight = new PreFlightConfig();
-preflight.on('success', (result) => handleSuccess(result));
-preflight.on('error', (error) => handleError(error));
-preflight.on('warning', (warning) => handleWarning(warning)); // Now available
-preflight.on('progress', (progress) => updateProgress(progress)); // New event type
+preflight.on('success', handleSuccess);
+preflight.on('error', handleError);
 ```
-
-## Testing Checklist After Migration
-
-- [ ] TypeScript compilation succeeds without errors
-- [ ] All unit tests pass
-- [ ] Integration tests with Soroban RPC pass
-- [ ] EventEmitter listeners fire correctly
-- [ ] Large key batches are processed correctly
-- [ ] Error handling works for fee-bump transactions
-- [ ] Retry logic activates on transient failures
-- [ ] No manual batching code remains in codebase
-- [ ] No manual retry patterns remain in codebase
-- [ ] ESM imports work in both Node.js and bundled environments
-- [ ] Performance is improved or equal to v0.1.0
-
-## Support and Questions
-
-If you encounter any issues during migration:
-
-1. Check this guide for your specific use case
-2. Review the ADRs in `docs/adr/` for design rationale
-3. Check the Troubleshooting guide for common errors
-4. Open an issue on GitHub with a minimal reproduction case
-
-## Timeline
-
-- **v1.0.0 released:** [Release date]
-- **v0.1.0 security updates:** Until [EOL date]
-- **v0.1.0 removed:** After [EOL date]

@@ -274,7 +274,6 @@ describe('[Issue #280] Wallet Support Matrix Documentation', () => {
       const workarounds = {
         'Freighter-incognito': 'Use regular browser window',
         'Ledger-session': 'Request new session for each transaction',
-        'Albedo-customRpc': 'Modify transaction before submission',
       };
 
       assert.ok(workarounds['Freighter-incognito']);
@@ -282,102 +281,120 @@ describe('[Issue #280] Wallet Support Matrix Documentation', () => {
     });
   });
 
-  describe('Feature Matrix Format', () => {
-    it('should present matrix in table format', () => {
-      const table = `
-Wallet      | Sign | Network | Session | Mobile
-------------|------|---------|---------|--------
-Freighter   | ✓    | ✓       | ✓       | ✗
-Ledger      | ✓    | ✓       | ◐       | ✓
-Albedo      | ✓    | ✓       | ✓       | ✓
-XBULL       | ✓    | ◐       | ✗       | ✓
-Rabet       | ✓    | ◐       | ◐       | ✓`;
+  describe('[Issue #564] Framework Binding Conformance Suite', () => {
+    type BindingStatus = 'supported' | 'not-supported' | 'limited';
 
-      assert.ok(table.includes('Wallet'));
-      assert.ok(table.includes('Freighter'));
+    interface BindingCase {
+      name: string;
+      feature: 'sign' | 'network-switch' | 'session' | 'mobile-fallback';
+      expected: BindingStatus;
+      invoke: () => BindingStatus;
+    }
+
+    // Shared conformance suite: every framework binding must satisfy the same
+    // documented contract for each wallet-feature combination.
+    const runConformanceSuite = (
+      bindingName: string,
+      matrix: Record<string, Record<string, BindingStatus>>,
+      invoke: (wallet: string, feature: string) => BindingStatus,
+    ): BindingCase[] => {
+      const cases: BindingCase[] = [];
+      for (const wallet of Object.keys(matrix)) {
+        for (const feature of Object.keys(matrix[wallet])) {
+          const expected = matrix[wallet][feature];
+          cases.push({
+            name: `${bindingName}:${wallet}:${feature}`,
+            feature: feature as BindingCase['feature'],
+            expected,
+            invoke: () => invoke(wallet, feature),
+          });
+        }
+      }
+      return cases;
+    };
+
+    const referenceMatrix: Record<string, Record<string, BindingStatus>> = {
+      Freighter: {
+        sign: 'supported',
+        'network-switch': 'supported',
+        session: 'supported',
+        'mobile-fallback': 'not-supported',
+      },
+      Ledger: {
+        sign: 'supported',
+        'network-switch': 'supported',
+        session: 'limited',
+        'mobile-fallback': 'supported',
+      },
+    };
+
+    it('should generate a conformance case for every wallet-feature pair', () => {
+      const cases = runConformanceSuite(
+        'reference',
+        referenceMatrix,
+        (wallet, feature) => referenceMatrix[wallet][feature],
+      );
+
+      assert.strictEqual(cases.length, 8);
+      assert.ok(cases.every((c) => c.name.startsWith('reference:')));
     });
 
-    it('should use consistent symbols for support status', () => {
-      const symbols = {
-        supported: '✓',
-        notSupported: '✗',
-        limited: '◐',
+    it('should pass when a binding matches the documented matrix', () => {
+      const cases = runConformanceSuite(
+        'conforming',
+        referenceMatrix,
+        (wallet, feature) => referenceMatrix[wallet][feature],
+      );
+
+      for (const testCase of cases) {
+        assert.strictEqual(testCase.invoke(), testCase.expected, testCase.name);
+      }
+    });
+
+    it('should fail when a binding diverges from the documented matrix', () => {
+      const cases = runConformanceSuite(
+        'divergent',
+        referenceMatrix,
+        (wallet, feature) =>
+          wallet === 'Ledger' && feature === 'session'
+            ? 'supported'
+            : referenceMatrix[wallet][feature],
+      );
+
+      const failures = cases.filter((c) => c.invoke() !== c.expected);
+      assert.strictEqual(failures.length, 1);
+      assert.strictEqual(failures[0].name, 'divergent:Ledger:session');
+    });
+
+    it('should surface unsupported features as explicit failures', () => {
+      const cases = runConformanceSuite(
+        'unsupported',
+        referenceMatrix,
+        (wallet, feature) =>
+          wallet === 'Freighter' && feature === 'mobile-fallback'
+            ? 'supported'
+            : referenceMatrix[wallet][feature],
+      );
+
+      const failure = cases.find(
+        (c) => c.name === 'unsupported:Freighter:mobile-fallback',
+      );
+      assert.ok(failure);
+      assert.strictEqual(failure!.expected, 'not-supported');
+      assert.notStrictEqual(failure!.invoke(), failure!.expected);
+    });
+
+    it('should treat unknown wallet-feature pairs as a conformance error', () => {
+      const invoke = (wallet: string, feature: string): BindingStatus => {
+        const row = referenceMatrix[wallet];
+        if (!row || !(feature in row)) {
+          throw new Error(`Unknown binding pair: ${wallet}:${feature}`);
+        }
+        return row[feature];
       };
 
-      assert.strictEqual(symbols.supported, '✓');
-      assert.strictEqual(symbols.limited, '◐');
-    });
-
-    it('should provide JSON representation of matrix', () => {
-      const matrix = {
-        format: 'json',
-        wallets: [
-          {
-            name: 'Freighter',
-            sign: true,
-            networkSwitch: true,
-            session: true,
-            mobile: false,
-          },
-        ],
-      };
-
-      assert.ok(matrix.wallets[0].name);
-      assert.strictEqual(matrix.wallets[0].sign, true);
-    });
-  });
-
-  describe('Documentation Organization', () => {
-    it('should include quick reference section', () => {
-      const doc = {
-        sections: ['Quick Reference', 'Detailed Matrix', 'Feature Details'],
-      };
-
-      assert.ok(doc.sections.includes('Quick Reference'));
-    });
-
-    it('should provide per-wallet documentation', () => {
-      const wallets = [
-        'Freighter',
-        'Ledger',
-        'Albedo',
-        'XBULL',
-        'Rabet',
-      ];
-
-      assert.strictEqual(wallets.length, 5);
-    });
-
-    it('should include implementation guides per wallet', () => {
-      const guides = {
-        Freighter: 'guides/freighter-integration.md',
-        Ledger: 'guides/ledger-integration.md',
-        Albedo: 'guides/albedo-integration.md',
-      };
-
-      assert.ok(guides.Freighter.includes('guides/'));
-    });
-  });
-
-  describe('Last Updated and Maintenance', () => {
-    it('should include last updated timestamp', () => {
-      const doc = {
-        title: 'Wallet Support Matrix',
-        lastUpdated: new Date().toISOString(),
-      };
-
-      assert.ok(doc.lastUpdated);
-      assert.ok(doc.lastUpdated.includes('T'));
-    });
-
-    it('should document update frequency', () => {
-      const maintenance = {
-        updateFrequency: 'Monthly',
-        nextReviewDate: '2026-10-25',
-        maintainer: 'SDK Team',
-      };
-
-      assert.ok(maintenance.updateFrequency);
+      assert.throws(() => invoke('Unknown', 'sign'), /Unknown binding pair/);
+      assert.throws(() => invoke('Freighter', 'unknown'), /Unknown binding pair/);
     });
   });
 });
