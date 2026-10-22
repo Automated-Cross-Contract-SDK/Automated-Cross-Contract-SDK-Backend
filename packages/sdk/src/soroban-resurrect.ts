@@ -29,6 +29,7 @@ import {
 } from './footprint-parser.js'
 import { ExponentialBackoff, type RetryPolicy } from './retry-policy.js'
 import { SimulationCache, type SimulationCacheConfig } from './simulation-cache.js'
+import { LedgerReadCoalescer } from './ledger-read-coalescer.js'
 
 const MAX_XDR_SIZE_BYTES = 100_000
 const DEFAULT_RESTORE_FEE = '100000'
@@ -71,6 +72,7 @@ function extractInnerTransaction(tx: any): any {
 
 export class SorobanResurrect {
   private server: SorobanRpc.Server
+  private ledgerReadCoalescer = new LedgerReadCoalescer()
   private config: Required<Omit<SorobanResurrectConfig, 'timeout'>> & { timeout?: number }
 
   constructor(config: SorobanResurrectConfig) {
@@ -309,17 +311,24 @@ export class SorobanResurrect {
       return { needsRestoration: false, archivedKeys: [], totalKeysInFootprint: 0 }
     }
 
-    let existingKeys: SorobanRpc.Api.GetLedgerEntriesResponse
+    // Encode each key once and reuse it for coalescing, matching and error context.
+    const encodedKeys = keys.all.map(encodeLedgerKey)
+
+    let entries: SorobanRpc.Api.LedgerEntryResult[]
     try {
-      existingKeys = await this.retryOnFailure(
-        () => this.getServer().getLedgerEntries(...keys.all),
-        'getLedgerEntries',
+      entries = await this.ledgerReadCoalescer.getLedgerEntries(
+        keys.all,
+        batch => this.retryOnFailure(
+          () => this.getServer().getLedgerEntries(...batch),
+          'getLedgerEntries',
+        ).then(r => r.entries),
+        encodedKeys,
       )
     } catch (err) {
       // Build key context for richer error
-      const keyContext = keys.all.map(k => {
+      const keyContext = keys.all.map((k, i) => {
         const classification = classifyLedgerKey(k)
-        return { keyBase64: encodeLedgerKey(k), ...classification }
+        return { keyBase64: encodedKeys[i], ...classification }
       })
       throw new SorobanResurrectError(
         `Failed to query ${keys.all.length} ledger entries (rpcUrl=${this.config.rpcUrl}): ${err instanceof Error ? err.message : String(err)}`,
@@ -330,22 +339,18 @@ export class SorobanResurrect {
     }
 
     const existingEntries = new Set<string>()
-    for (const entry of existingKeys.entries) {
+    for (const entry of entries) {
       existingEntries.add(encodeLedgerKey(entry.key))
     }
 
     const archivedKeys: ArchivedKey[] = []
-    for (const key of keys.all) {
-      const encoded = encodeLedgerKey(key)
-      if (!existingEntries.has(encoded)) {
-        const classification = classifyLedgerKey(key)
-        archivedKeys.push({
-          key,
-          keyBase64: encoded,
-          ...classification,
-        })
-      }
-    }
+    const seen = new Set<string>()
+    keys.all.forEach((key, i) => {
+      const encoded = encodedKeys[i]
+      if (existingEntries.has(encoded) || seen.has(encoded)) return
+      seen.add(encoded)
+      archivedKeys.push({ key, keyBase64: encoded, ...classifyLedgerKey(key) })
+    })
 
     // Sort by restorePriority so contractInstance (0) entries come before
     // contractCode (1) and contractData (2) entries.  This guarantees that a
@@ -1384,6 +1389,21 @@ export class SorobanResurrect {
       return null
     }
     return this.simulationCache.getStatistics()
+  }
+
+  /**
+   * Aggregate cache and request-coalescing measurements. Contains counts and
+   * rates only — no ledger keys, contract ids, accounts or RPC URLs — so it is
+   * safe to export to metrics backends.
+   */
+  getMetrics(): {
+    simulationCache: ReturnType<SimulationCache['getStatistics']> | null
+    ledgerReadCoalescing: ReturnType<LedgerReadCoalescer['getStatistics']>
+  } {
+    return {
+      simulationCache: this.simulationCache ? this.simulationCache.getStatistics() : null,
+      ledgerReadCoalescing: this.ledgerReadCoalescer.getStatistics(),
+    }
   }
 
   getRpcServer(): SorobanRpc.Server {

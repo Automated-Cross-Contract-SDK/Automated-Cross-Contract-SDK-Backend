@@ -94,3 +94,13 @@ const sacType = classifySacKey(scVal) // 'sacBalance' | 'sacAllowance' | ... | u
 ```
 
 Returns `undefined` when the `ScVal` does not match any known SAC pattern.
+
+## Ledger read coalescing & metrics
+
+Concurrent `simulate`/`checkTransaction` calls that touch the same ledger keys share a single in-flight `getLedgerEntries` request (`LedgerReadCoalescer`). Results are never cached after the read settles, and a failed read rejects every waiting caller. Within one restoration flow each ledger key is encoded once and duplicate footprint keys are reported only once.
+
+`sdk.getMetrics()` returns simulation-cache and coalescing counters (`keysRequested`, `keysCoalesced`, `duplicateKeysSkipped`, `rpcCalls`, `inFlight`). It contains aggregate numbers only — no ledger keys, contract ids, accounts or RPC URLs — so it is safe to export to metrics backends.
+
+## Parser benchmarking
+
+`measureParserPerformance(txXDR, networkPassphrase, iterations?)` reports the cold first-parse cost (`startupMs`) separately from warm throughput (`steadyStateMeanMs`, `steadyStateOpsPerSec`). Run it in a fresh process for a true cold-start figure.
