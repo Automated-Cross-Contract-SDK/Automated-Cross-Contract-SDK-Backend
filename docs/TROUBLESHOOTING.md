@@ -119,6 +119,34 @@ const signedRebuilt = await wallet.signTransaction(rebuilt);
 
 **Compatibility constraint:** Fee-bump envelopes are intentionally unsupported. If your wallet cannot return the original signed envelope unchanged, use a wallet that can, or rebuild the transaction with the desired fee before signing.
 
+### Wallet Adapter Errors and Underlying Causes
+
+**Symptoms:** A wallet adapter throws an error, and the SDK surfaces a normalized error (e.g. `WALLET_SIGNING_FAILED`) whose `cause` holds the original adapter error.
+
+**Supported behavior:** When the SDK normalizes an error thrown by a wallet adapter, it **preserves the original error as the `cause`** of the normalized error rather than discarding it. This keeps the adapter's diagnostic detail (stack trace, provider-specific fields) reachable for logging and debugging while still exposing a stable, SDK-level error code.
+
+Edge cases:
+- **Non-`Error` thrown values** (strings, plain objects, `undefined`): the SDK wraps the thrown value in an `Error` and attaches it as `cause`, so `error.cause` is always an `Error` instance.
+- **Errors without a cause:** if the adapter error itself has no `cause`, the normalized error's `cause` is the adapter error itself; no synthetic cause is invented.
+- **Already-normalized errors:** if the thrown value is already an SDK-normalized error (it carries a recognized SDK error code), it is passed through unchanged and is not re-wrapped, so `cause` chains are not duplicated.
+
+**Solutions:**
+```typescript
+try {
+  const signed = await wallet.signTransaction(transaction);
+} catch (error) {
+  // Inspect the preserved underlying cause for adapter-specific detail
+  if (error.code === 'WALLET_SIGNING_FAILED') {
+    console.error('Adapter error:', error.cause);
+    // error.cause is always an Error instance, even if the adapter
+    // threw a string or plain object.
+  }
+  throw error;
+}
+```
+
+**Compatibility constraint:** Preserving `cause` is additive. Existing error `code`/`message` values are unchanged; callers that ignore `cause` are unaffected. No public API signatures change.
+
 ### Hardware Wallet Removed During Signing
 
 **Symptoms:** A hardware wallet is unplugged, disconnected, or loses its transport while a signing request is in flight. The SDK surfaces a recoverable `HARDWARE_WALLET_DISCONNECTED` error instead of a fatal signing failure.
@@ -207,81 +235,6 @@ console.log('Parsed XDR:', parsed);
 **Solutions:**
 ```typescript
 // 1. Check wallet availability
-const walletId = 'your-wallet-id';
-const isAvailable = await checkWalletAvailability(walletId);
+const walletId = 'your-wal
 
-// 2. Handle user rejection
-try {
-  const signature = await wallet.signTransaction(transaction);
-} catch (error) {
-  if (error.code === 'USER_REJECTION') {
-    console.log('User cancelled signing');
-  } else if (error.code === 'TIMEOUT') {
-    console.log('Signing timeout - wallet may not be responding');
-  }
-}
-
-// 3. Verify wallet Soroban support
-const capabilities = await wallet.getCapabilities();
-if (!capabilities.includes('soroban')) {
-  throw new Error('Wallet does not support Soroban transactions');
-}
-
-// 4. Check message port connectivity
-const port = await wallet.connect();
-if (!port) {
-  throw new Error('Failed to establish wallet connection');
-}
-
-// 5. Implement timeout handling
-const signWithTimeout = async (txn, timeout = 30000) => {
-  return Promise.race([
-    wallet.signTransaction(txn),
-    new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Signing timeout')), timeout)
-    )
-  ]);
-};
-```
-
-### Network/Firewall Configuration
-
-**Symptoms:** Connection refused, cannot reach RPC, timeout errors
-
-**Possible Causes:**
-1. Firewall blocking requests to Soroban RPC
-2. Proxy or VPN interference
-3. DNS resolution issues
-4. Rate limiting from RPC provider
-5. Network connectivity problems
-
-**Solutions:**
-```typescript
-// 1. Test connectivity
-const testRPC = async (url: string) => {
-  try {
-    const response = await fetch(url, { method: 'HEAD' });
-    return response.ok;
-  } catch (error) {
-    console.error('Cannot reach RPC:', error);
-    return false;
-  }
-};
-
-// 2. Configure proxy if needed
-import axios from 'axios';
-const client = axios.create({
-  httpAgent: new HttpProxyAgent('http://proxy:8080'),
-  httpsAgent: new HttpsProxyAgent('https://proxy:8080'),
-});
-
-// 3. Use DNS resolution
-import dns from 'dns';
-dns.resolve4('soroban-rpc.stellar.org', (err, addresses) => {
-  if (err) console.error('DNS resolution failed:', err);
-  console.log('RPC addresses:', addresses);
-});
-
-// 4. Implement exponential ba
-
-/* … truncated 2185 chars — edit only what you need near the top … */
+/* … truncated 2100 chars — edit only what you need near the top … */
