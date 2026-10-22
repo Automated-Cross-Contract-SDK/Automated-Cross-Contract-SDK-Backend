@@ -138,6 +138,36 @@ export interface RestoreTransactionResult {
   keysRestored: number
 }
 
+/** A single restore batch, as built and (later) executed. */
+export interface RestoreBatchResult {
+  batchIndex: number
+  transactionXDR: string
+  keysRestored: number
+  status: 'pending' | 'success' | 'failed'
+  txHash?: string
+  error?: string
+}
+
+/** Outcome of sequential batch execution; stops at the first failed batch. */
+export interface RestoreAllBatchesResult {
+  success: boolean
+  batches: RestoreBatchResult[]
+  totalKeysRestored: number
+  failedAtBatchIndex?: number
+  error?: string
+}
+
+/** Outcome of concurrent batch execution; every batch is attempted. */
+export interface ConcurrentRestoreResult {
+  success: boolean
+  batches: RestoreBatchResult[]
+  totalKeysRestored: number
+  failedBatchCount: number
+  failedBatchIndices: number[]
+  error?: string
+  concurrencyUsed: number
+}
+
 export interface FeeBumpMetadata {
   isFeeBump: boolean
   innerTransactionXDR?: string
@@ -185,7 +215,7 @@ export class SorobanResurrectError extends Error {
 
   constructor(
     message: string,
-    public code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR',
+    public code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR' | 'SUBMISSION_AMBIGUOUS',
     public cause?: unknown,
     context?: SorobanResurrectErrorContext,
   ) {

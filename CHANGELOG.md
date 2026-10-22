@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
+## [Unreleased]
+
+### Added
+- Safe handling of ambiguous `sendTransaction` timeouts: reconcile by hash, new `SUBMISSION_AMBIGUOUS` error code (#585).
+- Restoration result type definitions and cross-package contract tests (#586).
+- Mock-RPC reproduction fixtures exported from failing integration tests (#587).
+- Reviewable public export baseline in `api-baseline/` with a drift test (#588).
+
 ## [0.1.0] — 2026-07-13
 
 ### Added
