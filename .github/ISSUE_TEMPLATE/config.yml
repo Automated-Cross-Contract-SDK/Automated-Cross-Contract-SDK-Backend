@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and discussions
+    url: https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend/discussions
+    about: Ask usage questions here instead of opening an issue.
+  - name: Security vulnerability
+    url: https://github.com/Automated-Cross-Contract-SDK/Automated-Cross-Contract-SDK-Backend/blob/main/SECURITY.md
+    about: Report security problems privately as described in SECURITY.md. Do not open a public issue.

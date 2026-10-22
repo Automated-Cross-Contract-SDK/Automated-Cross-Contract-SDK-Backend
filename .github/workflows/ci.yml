@@ -5,8 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  release:
-    types: [published]
+  schedule:
+    - cron: '0 6 * * *' # Daily at 06:00 UTC
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: [18, 20, 22]
+        node-version: [18, 20, 22, 24]
 
     steps:
       - uses: actions/checkout@v4
@@ -36,8 +36,66 @@ jobs:
       - name: Compile documentation snippets
         run: npm run test:docs -w packages/sdk
 
+      - run: npm run lint
       - run: npx tsc --noEmit -p packages/sdk/tsconfig.json
       - run: npx tsc --noEmit -p packages/react/tsconfig.json
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck every workspace package
+        run: |
+          # Packages listed in the known-failures file are reported as warnings so the
+          # job stays green while they are fixed. Any other failing package fails the job.
+          known=$(grep -v '^#' .github/typecheck-known-failures.txt | sed '/^$/d')
+          failed=0
+          for pkg in $(node -p "require('./package.json').workspaces.join(' ')"); do
+            out=$(mktemp)
+            if npm run typecheck -w "$pkg" --if-present >"$out" 2>&1; then
+              status=0
+            else
+              status=$?
+            fi
+            echo "::group::typecheck $pkg (exit $status)"
+            cat "$out"
+            echo "::endgroup::"
+            if [ "$status" -ne 0 ]; then
+              if echo "$known" | grep -qx "$pkg"; then
+                echo "::warning file=$pkg/tsconfig.json::$pkg typecheck fails (listed in .github/typecheck-known-failures.txt)"
+              else
+                echo "::error file=$pkg/tsconfig.json::$pkg typecheck failed"
+                failed=1
+              fi
+            fi
+          done
+          exit $failed
+
+  fuzz:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    needs: [quality]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Fuzz XDR parsing (60s)
+        working-directory: packages/sdk
+        run: npm run test:fuzz
 
   coverage:
     if: github.event_name == 'pull_request'
@@ -61,9 +119,67 @@ jobs:
         working-directory: packages/react
         run: npx vitest run --coverage
 
-  publish:
-    if: github.event_name == 'release' && github.event.action == 'published'
-    needs: [quality]
+  deploy-test-contracts:
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'safe-to-test')
+    runs-on: ubuntu-latest
+    outputs:
+      test-contract-id: ${{ steps.deploy.outputs.contract_id }}
+      test-contract-hash: ${{ steps.deploy.outputs.contract_hash }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Stellar CLI
+        # Pinned crates.io release (checksum-verified by cargo via --locked); no piped installer.
+        run: cargo install --locked stellar-cli --version 22.8.2
+
+      - name: Deploy test contract to testnet
+        id: deploy
+        run: |
+          NETWORK=testnet
+          WASM_PATH=packages/sdk/tests/fixtures/test_contract.wasm
+
+          # If contract wasm doesn't exist, generate a minimal placeholder
+          if [ ! -f "$WASM_PATH" ]; then
+            echo "::warning::test_contract.wasm not found, skipping deploy"
+            echo "contract_id=" >> $GITHUB_OUTPUT
+            echo "contract_hash=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          CONTRACT_ID=$(stellar contract deploy \
+            --wasm "$WASM_PATH" \
+            --source "$TEST_DEPLOYER_SECRET" \
+            --network "$NETWORK" \
+            --rpc-url https://soroban-testnet.stellar.org)
+
+          echo "contract_id=$CONTRACT_ID" >> $GITHUB_OUTPUT
+          echo "contract_hash=$(sha256sum $WASM_PATH | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+
+          echo "Deployed contract: $CONTRACT_ID"
+        env:
+          TEST_DEPLOYER_SECRET: ${{ secrets.TEST_DEPLOYER_SECRET }}
+
+      - name: Record deployed contract IDs
+        run: |
+          mkdir -p /tmp/test-contracts
+          echo "{\"testnet\": {\"contract_id\": \"${{ steps.deploy.outputs.contract_id }}\", \"deployed_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}" > /tmp/test-contracts/deployed.json
+
+      - name: Upload contract IDs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-contracts
+          path: /tmp/test-contracts/deployed.json
+
+  integration-tests:
+    if: |
+      (github.event_name == 'schedule') ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'safe-to-test'))
+    needs: [deploy-test-contracts]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -71,21 +187,63 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          registry-url: https://registry.npmjs.org
           cache: npm
+
+      - name: Download deployed contract IDs
+        uses: actions/download-artifact@v4
+        with:
+          name: test-contracts
+          path: /tmp/test-contracts
 
       - run: npm ci
 
-      - run: npm run build
-
-      - name: Publish SDK
-        working-directory: packages/sdk
-        run: npm publish --access public
+      - name: Run integration tests against testnet
+        run: npm run test:integration -w packages/sdk
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RUN_INTEGRATION_TESTS: true
+          SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
+          SOROBAN_NETWORK_PASSPHRASE: 'Test SDF Network ; September 2015'
+          TEST_ACCOUNT_SECRET: ${{ secrets.TEST_ACCOUNT_SECRET }}
+          DEPLOYED_CONTRACT_ID: ${{ needs.deploy-test-contracts.outputs.test-contract-id }}
 
-      - name: Publish React
-        working-directory: packages/react
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Post failure comment on PR
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Integration tests failed
+              
+              Integration tests against Soroban testnet have failed.
+              
+              [View workflow run](${runUrl})
+              
+              Please check the logs for details on the failure.`
+            })
+
+  cleanup-test-contracts:
+    if: |
+      always() &&
+      needs.deploy-test-contracts.result == 'success' &&
+      needs.deploy-test-contracts.outputs.test-contract-id != ''
+    needs: [deploy-test-contracts, integration-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Stellar CLI
+        # Pinned crates.io release (checksum-verified by cargo via --locked); no piped installer.
+        run: cargo install --locked stellar-cli --version 22.8.2
+
+      - name: Cleanup test contract (optional best-effort)
+        continue-on-error: true
+        run: |
+          echo "Cleanup phase — test contracts are ephemeral on testnet and expire automatically."
+          echo "Contract ID: ${{ needs.deploy-test-contracts.outputs.test-contract-id }}"
+
+  # npm publishing and GitHub releases are handled by semantic-release —
+  # see .github/workflows/release.yml and .releaserc.json.

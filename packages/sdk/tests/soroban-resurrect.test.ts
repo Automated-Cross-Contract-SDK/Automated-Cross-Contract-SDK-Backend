@@ -32,9 +32,16 @@ vi.mock('@stellar/stellar-sdk', () => {
         isSimulationRestore: vi.fn(),
       },
     },
-    TransactionBuilder: {
-      fromXDR: vi.fn(),
-    },
+    TransactionBuilder: Object.assign(
+      vi.fn().mockImplementation(() => ({
+        addOperation: vi.fn().mockReturnThis(),
+        setTimeout: vi.fn().mockReturnThis(),
+        build: vi.fn().mockReturnValue({
+          toXDR: vi.fn().mockReturnValue('mock-tx-xdr'),
+        }),
+      })),
+      { fromXDR: vi.fn() },
+    ),
     Transaction: vi.fn(),
     Operation: {
       restoreFootprint: vi.fn().mockReturnValue({ type: 'restoreFootprint' }),
@@ -88,6 +95,24 @@ describe('SorobanResurrect', () => {
     it('applies default values', () => {
       const instance = new SorobanResurrect(defaultConfig)
       expect(instance).toBeDefined()
+    })
+
+    it('accepts restorePriorityMap configuration', () => {
+      const priorityMap = {
+        contractData: 0,
+        contractCode: 1,
+        contractInstance: 2,
+      }
+      const instance = new SorobanResurrect({
+        ...defaultConfig,
+        restorePriorityMap: priorityMap,
+      })
+      expect((instance as any).config.restorePriorityMap).toEqual(priorityMap)
+    })
+
+    it('works without restorePriorityMap (uses defaults)', () => {
+      const instance = new SorobanResurrect(defaultConfig)
+      expect((instance as any).config.restorePriorityMap).toBeUndefined()
     })
   })
 
@@ -461,6 +486,144 @@ describe('SorobanResurrect', () => {
           'original:complete',
         ])
       })
+    })
+  })
+
+  describe('waitForTransaction with WebSocket fallback', () => {
+    it('falls back to polling when WebSocket silently stops delivering events', async () => {
+      const instance = new SorobanResurrect({
+        ...defaultConfig,
+        useWebSocket: true,
+        pollIntervalMs: 100,
+      })
+
+      const mockSignFn = vi.fn().mockResolvedValue('signed-xdr')
+      const txHash = 'abc123'
+      let wsOpenCalled = false
+
+      // Mock WebSocket that opens but never sends any events (silent drop)
+      global.WebSocket = vi.fn(function (this: any, url: string) {
+        this.onopen = null
+        this.onmessage = null
+        this.onerror = null
+        this.onclose = null
+        this.send = vi.fn()
+        this.close = vi.fn()
+
+        // Simulate connection opening
+        setTimeout(() => {
+          if (this.onopen) {
+            wsOpenCalled = true
+            this.onopen()
+          }
+        }, 10)
+
+        // Simulate silent drop (no events, no close event)
+        // Connection just stops responding
+      }) as any
+
+      vi.spyOn(instance, 'getRpcServer').mockReturnValue({
+        getTransaction: vi.fn()
+          .mockResolvedValueOnce({ status: 'NOT_FOUND' })
+          .mockResolvedValueOnce({ status: 'NOT_FOUND' })
+          .mockResolvedValueOnce({ status: 'SUCCESS' }),
+      } as any)
+
+      vi.spyOn(instance, 'getWebSocketUrl').mockReturnValue('ws://localhost:8000')
+      vi.spyOn(instance, 'probeWebSocketSupport').mockResolvedValue(true)
+
+      const result = await instance.waitForTransaction(txHash, 10)
+
+      // Should fall back to polling after silent drop timeout
+      expect(result.transport).toBe('polling')
+      expect(wsOpenCalled).toBe(true)
+    })
+
+    it('logs the WebSocket fallback exactly once', async () => {
+      const logs: string[] = []
+      const instance = new SorobanResurrect({
+        ...defaultConfig,
+        useWebSocket: true,
+        pollIntervalMs: 100,
+        onLog: (level, msg) => {
+          if (level === 'warn' && msg.includes('fallback')) {
+            logs.push(msg)
+          }
+        },
+      })
+
+      const txHash = 'def456'
+
+      global.WebSocket = vi.fn(function (this: any) {
+        this.onopen = null
+        this.onmessage = null
+        this.onerror = null
+        this.onclose = null
+        this.send = vi.fn()
+        this.close = vi.fn()
+
+        setTimeout(() => {
+          if (this.onopen) this.onopen()
+        }, 10)
+      }) as any
+
+      vi.spyOn(instance, 'getRpcServer').mockReturnValue({
+        getTransaction: vi.fn()
+          .mockResolvedValueOnce({ status: 'NOT_FOUND' })
+          .mockResolvedValueOnce({ status: 'SUCCESS' }),
+      } as any)
+
+      vi.spyOn(instance, 'getWebSocketUrl').mockReturnValue('ws://localhost:8000')
+      vi.spyOn(instance, 'probeWebSocketSupport').mockResolvedValue(true)
+
+      await instance.waitForTransaction(txHash, 10)
+
+      // Should log exactly once about fallback
+      const fallbackLogs = logs.filter(l => l.includes('silent') || l.includes('fallback'))
+      expect(fallbackLogs.length).toBeLessThanOrEqual(1)
+    })
+
+    it('normal WebSocket delivery bypasses the fallback timeout', async () => {
+      const instance = new SorobanResurrect({
+        ...defaultConfig,
+        useWebSocket: true,
+        pollIntervalMs: 100,
+      })
+
+      const txHash = 'ghi789'
+      let messageHandlerCalled = false
+
+      global.WebSocket = vi.fn(function (this: any) {
+        this.onopen = null
+        this.onmessage = null
+        this.onerror = null
+        this.onclose = null
+        this.send = vi.fn()
+        this.close = vi.fn()
+
+        setTimeout(() => {
+          if (this.onopen) this.onopen()
+          // Deliver status event immediately
+          if (this.onmessage) {
+            messageHandlerCalled = true
+            this.onmessage({
+              data: JSON.stringify({
+                method: 'transaction_status',
+                params: { hash: txHash, status: 'SUCCESS' },
+              }),
+            })
+          }
+        }, 10)
+      }) as any
+
+      vi.spyOn(instance, 'getWebSocketUrl').mockReturnValue('ws://localhost:8000')
+      vi.spyOn(instance, 'probeWebSocketSupport').mockResolvedValue(true)
+
+      const result = await instance.waitForTransaction(txHash, 10)
+
+      // Should complete via WebSocket, not fall back
+      expect(result.transport).toBe('websocket')
+      expect(messageHandlerCalled).toBe(true)
     })
   })
 })

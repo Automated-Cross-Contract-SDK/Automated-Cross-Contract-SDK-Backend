@@ -1,3 +1,4 @@
+import type { ArchivedKey, ExecutionResult } from '@soroban-resurrect/sdk'
 import type { RestorationEvent, RestorationEventBus, RestorationSlice } from './middleware.js'
 import { initialRestorationSlice } from './middleware.js'
 
@@ -11,6 +12,23 @@ export interface JotaiLikeAtom<T> {
 }
 
 export type AtomFactory = <T>(initial: T) => JotaiLikeAtom<T>
+
+export const jotaiActions = {
+  restoreStart: (): RestorationEvent => ({ type: 'checking' }),
+  restoreBatch: (archivedKeys: ArchivedKey[]): RestorationEvent => ({
+    type: 'needs-restore',
+    archivedKeys,
+  }),
+  restoreComplete: (result: ExecutionResult): RestorationEvent => ({
+    type: 'restored',
+    result,
+  }),
+  restorationError: (error: string): RestorationEvent => ({
+    type: 'error',
+    error,
+  }),
+  reset: (): RestorationEvent => ({ type: 'reset' }),
+}
 
 function reduceRestoration(state: RestorationSlice, event: RestorationEvent): RestorationSlice {
   switch (event.type) {

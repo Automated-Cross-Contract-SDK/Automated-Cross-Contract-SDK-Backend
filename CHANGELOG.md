@@ -1,9 +1,13 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project are documented here.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Releases from `0.1.0` onward are generated automatically by
+[semantic-release](https://semantic-release.gitbook.io/) from
+[Conventional Commits](https://www.conventionalcommits.org/). **Do not edit the
+entries below `## [Unreleased]` by hand** — they are managed by the release
+pipeline (`.github/workflows/release.yml`). The `0.1.0` section below is retained
+as the historical baseline.
 
 ## [0.1.0] — 2026-07-13
 
@@ -37,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Infrastructure**:
   - Monorepo with npm workspaces
   - GitHub Actions CI (Node 18/20/22, test, build, typecheck)
-  - Automated npm publishing on release
+  - Automated npm publishing and GitHub releases via semantic-release
   - `vitest` with per-package configuration
   - `@testing-library/react` with jsdom for React tests
   - Example dApp with Vite + React + Freighter wallet

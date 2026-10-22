@@ -4,6 +4,22 @@
 
 Implemented an in-memory LRU (Least Recently Used) cache for simulation results with TTL-based auto-expiration to avoid redundant RPC calls when the same transaction is checked multiple times.
 
+## Migration Notes
+
+### Breaking Change: Cache Key Format (v1.1.0+)
+
+The cache key generation now includes `networkPassphrase` as part of the hash input to prevent cross-network collisions. This is a **breaking change** to the cache-key format:
+
+- **Before:** Key = hash(txXDR | source | ledgerSequence)
+- **After:** Key = hash(txXDR | source | ledgerSequence | networkPassphrase)
+
+**Impact:**
+- Cache entries generated with previous SDK versions will not be accessible with v1.1.0+
+- This is a security fix: prevents a proxy fronting both testnet and mainnet from serving one network's simulation result for the other network's request
+- Clear or re-populate the cache when upgrading
+
+**Recommendation:** If you have persistent cache storage, flush it during the upgrade to v1.1.0+.
+
 ## Cache Features
 
 ### 1. **LRU Eviction Policy**
@@ -17,9 +33,10 @@ Implemented an in-memory LRU (Least Recently Used) cache for simulation results 
 - Configurable TTL per cache instance
 
 ### 3. **Cache Key Generation**
-- Key = hash(txXDR | source | ledgerSequence)
+- Key = hash(txXDR | source | ledgerSequence | networkPassphrase)
 - Cross-platform compatible hashing function
 - Consistent for identical inputs
+- **Network-aware:** Keys include the network passphrase to prevent cross-network collisions (e.g., testnet vs. mainnet)
 
 ### 4. **Statistics & Monitoring**
 - Tracks: hits, misses, evictions, current size, hit rate
