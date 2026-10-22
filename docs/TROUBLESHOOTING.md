@@ -81,6 +81,44 @@ if (transaction.operations.some(op => op.type === 'feeBump')) {
 }
 ```
 
+### Wallet Returned a Fee-Bumped Signed Envelope
+
+**Symptoms:** A wallet's `signTransaction` resolves with a fee-bump envelope instead of the original signed envelope, or the SDK rejects the result with `FEE_BUMP_NOT_SUPPORTED`.
+
+**Supported behavior:** The SDK does **not** accept fee-bumped envelopes returned by a wallet. Per [ADR-001](adr/ADR-001-reject-fee-bump-transactions.md), the SDK only submits the exact envelope it constructed and simulated. A wallet that wraps the transaction in a fee-bump envelope changes the inner transaction hash and the fee source, which invalidates the simulation results and the SDK's integrity guarantees. When a fee-bump envelope is detected, the SDK rejects it with `FEE_BUMP_NOT_SUPPORTED` and does not submit it.
+
+**Possible Causes:**
+1. Wallet is configured to auto-bump fees on signing
+2. Wallet applies a fee-bump policy for the connected network
+3. Wallet returns a `FeeBumpTransactionEnvelope` instead of a `TransactionEnvelope`
+
+**Solutions:**
+```typescript
+// 1. Detect a fee-bump envelope before submitting
+try {
+  const signed = await wallet.signTransaction(transaction);
+  // The SDK rejects fee-bump envelopes; handle the rejection explicitly
+} catch (error) {
+  if (error.code === 'FEE_BUMP_NOT_SUPPORTED') {
+    // The wallet returned a fee-bump envelope. Disable auto fee-bump
+    // in the wallet settings, or use a wallet that returns the
+    // original signed envelope unchanged.
+    console.error('Wallet returned a fee-bump envelope; not supported');
+  }
+}
+
+// 2. Disable wallet auto fee-bump and re-sign
+await wallet.setAutoFeeBump(false);
+const signed = await wallet.signTransaction(transaction);
+
+// 3. If a higher fee is needed, rebuild the transaction with the
+//    desired fee and re-simulate instead of fee-bumping after signing
+const rebuilt = await service.buildTransaction({ ...params, fee: desiredFee });
+const signedRebuilt = await wallet.signTransaction(rebuilt);
+```
+
+**Compatibility constraint:** Fee-bump envelopes are intentionally unsupported. If your wallet cannot return the original signed envelope unchanged, use a wallet that can, or rebuild the transaction with the desired fee before signing.
+
 ### XDR Parsing Errors
 
 **Symptoms:** `XDRParsingError`, `InvalidXDRFormat`, or malformed data
@@ -272,132 +310,4 @@ setDebugLogLevel('INFO');   // INFO, DEBUG, TRACE, ERROR
 // - Error stack traces
 ```
 
-Enable debug mode in the browser:
-
-```typescript
-// localStorage
-localStorage.setItem('DEBUG', '@soroban-resurrect:*');
-
-// or via environment
-process.env.DEBUG = '@soroban-resurrect:*';
-```
-
-## Log Analysis Guide
-
-### Reading Debug Logs
-
-```
-[2024-01-15T10:30:45.123Z] DEBUG @soroban-resurrect:sdk
-  POST https://soroban-rpc.stellar.org:443/
-  {
-    "jsonrpc": "2.0",
-    "method": "simulateTransaction",
-    "params": ["...XDR..."],
-    "id": 1
-  }
-
-[2024-01-15T10:30:45.456Z] DEBUG @soroban-resurrect:sdk
-  Simulation failed: "The operation is outside the range [1500000, 8000000]"
-  Status: 400
-```
-
-**Analysis:**
-1. Check HTTP method and URL
-2. Review request parameters
-3. Look for error messages in response
-4. Check timestamp for timing issues
-5. Correlate with other services
-
-### Common Log Patterns
-
-**Pattern:** Multiple 429 responses
-- **Cause:** Rate limiting from RPC
-- **Fix:** Increase retry delays, implement backoff
-
-**Pattern:** Connection reset after N requests
-- **Cause:** Connection pooling issue or server limit
-- **Fix:** Implement connection pooling with proper limits
-
-**Pattern:** Inconsistent responses for same request
-- **Cause:** Load balancing across RPC nodes with different states
-- **Fix:** Use specific RPC node or implement request deduplication
-
-## Support Channels and How to File Good Bug Reports
-
-### Support Channels
-
-1. **GitHub Issues** - Bug reports and feature requests
-2. **GitHub Discussions** - Questions and community support
-3. **Discord** - Real-time community chat
-4. **Email** - Direct support for enterprise users
-
-### Filing Good Bug Reports
-
-Include these details:
-
-```markdown
-### Description
-Brief description of the issue
-
-### Environment
-- SDK version: 1.0.0
-- Node.js version: 18.x
-- Operating System: Linux/macOS/Windows
-- Soroban RPC URL: [your RPC endpoint]
-
-### Steps to Reproduce
-1. Step 1
-2. Step 2
-3. Step 3
-
-### Expected Behavior
-What should happen
-
-### Actual Behavior
-What actually happens
-
-### Error Message
-Full error message (if applicable)
-
-### Debug Logs
-Output from setDebugMode(true)
-
-### Minimal Reproduction
-Minimal code that reproduces the issue
-```
-
-### Good Bug Report Example
-
-```markdown
-### Description
-Transaction simulation fails when restoring keys for large account with 100+ signers
-
-### Environment
-- SDK version: 1.0.0
-- Node.js version: 18.12.0
-- Soroban RPC: https://soroban-testnet.stellar.org
-
-### Steps to Reproduce
-1. Create account with 100+ signers
-2. Call service.restoreKeys([...])
-3. Observe simulation failure
-
-### Error Message
-TransactionSimulationError: Host rejected the transaction (status=INVALID_STATE)
-
-### Debug Logs
-[Include relevant debug output]
-
-### Minimal Reproduction
-[Include minimal code]
-```
-
-## Getting More Help
-
-If you need additional help:
-
-1. **Check the FAQ** - Common questions answered
-2. **Read the ADRs** - Understand design decisions
-3. **Review examples** - Check example projects
-4. **Ask the community** - GitHub Discussions or Discord
-5. **File a detailed issue** - Include all information above
+Enable debug mode
