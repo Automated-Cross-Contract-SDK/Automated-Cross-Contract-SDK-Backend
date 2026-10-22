@@ -270,38 +270,6 @@ setInterval(() => {
    - XDR transaction encoding capability
 
 3. **Checking Support:**
-   ```typescript
-   // Verify wallet supports Soroban
-   const isSupported = await wallet.isSorobanSupported();
-   if (!isSupported) {
-     throw new Error('Wallet does not support Soroban');
-   }
-   ```
+   ```typescrip
 
-## Vue Plugin Questions
-
-### Are plugin listeners cleaned up when an app is unmounted?
-
-**Q:** If I mount and unmount a Vue app that uses the plugin, do its event listeners get removed?
-
-**A:** Yes. The Vue plugin tracks every listener it registers and detaches them when the app instance is unmounted, so repeated mount/unmount cycles do not leak listeners.
-
-**Supported behavior:**
-
-1. **Per-App Tracking:** Listeners are tracked per app instance. Multiple apps can use the plugin independently, and unmounting one app only removes that app's listeners.
-2. **Unmount Hook:** Cleanup runs automatically via the app's `unmount` lifecycle — no manual teardown is required.
-3. **Repeated Mount/Unmount:** Each mount registers a fresh set of listeners; each unmount removes them. Cycles are safe to repeat.
-4. **Listeners Registered After Unmount:** Registering a listener after the app has been unmounted is a no-op (it is not attached), preventing leaks from late registrations.
-
-```typescript
-const app = createApp(App);
-app.use(plugin);
-app.mount('#app');
-
-// ... later
-app.unmount(); // plugin-registered listeners are detached here
-```
-
-**Edge cases:**
-- Unmounting an app that never registered listeners is a safe no-op.
-- Calling `unmount()` more than once does not throw or double-remove listeners.
+/* … truncated 1495 chars — edit only what you need near the top … */
