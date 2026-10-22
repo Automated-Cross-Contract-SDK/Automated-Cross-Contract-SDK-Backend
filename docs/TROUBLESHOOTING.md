@@ -2,6 +2,37 @@
 
 This guide helps you diagnose and resolve common issues when using the Automated Cross-Contract SDK.
 
+## Server-Side Rendering (SSR) Safety
+
+Every framework entry point (React, Next.js, and other adapters) is designed to be import-safe in a server-side environment where DOM globals such as `window` and `document` are not defined. Importing an entry point at module scope must not throw; any browser-only behavior is deferred until it is actually invoked in a client context.
+
+**Symptoms:** `ReferenceError: window is not defined` or `ReferenceError: document is not defined` during SSR, static generation, or Next.js server rendering.
+
+**Possible Causes:**
+1. A browser-only API is accessed at module scope instead of inside a guarded call
+2. A custom integration touches `window`/`document` during import
+3. The entry point is imported in a server component without a client boundary
+
+**Solutions:**
+```typescript
+// 1. Guard browser-only access behind a runtime check
+if (typeof window !== 'undefined') {
+  // safe to use window/document here
+}
+
+// 2. In Next.js, mark components that use browser APIs as client components
+'use client';
+import { Provider } from '@soroban-resurrect/react';
+
+// 3. Import entry points at module scope — they are SSR-safe by design
+import { Provider } from '@soroban-resurrect/react';
+```
+
+**Compatibility constraints:**
+- Entry points must not reference `window` or `document` at module scope.
+- Browser-only behavior is only executed after mount (client-side).
+- No additional configuration is required to import entry points during SSR.
+
 ## Common Errors and Their Causes
 
 ### Transaction Not Simulating
@@ -272,132 +303,4 @@ setDebugLogLevel('INFO');   // INFO, DEBUG, TRACE, ERROR
 // - Error stack traces
 ```
 
-Enable debug mode in the browser:
-
-```typescript
-// localStorage
-localStorage.setItem('DEBUG', '@soroban-resurrect:*');
-
-// or via environment
-process.env.DEBUG = '@soroban-resurrect:*';
-```
-
-## Log Analysis Guide
-
-### Reading Debug Logs
-
-```
-[2024-01-15T10:30:45.123Z] DEBUG @soroban-resurrect:sdk
-  POST https://soroban-rpc.stellar.org:443/
-  {
-    "jsonrpc": "2.0",
-    "method": "simulateTransaction",
-    "params": ["...XDR..."],
-    "id": 1
-  }
-
-[2024-01-15T10:30:45.456Z] DEBUG @soroban-resurrect:sdk
-  Simulation failed: "The operation is outside the range [1500000, 8000000]"
-  Status: 400
-```
-
-**Analysis:**
-1. Check HTTP method and URL
-2. Review request parameters
-3. Look for error messages in response
-4. Check timestamp for timing issues
-5. Correlate with other services
-
-### Common Log Patterns
-
-**Pattern:** Multiple 429 responses
-- **Cause:** Rate limiting from RPC
-- **Fix:** Increase retry delays, implement backoff
-
-**Pattern:** Connection reset after N requests
-- **Cause:** Connection pooling issue or server limit
-- **Fix:** Implement connection pooling with proper limits
-
-**Pattern:** Inconsistent responses for same request
-- **Cause:** Load balancing across RPC nodes with different states
-- **Fix:** Use specific RPC node or implement request deduplication
-
-## Support Channels and How to File Good Bug Reports
-
-### Support Channels
-
-1. **GitHub Issues** - Bug reports and feature requests
-2. **GitHub Discussions** - Questions and community support
-3. **Discord** - Real-time community chat
-4. **Email** - Direct support for enterprise users
-
-### Filing Good Bug Reports
-
-Include these details:
-
-```markdown
-### Description
-Brief description of the issue
-
-### Environment
-- SDK version: 1.0.0
-- Node.js version: 18.x
-- Operating System: Linux/macOS/Windows
-- Soroban RPC URL: [your RPC endpoint]
-
-### Steps to Reproduce
-1. Step 1
-2. Step 2
-3. Step 3
-
-### Expected Behavior
-What should happen
-
-### Actual Behavior
-What actually happens
-
-### Error Message
-Full error message (if applicable)
-
-### Debug Logs
-Output from setDebugMode(true)
-
-### Minimal Reproduction
-Minimal code that reproduces the issue
-```
-
-### Good Bug Report Example
-
-```markdown
-### Description
-Transaction simulation fails when restoring keys for large account with 100+ signers
-
-### Environment
-- SDK version: 1.0.0
-- Node.js version: 18.12.0
-- Soroban RPC: https://soroban-testnet.stellar.org
-
-### Steps to Reproduce
-1. Create account with 100+ signers
-2. Call service.restoreKeys([...])
-3. Observe simulation failure
-
-### Error Message
-TransactionSimulationError: Host rejected the transaction (status=INVALID_STATE)
-
-### Debug Logs
-[Include relevant debug output]
-
-### Minimal Reproduction
-[Include minimal code]
-```
-
-## Getting More Help
-
-If you need additional help:
-
-1. **Check the FAQ** - Common questions answered
-2. **Read the ADRs** - Understand design decisions
-3. **Review examples** - Check example projects
-4. **Ask the community** - GitHub Discussions or Discord
-5. **File a detailed issue** - Include all information above
+Enable debug mode
