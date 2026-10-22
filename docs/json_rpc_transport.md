@@ -24,6 +24,36 @@ satisfies this shape.
 If no `fetch` is passed and `globalThis.fetch` is unavailable, the constructor throws
 rather than failing on the first request.
 
+## Credential redaction
+
+RPC URLs sometimes carry secrets: HTTP basic-auth userinfo
+(`https://user:pass@host`) or sensitive query parameters such as `apiKey` or
+`token`. The transport never emits these verbatim. Every URL that appears in a log
+line or in a user-facing error message is passed through `redactRpcUrl` first, which
+returns a copy of the URL with:
+
+- any `user:pass@` userinfo replaced by `***@`;
+- the values of sensitive query parameters (`apiKey`, `api_key`, `apikey`, `token`,
+  `access_token`, `secret`, `password`, `key`) replaced by `***`.
+
+```ts
+import { redactRpcUrl } from '@soroban-resurrect/rpc';
+
+redactRpcUrl('https://user:pass@host/rpc?apiKey=abc123&x=1');
+// => 'https://***@host/rpc?apiKey=***&x=1'
+```
+
+`redactRpcUrl` is exported so callers can redact URLs in their own logs. It is
+defensive: malformed URLs and non-URL inputs are returned as a redacted string
+rather than throwing, so it is always safe to call in an error path.
+
+### Compatibility
+
+Redaction only changes the text of log lines and error messages; the request URL
+sent to the server, the transport's public API, and the error classes and their
+fields are unchanged. Code that matched on the raw URL inside an error message
+should match on the redacted form instead.
+
 ## Errors
 
 | Error                   | When                                                     | Key fields                                             |
@@ -32,7 +62,8 @@ rather than failing on the first request.
 | `JsonRpcTransportError` | The request failed before a usable response was received | `status` (undefined for network), `retryable`, `cause` |
 
 HTTP `429` and `5xx` responses, and rejected `fetch` calls, are marked `retryable: true`.
-Other non-2xx responses are not.
+Other non-2xx responses are not. Error messages that reference the endpoint use the
+redacted URL described above.
 
 ## Response validation
 

@@ -51,8 +51,30 @@ redactUrlsInText('failed: https://rpc.example.com/?token=x')  // failed: https:/
   query parameter. Where your provider supports it, send the key in a request
   header instead.
 
-SorobanResurrect error messages and error context use redacted endpoints. The
-URL used to connect is not changed.
+### Where redaction is applied
+
+Redaction is applied everywhere an RPC endpoint can reach a log line or a
+user-facing error, so credentials never leak through diagnostics:
+
+- **Error messages and error context.** `SorobanResurrect` error messages and
+  error context use redacted endpoints. The URL used to connect is not changed.
+- **Logs.** Endpoint URLs written to logs (including debug and trace output)
+  are redacted before they are emitted.
+- **Free-form text.** Any message that embeds an endpoint is passed through
+  `redactUrlsInText`, so credentials in surrounding prose are stripped too.
+
+### Compatibility constraints
+
+- Redaction only affects how URLs are *displayed*. The endpoint used to make
+  requests is never modified, so existing configuration keeps working.
+- `redactRpcUrl` and `redactUrlsInText` are pure functions with no side effects
+  and no dependency on the network, so they are safe to call in your own error
+  handling and logging.
+- Non-URL inputs and malformed URLs are replaced with `<invalid url>` rather
+  than throwing, so redaction never introduces a new failure path.
+- Because path-embedded credentials are not detected, prefer query parameters
+  or request headers for provider keys. This is a documented limitation, not a
+  behavior change.
 
 ## Locating malformed XDR
 
