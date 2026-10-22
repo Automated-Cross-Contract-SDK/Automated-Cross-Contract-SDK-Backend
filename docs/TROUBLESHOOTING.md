@@ -2,6 +2,36 @@
 
 This guide helps you diagnose and resolve common issues when using the Automated Cross-Contract SDK.
 
+## React Native / Hermes Support
+
+The SDK's crypto and restoration modules are supported on React Native when running on the **Hermes** JavaScript engine. This section documents the supported behavior, configuration, and compatibility constraints.
+
+### Supported Environment
+
+- **Engine:** Hermes (the default engine for React Native 0.70+). The JSC engine is not covered by the Hermes test suite.
+- **Modules:** `crypto` (key derivation, hashing, signing helpers) and `restoration` (auth entry restoration) are exercised under Hermes in CI.
+- **Crypto primitives:** Hermes does not ship a full WebCrypto implementation. The SDK relies on the `react-native-get-random-values` polyfill for secure randomness and on pure-JS fallbacks for hashing/signing. Ensure the polyfill is imported once at app startup, before any SDK call:
+
+```typescript
+// index.js — must run before the SDK is used
+import 'react-native-get-random-values';
+```
+
+### Configuration
+
+- No additional configuration is required beyond the randomness polyfill above.
+- If you use a custom Hermes build, verify that `crypto.getRandomValues` is available after the polyfill import; the SDK throws a descriptive error when it is missing.
+
+### Compatibility Constraints
+
+- **Missing/invalid crypto primitives:** If `getRandomValues` is unavailable or returns invalid output, crypto operations reject with a clear error rather than silently producing weak keys. Catch and surface this to the user.
+- **Restoration of auth entries:** Restoration works on Hermes, but restored entries must be re-fetched after the restoration ledger settles before resubmitting the original transaction (see *Restore Succeeded But Original Failed* below).
+- **Error handling:** Errors thrown from crypto/restoration paths preserve their `code` and `details` fields on Hermes, so existing `try/catch` handling continues to work.
+
+### Running the Hermes Tests
+
+The Hermes-targeted crypto and restoration tests live alongside the existing suites and can be run with the workspace test command. They cover expected behavior plus failure paths (missing primitives, invalid input, restoration errors).
+
 ## Common Errors and Their Causes
 
 ### Transaction Not Simulating
@@ -272,132 +302,4 @@ setDebugLogLevel('INFO');   // INFO, DEBUG, TRACE, ERROR
 // - Error stack traces
 ```
 
-Enable debug mode in the browser:
-
-```typescript
-// localStorage
-localStorage.setItem('DEBUG', '@soroban-resurrect:*');
-
-// or via environment
-process.env.DEBUG = '@soroban-resurrect:*';
-```
-
-## Log Analysis Guide
-
-### Reading Debug Logs
-
-```
-[2024-01-15T10:30:45.123Z] DEBUG @soroban-resurrect:sdk
-  POST https://soroban-rpc.stellar.org:443/
-  {
-    "jsonrpc": "2.0",
-    "method": "simulateTransaction",
-    "params": ["...XDR..."],
-    "id": 1
-  }
-
-[2024-01-15T10:30:45.456Z] DEBUG @soroban-resurrect:sdk
-  Simulation failed: "The operation is outside the range [1500000, 8000000]"
-  Status: 400
-```
-
-**Analysis:**
-1. Check HTTP method and URL
-2. Review request parameters
-3. Look for error messages in response
-4. Check timestamp for timing issues
-5. Correlate with other services
-
-### Common Log Patterns
-
-**Pattern:** Multiple 429 responses
-- **Cause:** Rate limiting from RPC
-- **Fix:** Increase retry delays, implement backoff
-
-**Pattern:** Connection reset after N requests
-- **Cause:** Connection pooling issue or server limit
-- **Fix:** Implement connection pooling with proper limits
-
-**Pattern:** Inconsistent responses for same request
-- **Cause:** Load balancing across RPC nodes with different states
-- **Fix:** Use specific RPC node or implement request deduplication
-
-## Support Channels and How to File Good Bug Reports
-
-### Support Channels
-
-1. **GitHub Issues** - Bug reports and feature requests
-2. **GitHub Discussions** - Questions and community support
-3. **Discord** - Real-time community chat
-4. **Email** - Direct support for enterprise users
-
-### Filing Good Bug Reports
-
-Include these details:
-
-```markdown
-### Description
-Brief description of the issue
-
-### Environment
-- SDK version: 1.0.0
-- Node.js version: 18.x
-- Operating System: Linux/macOS/Windows
-- Soroban RPC URL: [your RPC endpoint]
-
-### Steps to Reproduce
-1. Step 1
-2. Step 2
-3. Step 3
-
-### Expected Behavior
-What should happen
-
-### Actual Behavior
-What actually happens
-
-### Error Message
-Full error message (if applicable)
-
-### Debug Logs
-Output from setDebugMode(true)
-
-### Minimal Reproduction
-Minimal code that reproduces the issue
-```
-
-### Good Bug Report Example
-
-```markdown
-### Description
-Transaction simulation fails when restoring keys for large account with 100+ signers
-
-### Environment
-- SDK version: 1.0.0
-- Node.js version: 18.12.0
-- Soroban RPC: https://soroban-testnet.stellar.org
-
-### Steps to Reproduce
-1. Create account with 100+ signers
-2. Call service.restoreKeys([...])
-3. Observe simulation failure
-
-### Error Message
-TransactionSimulationError: Host rejected the transaction (status=INVALID_STATE)
-
-### Debug Logs
-[Include relevant debug output]
-
-### Minimal Reproduction
-[Include minimal code]
-```
-
-## Getting More Help
-
-If you need additional help:
-
-1. **Check the FAQ** - Common questions answered
-2. **Read the ADRs** - Understand design decisions
-3. **Review examples** - Check example projects
-4. **Ask the community** - GitHub Discussions or Discord
-5. **File a detailed issue** - Include all information above
+Enable debug mode
