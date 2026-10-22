@@ -234,6 +234,44 @@ const isOnline = async () => {
 };
 ```
 
+## RPC Failover Threat Model
+
+When the SDK is configured with multiple independent RPC providers, it can fail over between them. This section documents the supported behavior and the threats that failover does **not** protect against. It is a forward-looking design note, not a guarantee of Byzantine fault tolerance.
+
+### Supported failover behavior
+
+- **Ordered fallback:** providers are tried in configured order; a provider is skipped when it is unreachable, times out, or returns a retryable error (`TIMEOUT`, `RATE_LIMITED`, `SERVICE_UNAVAILABLE`, `NETWORK_ERROR`).
+- **Single active provider per request:** each request is served by exactly one provider. The SDK does not cross-check responses across providers.
+- **No automatic quorum:** failover is availability-oriented. It does not require agreement between providers before accepting a response.
+- **Configuration:** list providers explicitly and keep them operationally independent (distinct operators, infrastructure, and ideally distinct upstreams).
+
+```typescript
+const config = {
+  rpcProviders: [
+    { url: 'https://rpc-a.example.org', priority: 0 },
+    { url: 'https://rpc-b.example.org', priority: 1 },
+  ],
+  failover: { maxAttempts: 2, retryableCodes: ['TIMEOUT', 'RATE_LIMITED', 'SERVICE_UNAVAILABLE', 'NETWORK_ERROR'] },
+};
+```
+
+### Threats and edge cases
+
+| Threat | Description | Mitigation / limitation |
+|---|---|---|
+| Provider collusion | Multiple providers are controlled by the same operator and return the same incorrect data. | Failover cannot detect this. Use providers with genuinely independent operators. |
+| Correlated outage | Providers share infrastructure, region, or upstream and fail together. | Failover provides no benefit. Diversify regions and upstreams. |
+| Stale / divergent responses | A fallback provider lags the network and returns older ledger state. | The SDK does not reconcile responses. Verify ledger freshness (e.g. latest ledger) before acting on critical results. |
+| Malicious provider | A provider returns fabricated or tampered data. | Failover does not validate correctness. Treat RPC responses as untrusted and verify on-chain where it matters. |
+| Quorum assumptions | Callers assume a majority of providers agreed. | No quorum is performed. Do not rely on failover for consensus or finality. |
+| Silent degradation | Failover masks a persistently failing primary. | Monitor per-provider health and error rates; alert on repeated fallback. |
+
+### Guidance
+
+- Failover improves **availability**, not **integrity**. For integrity-sensitive flows, verify results independently (e.g. re-simulate, check ledger sequence, or confirm on-chain).
+- Do not treat a successful failover as evidence that the primary provider is healthy.
+- Keep the provider list small and auditable; each additional provider is another trust assumption.
+
 ## Error Code Reference Table
 
 | Error Code | HTTP Status | Meaning | Action |
@@ -272,132 +310,4 @@ setDebugLogLevel('INFO');   // INFO, DEBUG, TRACE, ERROR
 // - Error stack traces
 ```
 
-Enable debug mode in the browser:
-
-```typescript
-// localStorage
-localStorage.setItem('DEBUG', '@soroban-resurrect:*');
-
-// or via environment
-process.env.DEBUG = '@soroban-resurrect:*';
-```
-
-## Log Analysis Guide
-
-### Reading Debug Logs
-
-```
-[2024-01-15T10:30:45.123Z] DEBUG @soroban-resurrect:sdk
-  POST https://soroban-rpc.stellar.org:443/
-  {
-    "jsonrpc": "2.0",
-    "method": "simulateTransaction",
-    "params": ["...XDR..."],
-    "id": 1
-  }
-
-[2024-01-15T10:30:45.456Z] DEBUG @soroban-resurrect:sdk
-  Simulation failed: "The operation is outside the range [1500000, 8000000]"
-  Status: 400
-```
-
-**Analysis:**
-1. Check HTTP method and URL
-2. Review request parameters
-3. Look for error messages in response
-4. Check timestamp for timing issues
-5. Correlate with other services
-
-### Common Log Patterns
-
-**Pattern:** Multiple 429 responses
-- **Cause:** Rate limiting from RPC
-- **Fix:** Increase retry delays, implement backoff
-
-**Pattern:** Connection reset after N requests
-- **Cause:** Connection pooling issue or server limit
-- **Fix:** Implement connection pooling with proper limits
-
-**Pattern:** Inconsistent responses for same request
-- **Cause:** Load balancing across RPC nodes with different states
-- **Fix:** Use specific RPC node or implement request deduplication
-
-## Support Channels and How to File Good Bug Reports
-
-### Support Channels
-
-1. **GitHub Issues** - Bug reports and feature requests
-2. **GitHub Discussions** - Questions and community support
-3. **Discord** - Real-time community chat
-4. **Email** - Direct support for enterprise users
-
-### Filing Good Bug Reports
-
-Include these details:
-
-```markdown
-### Description
-Brief description of the issue
-
-### Environment
-- SDK version: 1.0.0
-- Node.js version: 18.x
-- Operating System: Linux/macOS/Windows
-- Soroban RPC URL: [your RPC endpoint]
-
-### Steps to Reproduce
-1. Step 1
-2. Step 2
-3. Step 3
-
-### Expected Behavior
-What should happen
-
-### Actual Behavior
-What actually happens
-
-### Error Message
-Full error message (if applicable)
-
-### Debug Logs
-Output from setDebugMode(true)
-
-### Minimal Reproduction
-Minimal code that reproduces the issue
-```
-
-### Good Bug Report Example
-
-```markdown
-### Description
-Transaction simulation fails when restoring keys for large account with 100+ signers
-
-### Environment
-- SDK version: 1.0.0
-- Node.js version: 18.12.0
-- Soroban RPC: https://soroban-testnet.stellar.org
-
-### Steps to Reproduce
-1. Create account with 100+ signers
-2. Call service.restoreKeys([...])
-3. Observe simulation failure
-
-### Error Message
-TransactionSimulationError: Host rejected the transaction (status=INVALID_STATE)
-
-### Debug Logs
-[Include relevant debug output]
-
-### Minimal Reproduction
-[Include minimal code]
-```
-
-## Getting More Help
-
-If you need additional help:
-
-1. **Check the FAQ** - Common questions answered
-2. **Read the ADRs** - Understand design decisions
-3. **Review examples** - Check example projects
-4. **Ask the community** - GitHub Discussions or Discord
-5. **File a detailed issue** - Include all information above
+Enable debug mode
