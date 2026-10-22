@@ -15,6 +15,7 @@ updates:
       prefix-development: chore
       include: scope
     groups:
+      # Never auto-merged; routed to the integration label (see dependabot-auto-merge.yml).
       stellar-sdk:
         patterns:
           - "@stellar/stellar-sdk"
@@ -28,6 +29,15 @@ updates:
           - "react"
           - "react-dom"
           - "@types/react"
+      build:
+        patterns:
+          - "tsup"
+          - "tsx"
+          - "typescript"
+          - "vite"
+          - "@vitejs/*"
+          - "size-limit"
+          - "@size-limit/*"
 
   - package-ecosystem: github-actions
     directory: /
@@ -37,3 +47,7 @@ updates:
       - ci
     commit-message:
       prefix: ci
+    groups:
+      github-actions:
+        patterns:
+          - "*"

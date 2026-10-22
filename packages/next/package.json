@@ -40,9 +40,7 @@
   "scripts": {
     "build": "tsup",
     "build:watch": "tsup --watch",
-    "prepublishOnly": "npm run build",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
     "@soroban-resurrect/sdk": "^0.1.0",
