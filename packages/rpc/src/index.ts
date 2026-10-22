@@ -29,3 +29,5 @@ export type { RetryOptions } from './retry.js';
 export { parseRetryAfter } from './retry-after.js';
 export { createConcurrencyLimiter } from './concurrency.js';
 export type { ConcurrencyLimiter } from './concurrency.js';
+export { validateRpcResultSchema, RpcSchemaError, SCHEMA_PROTOCOL_LINES } from './response-schema.js';
+export type { SchemaMethod, SchemaProtocolLine } from './response-schema.js';
