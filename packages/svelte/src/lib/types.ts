@@ -19,4 +19,6 @@ export interface SorobanResurrectStores {
   checkTransaction: (txXDR: string) => Promise<{ needsRestoration: boolean; archivedKeys: ArchivedKey[] }>
   executeWithRestore: (txXDR: string, signTransaction: (xdr: string) => Promise<string>) => Promise<ExecutionResult>
   reset: () => void
+  onConnectionChange: (callback: (connected: boolean) => void) => () => void
+  onNetworkChange: (callback: (network: string) => void) => () => void
 }

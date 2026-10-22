@@ -1,0 +1,5 @@
+{
+  "*.ts": ["prettier --write", "bash -c 'tsc --noEmit -p tsconfig.base.json'"],
+  "*.{js,cjs,mjs,jsx,tsx}": ["prettier --write"],
+  "*.{json,md,yaml,yml}": ["prettier --write"]
+}

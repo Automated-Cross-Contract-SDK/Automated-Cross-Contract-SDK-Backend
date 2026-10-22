@@ -1,0 +1,36 @@
+name: Stale Issue and PR Management
+
+on:
+  schedule:
+    - cron: '0 1 * * *' # Daily at 01:00 UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          days-before-stale: 60
+          days-before-close: 14
+          stale-issue-label: 'stale'
+          stale-pr-label: 'stale'
+          exempt-issue-labels: 'pinned,security,discussion'
+          exempt-pr-labels: 'pinned,security,discussion'
+          stale-issue-message: >
+            This issue has been inactive for 60 days and is now marked as stale.
+            It will be closed in 14 days if there is no further activity. Comment
+            or update the issue to keep it open.
+          stale-pr-message: >
+            This pull request has been inactive for 60 days and is now marked as
+            stale. It will be closed in 14 days if there is no further activity.
+          close-issue-message: >
+            This issue was closed because it has been stale for 14 days with no
+            activity.
+          close-pr-message: >
+            This pull request was closed because it has been stale for 14 days
+            with no activity.
