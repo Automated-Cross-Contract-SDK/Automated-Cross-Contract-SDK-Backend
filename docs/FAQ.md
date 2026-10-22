@@ -272,36 +272,40 @@ setInterval(() => {
 3. **Checking Support:**
    ```typescript
    const isSupported = await wallet.isConnected();
-   if (!isSupported) throw new Error('Wallet not connected');
+   if (!isSupported) throw new Error('Wallet not supported');
    ```
 
-### Does the SDK check the network before opening a signing prompt?
+### How do I verify a signed transaction before submitting it?
 
-**Q:** Will the SDK verify the wallet is on the correct network before asking me to sign?
+**Q:** How can I be sure the wallet returned a transaction that matches what I intended to submit?
 
-**A:** Yes. Before any wallet signing prompt is opened, the SDK verifies the wallet's network identity (its chain/network passphrase) matches the network the transaction targets. This prevents signing a transaction on the wrong network, which would otherwise fail or, worse, be submitted to an unintended network.
-
-**Supported behavior:**
-
-1. **Network identity check:** The wallet's reported network passphrase is compared against the expected network passphrase for the operation.
-2. **Mismatch:** If the wallet is on a different network, the signing prompt is **not** opened and a `NetworkMismatchError` is thrown.
-3. **Unknown/unavailable identity:** If the wallet cannot report its network, the SDK treats this as a failure and does not open the prompt (fail-closed).
-4. **Missing connection:** If the wallet is not connected, a `WalletNotConnectedError` is thrown before any network check.
+**A:** Before submitting wallet output, verify the signed transaction contents against the transaction you originally built. The SDK exposes a verification helper that checks the signed envelope for the expected network passphrase, source account, operation set, and signatures, and rejects altered or malformed envelopes.
 
 ```typescript
-import { assertWalletNetwork } from '@automated-cross-contract/sdk';
+import { verifySignedTransaction } from '@automated-cross-contract/sdk';
 
-try {
-  // Throws before opening the signing prompt if the network does not match
-  await assertWalletNetwork(wallet, { networkPassphrase: Networks.TESTNET });
-  await wallet.signTransaction(transaction);
-} catch (err) {
-  if (err instanceof NetworkMismatchError) {
-    // Prompt the user to switch networks in their wallet
-  } else if (err instanceof WalletNotConnectedError) {
-    // Ask the user to connect their wallet
-  }
+// `built` is the transaction you constructed; `signedXdr` is what the wallet returned
+const result = verifySignedTransaction({
+  signedXdr,
+  expected: built,
+  networkPassphrase: Networks.TESTNET,
+});
+
+if (!result.ok) {
+  // result.reason is one of: 'malformed-envelope', 'network-mismatch',
+  // 'source-mismatch', 'operations-mismatch', 'missing-signature', 'invalid-signature'
+  throw new Error(`Refusing to submit wallet output: ${result.reason}`);
 }
+
+await server.submitTransaction(result.transaction);
 ```
 
-**Compatibility note:** This is an additive check. Existing signing flows keep their public API; the network assertion is opt-in via `assertWalletNetwork` and is also applied automatically by the restoration service before it requests a signature.
+**Edge cases handled:**
+
+1. **Malformed envelope:** The signed XDR cannot be decoded — verification fails with `malformed-envelope`.
+2. **Network / passphrase mismatch:** The envelope was signed for a different network — fails with `network-mismatch`.
+3. **Source account mismatch:** The signed transaction's source differs from the built one — fails with `source-mismatch`.
+4. **Altered contents after signing:** Operations, sequence number, or fee changed after signing — fails with `operations-mismatch`.
+5. **Missing or invalid signatures:** No signature is present, or a signature does not verify against the expected signer — fails with `missing-signature` / `invalid-signature`.
+
+**Compatibility note:** `verifySignedTransaction` is additive and does not change existing submission APIs. Callers that already submit wallet output directly can adopt it incrementally; it returns the decoded transaction on success so it can be passed straight to `submitTransaction`.

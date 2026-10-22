@@ -32,6 +32,43 @@ redactRpcUrl('not a url');
 - Redaction is best-effort and string-based; it does not validate that the URL is reachable. It is safe to call on any string input.
 - The public API shape of existing errors and log messages is unchanged — only the URL text within them is redacted.
 
+## Verifying Signed Transactions Before Submission
+
+Before a wallet-signed transaction is submitted, the SDK verifies that the signed envelope still matches what was requested. This guards against wallets that alter contents, sign for the wrong network, or return an unsigned/malformed envelope.
+
+### Behavior
+
+- **Envelope integrity** — the returned envelope must parse as a valid transaction envelope. Malformed or truncated XDR is rejected before any network call.
+- **Network passphrase** — the envelope's network passphrase must match the configured network. A mismatch (e.g. signing for testnet while submitting to mainnet) is rejected.
+- **Signature presence** — at least one signature must be present on the envelope. Missing signatures are rejected.
+- **Content match** — the signed transaction's operations, source account, fee, and time bounds must match the transaction that was sent for signing. Any alteration after signing is rejected.
+
+### Example
+
+```typescript
+import { verifySignedTransaction } from '@soroban-resurrect/sdk';
+
+try {
+  verifySignedTransaction({
+    expected: unsignedTransaction,
+    signed: signedEnvelope,
+    networkPassphrase: Networks.TESTNET,
+  });
+} catch (error) {
+  // error.code is one of:
+  //   'MALFORMED_ENVELOPE' | 'NETWORK_MISMATCH'
+  //   'MISSING_SIGNATURE' | 'CONTENT_MISMATCH'
+  console.error('Signed transaction rejected:', error.code, error.message);
+}
+```
+
+### Compatibility Constraints
+
+- Verification runs automatically before submission; you do not need to call `verifySignedTransaction` yourself for SDK-driven flows.
+- If you submit wallet output through your own code path, call `verifySignedTransaction` first to get the same guarantees.
+- Verification is read-only and does not modify the envelope; a passing check leaves the signed transaction unchanged.
+- The public API shape of existing submission errors is unchanged — verification failures surface as a distinct error with a `code` field.
+
 ## Common Errors and Their Causes
 
 ### Transaction Not Simulating
@@ -250,56 +287,3 @@ for (let i = 0; i < maxRetries; i++) {
     } else {
       throw error;
     }
-  }
-}
-
-// 5. Check network connectivity
-const isOnline = async () => {
-  try {
-    await fetch('https://www.google.com', { method: 'HEAD' });
-    return true;
-  } catch {
-    return false;
-  }
-};
-```
-
-## Error Code Reference Table
-
-| Error Code | HTTP Status | Meaning | Action |
-|---|---|---|---|
-| `SIMULATION_FAILED` | 400 | Transaction simulation failed | Check transaction validity and account state |
-| `INVALID_XDR` | 400 | Malformed XDR data | Validate XDR format and encoding |
-| `INSUFFICIENT_FEE` | 400 | Transaction fee too low | Increase fee or use auto-fee estimation |
-| `ACCOUNT_NOT_FOUND` | 404 | Account doesn't exist | Create account or check account ID |
-| `CONTRACT_NOT_FOUND` | 404 | Contract not deployed | Verify contract ID and deployment |
-| `TIMEOUT` | 408 | Request timeout | Retry with exponential backoff |
-| `RATE_LIMITED` | 429 | Too many requests | Implement backoff and batching |
-| `SERVICE_UNAVAILABLE` | 503 | RPC service down | Use fallback RPC or retry later |
-| `FEE_BUMP_NOT_SUPPORTED` | 400 | Fee-bump transaction rejected | Use standard transaction instead |
-| `USER_REJECTION` | - | User cancelled operation | Prompt user to retry |
-| `WALLET_NOT_FOUND` | - | Wallet not available | Check wallet installation |
-| `NETWORK_ERROR` | - | Network connectivity issue | Check firewall and internet connection |
-
-## Debug Mode Usage
-
-Enable debug mode to see detailed logging:
-
-```typescript
-import { setDebugMode, setDebugLogLevel } from '@soroban-resurrect/sdk';
-
-// Enable debug mode
-setDebugMode(true);
-
-// Set specific log levels
-setDebugLogLevel('INFO');   // INFO, DEBUG, TRACE, ERROR
-
-// Debug output includes:
-// - All HTTP requests and responses
-// - XDR parsing steps
-// - Retry attempts
-// - Event emissions
-// - Error stack traces
-```
-
-Enable debug mode
