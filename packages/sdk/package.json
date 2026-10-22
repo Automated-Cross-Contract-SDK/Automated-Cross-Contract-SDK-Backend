@@ -46,6 +46,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:docs": "vitest run tests/docs-snippets.test.ts",
     "test:integration": "vitest run --config vitest.integration.ts",
     "typecheck": "tsc --noEmit"
   },

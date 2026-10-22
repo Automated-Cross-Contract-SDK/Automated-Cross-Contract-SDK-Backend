@@ -33,6 +33,9 @@ jobs:
 
       - run: npm run test
 
+      - name: Compile documentation snippets
+        run: npm run test:docs -w packages/sdk
+
       - run: npx tsc --noEmit -p packages/sdk/tsconfig.json
       - run: npx tsc --noEmit -p packages/react/tsconfig.json
 
