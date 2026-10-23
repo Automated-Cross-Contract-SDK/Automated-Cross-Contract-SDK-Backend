@@ -1870,10 +1870,18 @@ export class SorobanResurrect {
 
     const tx = new Transaction(signedXDR, this.config.networkPassphrase)
 
-    const sendResult = await this.retryOnFailure(
-      () => this.getServer().sendTransaction(tx),
-      'sendTransaction',
-    )
+    const txHash = tx.hash().toString('hex')
+    let sendResult: Awaited<ReturnType<SorobanRpc.Server['sendTransaction']>>
+    try {
+      sendResult = await this.retryOnFailure(
+        () => this.getServer().sendTransaction(tx),
+        'sendTransaction',
+      )
+    } catch (err) {
+      // Ambiguous outcome: the request may have reached the network before the
+      // failure/timeout. Never re-sign; reconcile by the locally computed hash.
+      return this.reconcileAmbiguousSubmission(txHash, err)
+    }
 
     if (sendResult.status === TRANSACTION_STATUS.PENDING || sendResult.status === TRANSACTION_STATUS.DUPLICATE) {
       const hash = sendResult.hash
@@ -1895,6 +1903,36 @@ export class SorobanResurrect {
       'NETWORK_ERROR',
       sendResult,
       { rpcUrl: this.config.rpcUrl },
+    )
+  }
+
+  /**
+   * Resolve a submission whose outcome is unknown (timeout / network failure).
+   * Looks the transaction up by hash: returns the hash if it landed, waits if it
+   * is pending, and otherwise throws `SUBMISSION_AMBIGUOUS` carrying `txHash` so
+   * callers can safely re-check later instead of re-signing a new transaction.
+   */
+  private async reconcileAmbiguousSubmission(txHash: string, cause: unknown): Promise<string> {
+    let status: string
+    try {
+      status = (await this.getServer().getTransaction(txHash)).status
+    } catch (lookupErr) {
+      status = 'UNKNOWN'
+    }
+    if (status === 'SUCCESS') return txHash
+    if (status === 'FAILED') {
+      throw new SorobanResurrectError(
+        `Transaction failed (txHash=${txHash}, rpcUrl=${this.config.rpcUrl})`,
+        'ORIGINAL_TX_FAILED',
+        cause,
+        { rpcUrl: this.config.rpcUrl, txHash },
+      )
+    }
+    throw new SorobanResurrectError(
+      `Submission outcome unknown for ${txHash}; it may still be included. Check status by hash before retrying (rpcUrl=${this.config.rpcUrl})`,
+      'SUBMISSION_AMBIGUOUS',
+      cause,
+      { rpcUrl: this.config.rpcUrl, txHash },
     )
   }
 
