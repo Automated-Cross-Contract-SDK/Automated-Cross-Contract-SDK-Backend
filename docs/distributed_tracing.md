@@ -45,9 +45,60 @@ const sdk = new SorobanResurrect({
 | `defaultAttributes` | Static attributes merged into every span. |
 | `exporter` | `{ onSpanStart?, onSpanEnd? }` lifecycle hook. |
 | `sampled` | When there is no sampled parent, start new traces sampled (default `true`). |
+| `redaction` | Controls redaction of sensitive span data. Defaults to redaction **enabled** (see below). |
 
 When `parent` / `headers` yield no usable context, the SDK starts a **new** root
 trace so RPC calls are always traceable.
+
+## Redaction of sensitive data
+
+By default the SDK **redacts** sensitive values before they reach any span
+attribute or exporter hook, so telemetry backends never receive raw transaction
+XDR, ledger keys, or account/contract addresses unless you explicitly opt in.
+
+Redaction is applied recursively to span attributes (nested objects and arrays
+included) and is safe for non-string payloads — numbers, booleans, `null`,
+`undefined`, `Buffer`s and already-redacted values are passed through or
+replaced without throwing.
+
+What is redacted by default:
+
+- **Transaction XDR** — base64 envelopes / `TransactionEnvelope` payloads.
+- **Ledger keys** — `LedgerKey` XDR and ledger-key-shaped strings.
+- **Addresses** — Stellar account (`G…`) and contract (`C…`) strkeys, and
+  muxed (`M…`) addresses.
+
+Redacted values are replaced with a stable placeholder (`[REDACTED]`) so span
+shape and cardinality stay predictable. Partial or ambiguous address-like
+strings that do not match a full strkey are left untouched.
+
+### Opting out or customizing
+
+```ts
+const sdk = new SorobanResurrect({
+  rpcUrl: 'https://soroban-testnet.stellar.org',
+  networkPassphrase: 'Test SDF Network ; September 2015',
+  tracing: {
+    enabled: true,
+    // Disable redaction entirely (only for trusted, private backends):
+    redaction: { enabled: false },
+    // …or keep redaction on but allow specific attribute keys through:
+    // redaction: { enabled: true, allow: ['rpc.method', 'server.address'] },
+  },
+})
+```
+
+| `redaction` field | Purpose |
+|-------------------|---------|
+| `enabled` | Turn redaction on/off. Defaults to `true`. |
+| `allow` | Attribute keys (dot-paths) exempt from redaction. |
+| `placeholder` | Replacement string. Defaults to `[REDACTED]`. |
+
+> **Compatibility note:** redaction is on by default. If your dashboards or
+alerts depend on raw XDR, ledger keys, or addresses appearing in span
+attributes, either add the relevant keys to `redaction.allow` or set
+`redaction.enabled: false`. This is a behavior change from earlier releases
+where span attributes were emitted verbatim.
 
 ## What gets traced
 

@@ -24,35 +24,34 @@ satisfies this shape.
 If no `fetch` is passed and `globalThis.fetch` is unavailable, the constructor throws
 rather than failing on the first request.
 
-## Credential redaction
+## Authentication headers and persisted history
 
-RPC URLs sometimes carry secrets: HTTP basic-auth userinfo
-(`https://user:pass@host`) or sensitive query parameters such as `apiKey` or
-`token`. The transport never emits these verbatim. Every URL that appears in a log
-line or in a user-facing error message is passed through `redactRpcUrl` first, which
-returns a copy of the URL with:
+Authentication headers (such as `Authorization`, `Proxy-Authorization`, `Cookie`,
+`X-Api-Key`, and any header whose name ends in `-token` or `-secret`) are sent on the
+wire but are **never** written into persisted history. This keeps credentials out of
+logs, traces, and any store that records request/response history.
 
-- any `user:pass@` userinfo replaced by `***@`;
-- the values of sensitive query parameters (`apiKey`, `api_key`, `apikey`, `token`,
-  `access_token`, `secret`, `password`, `key`) replaced by `***`.
+- Header names are matched case-insensitively, so `authorization`, `Authorization`, and
+  `AUTHORIZATION` are all redacted.
+- Every matching header is redacted, not just the first.
+- When a request has no authentication headers, its history entry is recorded unchanged.
+- Redaction applies recursively to nested persisted structures (for example a history
+  entry that embeds the request under `request.headers`), so credentials cannot leak
+  through a nested copy.
+- Redacted values are replaced with a fixed placeholder; the header name is preserved so
+  the shape of the recorded request stays inspectable.
 
 ```ts
-import { redactRpcUrl } from '@soroban-resurrect/rpc';
+const transport = new JsonRpcTransport({
+  url: 'https://soroban-testnet.example.com',
+  headers: { Authorization: 'Bearer secret' },
+});
 
-redactRpcUrl('https://user:pass@host/rpc?apiKey=abc123&x=1');
-// => 'https://***@host/rpc?apiKey=***&x=1'
+// Persisted history records `Authorization: '[REDACTED]'`, never the token.
 ```
 
-`redactRpcUrl` is exported so callers can redact URLs in their own logs. It is
-defensive: malformed URLs and non-URL inputs are returned as a redacted string
-rather than throwing, so it is always safe to call in an error path.
-
-### Compatibility
-
-Redaction only changes the text of log lines and error messages; the request URL
-sent to the server, the transport's public API, and the error classes and their
-fields are unchanged. Code that matched on the raw URL inside an error message
-should match on the redacted form instead.
+This is a forward-looking guarantee: it does not change the request sent to the server,
+only what is retained in persisted history. No public API changes are required to opt in.
 
 ## Errors
 

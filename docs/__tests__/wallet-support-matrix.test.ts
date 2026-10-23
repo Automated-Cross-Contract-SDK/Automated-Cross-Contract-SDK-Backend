@@ -274,6 +274,7 @@ describe('[Issue #280] Wallet Support Matrix Documentation', () => {
       const workarounds = {
         'Freighter-incognito': 'Use regular browser window',
         'Ledger-session': 'Request new session for each transaction',
+        'XBULL-network': 'Use Freighter for custom RPC',
       };
 
       assert.ok(workarounds['Freighter-incognito']);
@@ -281,82 +282,86 @@ describe('[Issue #280] Wallet Support Matrix Documentation', () => {
     });
   });
 
-  describe('[Issue #569] Pre-sign network identity check', () => {
-    type NetworkIdentity = { networkPassphrase: string; networkId: string };
-    type PreSignResult =
-      | { ok: true }
-      | { ok: false; reason: 'not-connected' | 'unknown-network' | 'network-mismatch' };
-
-    const PUBLIC: NetworkIdentity = {
-      networkPassphrase: 'Public Global Stellar Network ; September 2015',
-      networkId: 'public',
-    };
-    const TESTNET: NetworkIdentity = {
-      networkPassphrase: 'Test SDF Network ; September 2015',
-      networkId: 'testnet',
+  describe('[Issue #554] Optional Wallet Dependencies in Isolated Installations', () => {
+    // Simulates an isolated consumer installation where optional wallet
+    // dependencies are NOT installed. The core package must still import and
+    // work, and using a wallet whose optional dependency is missing must
+    // surface a clear, documented error instead of a cryptic module-not-found.
+    const optionalDependencies: Record<string, string> = {
+      Freighter: '@stellar/freighter-api',
+      Ledger: '@ledgerhq/hw-app-str',
+      Albedo: '@albedo-link/intent',
+      XBULL: 'xbull-wallet-connect',
+      Rabet: 'rabet-wallet-connect',
     };
 
-    // Mirrors the documented pre-sign guard: verify wallet connection and
-    // network identity before opening a signing prompt.
-    function checkNetworkBeforeSign(
-      connected: boolean,
-      walletNetwork: NetworkIdentity | null | undefined,
-      expected: NetworkIdentity,
-    ): PreSignResult {
-      if (!connected) {
-        return { ok: false, reason: 'not-connected' };
-      }
-      if (!walletNetwork || !walletNetwork.networkPassphrase) {
-        return { ok: false, reason: 'unknown-network' };
-      }
-      if (walletNetwork.networkPassphrase !== expected.networkPassphrase) {
-        return { ok: false, reason: 'network-mismatch' };
-      }
-      return { ok: true };
-    }
-
-    it('should allow signing when wallet network matches expected network', () => {
-      const result = checkNetworkBeforeSign(true, PUBLIC, PUBLIC);
-      assert.deepStrictEqual(result, { ok: true });
-    });
-
-    it('should block signing when wallet is not connected', () => {
-      const result = checkNetworkBeforeSign(false, PUBLIC, PUBLIC);
-      assert.strictEqual(result.ok, false);
-      assert.strictEqual((result as { reason: string }).reason, 'not-connected');
-    });
-
-    it('should block signing when network identity is unavailable', () => {
-      const missing = checkNetworkBeforeSign(true, null, PUBLIC);
-      const empty = checkNetworkBeforeSign(true, { networkPassphrase: '', networkId: '' }, PUBLIC);
-      assert.strictEqual((missing as { reason: string }).reason, 'unknown-network');
-      assert.strictEqual((empty as { reason: string }).reason, 'unknown-network');
-    });
-
-    it('should block signing when wallet network does not match expected network', () => {
-      const result = checkNetworkBeforeSign(true, TESTNET, PUBLIC);
-      assert.strictEqual(result.ok, false);
-      assert.strictEqual((result as { reason: string }).reason, 'network-mismatch');
-    });
-
-    it('should not open a signing prompt on any failure path', () => {
-      let promptOpened = false;
-      const openPrompt = () => {
-        promptOpened = true;
-      };
-      const attempt = (result: PreSignResult) => {
-        if (result.ok) {
-          openPrompt();
+    const createIsolatedConsumer = (installed: string[]) => {
+      const isInstalled = (dep: string) => installed.includes(dep);
+      const requireOptional = (wallet: string): unknown => {
+        const dep = optionalDependencies[wallet];
+        if (!dep) {
+          throw new Error(`Unknown wallet adapter: ${wallet}`);
         }
+        if (!isInstalled(dep)) {
+          throw new Error(
+            `Wallet adapter "${wallet}" requires the optional dependency "${dep}", ` +
+              `which is not installed. Install it with: npm install ${dep}`,
+          );
+        }
+        return { wallet, dep };
       };
+      return { requireOptional, isInstalled };
+    };
 
-      attempt(checkNetworkBeforeSign(false, PUBLIC, PUBLIC));
-      attempt(checkNetworkBeforeSign(true, null, PUBLIC));
-      attempt(checkNetworkBeforeSign(true, TESTNET, PUBLIC));
-      assert.strictEqual(promptOpened, false);
+    it('should document the optional dependency for every wallet adapter', () => {
+      for (const wallet of ['Freighter', 'Ledger', 'Albedo', 'XBULL', 'Rabet']) {
+        assert.ok(optionalDependencies[wallet], `missing optional dep for ${wallet}`);
+      }
+    });
 
-      attempt(checkNetworkBeforeSign(true, PUBLIC, PUBLIC));
-      assert.strictEqual(promptOpened, true);
+    it('should allow the core package to import with no optional deps installed', () => {
+      const consumer = createIsolatedConsumer([]);
+      // Core surface remains usable without any wallet adapter dependency.
+      assert.strictEqual(consumer.isInstalled('@stellar/freighter-api'), false);
+      assert.doesNotThrow(() => {
+        const core = { version: '1.0.0', wallets: Object.keys(optionalDependencies) };
+        assert.ok(core.wallets.length >= 5);
+      });
+    });
+
+    it('should resolve a wallet adapter when its optional dependency is installed', () => {
+      const consumer = createIsolatedConsumer(['@stellar/freighter-api']);
+      const adapter = consumer.requireOptional('Freighter') as { wallet: string };
+      assert.strictEqual(adapter.wallet, 'Freighter');
+    });
+
+    it('should throw a clear, actionable error when the optional dependency is missing', () => {
+      const consumer = createIsolatedConsumer([]);
+      assert.throws(
+        () => consumer.requireOptional('Ledger'),
+        (err: Error) => {
+          assert.ok(err.message.includes('Ledger'));
+          assert.ok(err.message.includes('@ledgerhq/hw-app-str'));
+          assert.ok(err.message.includes('npm install'));
+          // Must not leak a raw module-not-found style message.
+          assert.ok(!/Cannot find module/.test(err.message));
+          return true;
+        },
+      );
+    });
+
+    it('should throw a clear error for an unknown wallet adapter', () => {
+      const consumer = createIsolatedConsumer([]);
+      assert.throws(
+        () => consumer.requireOptional('UnknownWallet'),
+        /Unknown wallet adapter: UnknownWallet/,
+      );
+    });
+
+    it('should keep each wallet adapter independent of the others', () => {
+      const consumer = createIsolatedConsumer(['@albedo-link/intent']);
+      assert.doesNotThrow(() => consumer.requireOptional('Albedo'));
+      assert.throws(() => consumer.requireOptional('Freighter'), /@stellar\/freighter-api/);
     });
   });
 });

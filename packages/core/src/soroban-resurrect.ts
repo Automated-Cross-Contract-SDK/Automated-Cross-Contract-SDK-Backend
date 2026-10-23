@@ -123,7 +123,10 @@ function extractInnerTransaction(tx: any): any {
 
 export class SorobanResurrect {
   private server: SorobanRpc.Server
-  private config: Required<Omit<SorobanResurrectConfig, 'timeout'>> & { timeout?: number }
+  private config: Required<Omit<SorobanResurrectConfig, 'timeout' | 'signal'>> & {
+    timeout?: number
+    signal?: AbortSignal
+  }
   private listeners: Record<string, Set<any>> = {}
   private failoverManager!: RpcFailoverManager
   private serverCache: Map<string, SorobanRpc.Server> = new Map()
@@ -1353,6 +1356,22 @@ export class SorobanResurrect {
     }
   }
 
+  /**
+   * Throws an `AbortError` when `config.signal` has been aborted. `stage` is
+   * where the flow stopped; `txHash` is set once the transaction was sent.
+   */
+  private throwIfCancelled(stage: 'signing' | 'submission' | 'confirmation', txHash?: string): void {
+    const signal = this.config.signal
+    if (!signal?.aborted) return
+    const suffix = txHash ? ` after submission (txHash=${txHash}); the transaction may still be applied` : ''
+    throw Object.assign(new Error(`Cancelled during ${stage}${suffix}`), {
+      name: 'AbortError',
+      cause: signal.reason,
+      stage,
+      txHash,
+    })
+  }
+
   private restoreAwaitsConfirmation(): boolean {
     return this.config.restoreConfirmationPolicy !== 'submitted'
   }
@@ -1364,7 +1383,9 @@ export class SorobanResurrect {
   ): Promise<string> {
     await this.ensureNetworkIdentityMatches()
 
+    this.throwIfCancelled('signing')
     const signedXDR = await signTransaction(txXDR)
+    this.throwIfCancelled('submission')
 
     const tx = new Transaction(signedXDR, this.config.networkPassphrase)
     this.assertSignerMatchesSource(txXDR, tx)
@@ -1380,6 +1401,7 @@ export class SorobanResurrect {
         this.log('info', `Transaction ${hash} submitted without waiting for confirmation`)
         return hash
       }
+      this.throwIfCancelled('confirmation', hash)
       const { hash: confirmedHash } = await this.waitForTransaction(hash)
       return confirmedHash
     }
@@ -1616,6 +1638,7 @@ export class SorobanResurrect {
   ): Promise<string> {
     const intervalMs = this.config.pollIntervalMs
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      this.throwIfCancelled('confirmation', hash)
       const receipt = await this.withMethodTimeout('getTransaction', () =>
         this.getServer().getTransaction(hash),
       )

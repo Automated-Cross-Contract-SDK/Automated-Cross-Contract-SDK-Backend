@@ -35,9 +35,68 @@ testnet that requires protocol 21 can be configured with
 | 21       | v21         | yes       | Contract auth improvements     |
 | 22       | v22         | yes       | Current mainnet protocol       |
 
+## Framework binding conformance
+
+Framework bindings (React, Vue, Svelte, and any future adapter) share a single
+conformance suite so that every binding exposes the same observable behavior.
+The suite lives at `packages/sdk/tests/framework-binding-conformance.test.ts`
+and is parameterized by a binding factory, so a new binding is covered by
+registering it with the suite rather than writing a bespoke test file.
+
+### Supported behavior
+
+A conforming binding must:
+
+- Expose the negotiated protocol version and the compatibility matrix entry for
+  it through its public surface, matching `version-negotiator.ts`.
+- Surface `UNSUPPORTED_PROTOCOL` errors from negotiation unchanged, including
+  the detected version and the applicable minimum in the message.
+- Emit a warning (not an error) when the node is above
+  `MAX_SUPPORTED_PROTOCOL`, and continue to operate.
+- Honor `MIN_PROTOCOL_PER_NETWORK` overrides for the active network only.
+
+### Failure and edge cases
+
+The suite asserts the following paths:
+
+- Negotiation below the global minimum throws `UNSUPPORTED_PROTOCOL`.
+- Negotiation below a per-network minimum throws `UNSUPPORTED_PROTOCOL` even
+  when the version is at or above the global minimum.
+- A per-network override for one network does not affect another network.
+- A version above the maximum resolves successfully and records a warning.
+- Every version in the supported range has a matrix entry with an XDR variant.
+
+### Compatibility constraints
+
+- The suite is additive: it does not change the public API of any binding.
+- Bindings that cannot satisfy a case must document the deviation here before
+  the suite is extended to require it.
+- When `MIN_SUPPORTED_PROTOCOL`, `MAX_SUPPORTED_PROTOCOL`, or the matrix
+  changes, update this section and the conformance suite in the same change.
+
 ## Keeping this document current
 
 When `MIN_SUPPORTED_PROTOCOL` or `MAX_SUPPORTED_PROTOCOL` changes, update the
 table above and the matrix in the same change. The test at
 `packages/sdk/tests/protocol-version-bounds.test.ts` fails when the document
 and the constants disagree.
+
+## RPC response schemas
+
+`validateRpcResultSchema(method, result, protocolVersion)` from
+`@soroban-resurrect/rpc` checks that a JSON-RPC `result` has the fields the SDK
+reads, for each protocol in the matrix above. It throws `RpcSchemaError` with
+`method`, `protocolVersion` and the offending `field`.
+
+| Method                | Required fields                                  | Since 22 |
+| --------------------- | ------------------------------------------------ | -------- |
+| `getHealth`           | `status`                                         |          |
+| `getNetwork`          | `passphrase`, `protocolVersion`                  |          |
+| `getLatestLedger`     | `id`, `protocolVersion`, `sequence`              |          |
+| `getLedgerEntries`    | `entries`, `latestLedger`                        |          |
+| `simulateTransaction` | `latestLedger`                                   |          |
+| `sendTransaction`     | `status`, `hash`, `latestLedger`                 |          |
+| `getTransaction`      | `status`, `latestLedger`                         | `txHash` |
+
+Extra fields are allowed. Unknown methods and protocols outside
+`SCHEMA_PROTOCOL_LINES` are rejected rather than skipped.

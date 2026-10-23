@@ -1,6 +1,8 @@
 node_modules/
 dist/
 coverage/
+temp_auto_push.bat
 .env
 *.tsbuildinfo
 .vite/
+scripts/.out/

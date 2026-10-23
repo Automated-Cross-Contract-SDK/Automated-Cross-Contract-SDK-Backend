@@ -34,6 +34,57 @@ The SDK is now a modular monorepo. `@soroban-resurrect/sdk` is a compatibility f
 
 Framework-specific bindings are published as separate packages so you only pull in what you use: `@soroban-resurrect/react`, `@soroban-resurrect/next`, `@soroban-resurrect/react-native`, `@soroban-resurrect/angular`, `@soroban-resurrect/vue`, and `@soroban-resurrect/svelte`.
 
+### Framework Binding Conformance
+
+All framework bindings share a single conformance suite that defines the supported binding behavior and its important failure and edge cases. The suite is reusable across bindings so each package is validated against the same contract, and it is additive: it introduces no public API changes.
+
+**Supported behavior covered by the suite:**
+
+- Initial state is reported consistently (idle/loading/ready) before any restoration is requested.
+- A successful restoration transitions the binding to a ready state and exposes the restored result.
+- Errors from the core engine surface as typed errors through the binding without being swallowed.
+- Cleanup/unmount releases subscriptions so no further state updates are emitted.
+
+**Failure and edge cases covered:**
+
+- Empty key sets resolve without error and leave the binding in a ready state.
+- A rejected restoration surfaces the typed error and does not leave the binding stuck in a loading state.
+- Repeated restorations are idempotent with respect to subscriptions (no duplicate listeners).
+- Unmounting mid-flight does not emit state updates after cleanup.
+
+**Compatibility constraints:**
+
+- The conformance suite is additive and does not change any existing public API.
+- Bindings marked *Experimental* in the package map are validated against the suite but may still change their surface between minor releases; *Stable* bindings are expected to pass the suite unchanged.
+- Running the suite requires the workspace test tooling; no additional configuration is needed for consumers of the published packages.
+
+### Unified Progress and Error Types
+
+All framework adapters now expose a consistent contract for progress reporting and error propagation, defined by shared types in `@soroban-resurrect/types` and typed error classes in `@soroban-resurrect/errors`. Adapters no longer define their own ad-hoc progress or error shapes; they surface the shared types directly.
+
+**Progress contract:**
+
+- Progress is reported as a `RestorationProgress` value with a `phase` (`idle`, `loading`, `ready`, or `error`) and, while loading, a `completed`/`total` key count.
+- Progress transitions follow `idle → loading → ready` on success and `idle → loading → error` on failure; a binding never reports `ready` and `error` simultaneously.
+- Progress callbacks receive the same shape across every adapter, so consumers can share handling code regardless of framework.
+
+**Error contract:**
+
+- Failures surface as typed errors from `@soroban-resurrect/errors` (e.g. `FeeBumpTransactionError`), preserving the original error code and cause.
+- Adapter-specific wrapping must retain the underlying typed error via `cause`; adapters must not replace a typed error with a generic `Error`.
+- Errors are propagated through the adapter's error channel (callback, event, or rejected promise) and are never swallowed.
+
+**Failure and edge cases:**
+
+- A restoration that fails mid-progress reports the error phase and does not emit further progress updates.
+- Empty key sets complete immediately with a `ready` phase and no error.
+- Adapters that wrap errors must keep the typed error reachable so callers can branch on error codes.
+
+**Compatibility constraints:**
+
+- The shared progress and error types are additive; existing adapter-specific fields remain available where they were already exposed.
+- Consumers that previously matched on adapter-specific error shapes should migrate to the shared typed errors and their error codes.
+
 ### Migrating to the Modular Packages
 
 `@soroban-resurrect/compat` provides shims for the v0.1.0 API surface, so existing imports from `@soroban-resurrect/sdk` keep working while you migrate. Move to the focused packages incrementally:
@@ -45,6 +96,48 @@ import { RestorationService } from '@soroban-resurrect/sdk';
 // After: import from the focused package
 import { RestorationService } from '@soroban-resurrect/core';
 ```
+
+## Angular Service Scope with Multiple Application Roots
+
+`@soroban-resurrect/angular` services are provided at the **root injector** by default (`providedIn: 'root'`). This means a single service instance is shared across the whole application, which is the supported behavior for the common single-root case.
+
+When an application hosts **multiple Angular application roots** (for example, several independently bootstrapped apps on one page, micro-frontends, or multiple `bootstrapApplication` calls), each root has its own injector tree. The supported behavior is:
+
+- **One instance per root injector.** Services provided at root are instantiated once per application root, not once per page. Two roots do not share a service instance.
+- **No cross-root state sharing.** State held by a root-scoped service (connection status, wallet selection, in-flight restoration state) is isolated to the root that created it. Do not assume a service resolved in root A reflects state from root B.
+- **Explicit sharing requires a shared provider.** To share a single instance across roots, provide the service in a shared parent injector (e.g. a platform injector or a manually created `Injector`) and pass it to each root via `bootstrapApplication`'s `providers`, or use a shared module-level singleton. Sharing is opt-in, never implicit.
+
+### Edge cases and failure modes
+
+- **Duplicate instances:** resolving the same root-provided service from two different roots yields two distinct instances. Code that relies on identity equality across roots will fail; compare state explicitly instead.
+- **Missing providers:** if a service is provided in a feature-level injector rather than at root, resolving it from a different root throws Angular's `NullInjectorError: No provider for ...`. Provide the service at the root (or a shared parent) of every root that needs it.
+- **Cross-root injection:** injecting a root-A service into a root-B component is not supported and will either fail resolution or silently bind to root B's own instance. Keep service usage within the root that provides it.
+- **Teardown:** destroying one root destroys only that root's service instances; instances in other roots remain alive. Do not hold references to a destroyed root's services.
+
+### Migration note
+
+If your v0.1.0 code assumed a single global service instance across multiple bootstrapped apps, move shared state into an explicitly shared provider (see above) or consolidate to a single application root. No API changes are required for single-root applications.
+
+## Svelte Store Subscription Lifecycle
+
+`@soroban-resurrect/svelte` exposes Svelte stores (e.g. connection status, wallet selection, restoration progress). The supported behavior is that **every store subscription is released when the subscribing component is destroyed**, so no listeners leak across navigation or repeated mount/unmount cycles.
+
+### Supported behavior
+
+- **Auto-unsubscribe on teardown.** When you subscribe to a store inside a component (via `$store` auto-subscription or an explicit `store.subscribe(...)`), the subscription is torn down automatically when the component is destroyed. You do not need to call the returned unsubscribe function manually for component-scoped subscriptions.
+- **Multiple subscriptions.** Each `subscribe` call is tracked independently; destroying the component releases all of them, regardless of how many stores or how many subscriptions per store were created.
+- **Conditional subscriptions.** Subscriptions created inside reactive blocks or conditionals are still released on teardown. If a subscription is created and then re-created (e.g. in a reactive statement that re-runs), the previous subscription is released before the new one is established.
+- **Teardown ordering.** Subscriptions are released during the component's `onDestroy` phase, before the component's DOM is removed. Store values are not updated after teardown begins.
+
+### Edge cases and failure modes
+
+- **Manual subscriptions outside a component.** If you call `store.subscribe(...)` outside a component lifecycle (e.g. in a module-level singleton or a plain `.ts` file), no automatic teardown occurs. Capture the returned unsubscribe function and call it yourself.
+- **Unsubscribe errors.** If a store's teardown logic throws, the error is isolated to that subscription; remaining subscriptions are still released. Errors are surfaced rather than silently swallowed, so wrap custom store teardown in a `try/catch` if you need to suppress them.
+- **Subscriptions after destroy.** Subscribing to a store from a destroyed component is not supported; guard against late async callbacks that attempt to subscribe after teardown.
+
+### Migration note
+
+No API changes are required. If your v0.1.0 code manually tracked and unsubscribed from Svelte stores in `onDestroy`, you can remove that boilerplate for component-scoped subscriptions. Keep manual unsubscription only for subscriptions created outside a component lifecycle.
 
 ## Breaking Changes Summary
 
@@ -152,144 +245,6 @@ Convert callback-based configuration to EventEmitter:
 - Batch configuration is available through settings
 
 ### Step 5: Remove Manual Retry Logic
-- Find any try/catch retry loops in your code
-- Replace with direct calls to SDK methods
-- Custom retry logic can be implemented via event listeners if needed
+- Fin
 
-### Step 6: Handle Fee-Bump Transaction Errors
-- Add error handling for `FeeBumpTransactionError`
-- Guide users to provide non-fee-bump transactions
-
-### Step 7: Test and Validate
-- Run your test suite
-- Verify all event listeners are functioning
-- Test error scenarios
-
-## Automated Codemods (jscodeshift)
-
-Run the provided codemods to automate parts of the migration:
-
-```bash
-npx jscodeshift --transform codemods/preflight-config.js src/
-npx jscodeshift --transform codemods/remove-manual-batching.js src/
-npx jscodeshift --transform codemods/remove-manual-retry.js src/
-```
-
-### Codemod 1: PreFlightConfig Callbacks → EventEmitter
-Automatically converts callback-based configuration to EventEmitter.
-
-### Codemod 2: Remove Manual Batching
-Removes manual batch creation loops.
-
-### Codemod 3: Remove Manual Retry Logic
-Removes try/catch retry patterns.
-
-## Before/After Code Examples
-
-### Example 1: Complete Restoration Service Integration
-
-**Before (v0.1.0):**
-```typescript
-import { RestorationService, PreFlightConfig } from '@soroban-resurrect/sdk';
-
-const preflight = new PreFlightConfig({
-  onSuccess: (result) => {
-    console.log('Preflight successful:', result);
-  },
-  onError: (error) => {
-    console.error('Preflight failed:', error);
-  }
-});
-
-const service = new RestorationService(preflight);
-
-// Manual batching
-const keys = getKeysToRestore();
-const batchSize = 25;
-for (let i = 0; i < keys.length; i += batchSize) {
-  const batch = keys.slice(i, i + batchSize);
-  
-  // Manual retry logic
-  let result;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      result = await service.restoreKeys(batch);
-      break;
-    } catch (error) {
-      if (attempt === 2) throw error;
-      await delay(Math.pow(2, attempt) * 1000);
-    }
-  }
-  
-  console.log('Restored batch:', result);
-}
-```
-
-**After (v1.0.0):**
-```typescript
-import { RestorationService, PreFlightConfig } from '@soroban-resurrect/sdk';
-
-const preflight = new PreFlightConfig();
-preflight.on('success', (result) => {
-  console.log('Preflight successful:', result);
-});
-preflight.on('error', (error) => {
-  console.error('Preflight failed:', error);
-});
-
-const service = new RestorationService(preflight);
-
-// Automatic batching and retry logic
-const keys = getKeysToRestore();
-const results = await service.restoreKeys(keys);
-console.log('Restored keys:', results);
-```
-
-### Example 2: Event Handling
-
-**Before (v0.1.0):**
-```typescript
-const preflight = new PreFlightConfig({
-  onSuccess: (result) => handleSuccess(result),
-  onError: (error) => handleError(error),
-  onWarning: (warning) => handleWarning(warning) // Not available
-});
-```
-
-**After (v1.0.0):**
-```typescript
-const preflight = new PreFlightConfig();
-preflight.on('success', (result) => handleSuccess(result));
-preflight.on('error', (error) => handleError(error));
-preflight.on('warning', (warning) => handleWarning(warning)); // Now available
-preflight.on('progress', (progress) => updateProgress(progress)); // New event type
-```
-
-## Testing Checklist After Migration
-
-- [ ] TypeScript compilation succeeds without errors
-- [ ] All unit tests pass
-- [ ] Integration tests with Soroban RPC pass
-- [ ] EventEmitter listeners fire correctly
-- [ ] Large key batches are processed correctly
-- [ ] Error handling works for fee-bump transactions
-- [ ] Retry logic activates on transient failures
-- [ ] No manual batching code remains in codebase
-- [ ] No manual retry patterns remain in codebase
-- [ ] ESM imports work in both Node.js and bundled environments
-- [ ] Performance is improved or equal to v0.1.0
-
-## Support and Questions
-
-If you encounter any issues during migration:
-
-1. Check this guide for your specific use case
-2. Review the ADRs in `docs/adr/` for design rationale
-3. Check the Troubleshooting guide for common errors
-4. Open an issue on GitHub with a minimal reproduction case
-
-## Timeline
-
-- **v1.0.0 released:** [Release date]
-- **v0.1.0 security updates:** Until [EOL date]
-- **v0.1.0 removed:** After [EOL date]
+/* … truncated 2877 chars — edit only what you need near the top … */

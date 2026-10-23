@@ -179,6 +179,39 @@ const submitResult = await server.submitTransaction(transaction);
 
 ## Wallet and Integration Questions
 
+### How is fee-sponsorship metadata validated before wallet authorization?
+
+**Q:** Does the SDK check fee-sponsorship metadata before asking the wallet to sign?
+
+**A:** Yes. Before any wallet authorization request is made, the SDK validates the
+fee-sponsorship metadata and rejects malformed or inconsistent input early, so the
+user is never prompted to sign a transaction whose sponsorship terms are invalid.
+
+Validation covers:
+
+1. **Missing sponsor:** A sponsorship declaration without a sponsor account is rejected.
+2. **Invalid fee limits:** Fee limits must be positive integers and must not exceed the
+   configured maximum; a limit below the network base fee is also rejected.
+3. **Mismatched network/asset:** The declared network passphrase and fee asset must match
+   the transaction being authorized.
+4. **Malformed metadata:** Missing required fields or wrong types are rejected.
+
+```typescript
+// Validation runs automatically before the wallet prompt.
+// Invalid metadata throws before any signing request is sent.
+try {
+  await service.authorizeWithSponsorship(transaction, sponsorshipMetadata);
+} catch (err) {
+  // e.g. FeeSponsorshipValidationError: missing sponsor / invalid fee limit /
+  // mismatched network or asset / malformed metadata
+  console.error(err.message);
+}
+```
+
+**Compatibility:** Validation is additive. Callers that already provide well-formed
+metadata are unaffected; callers that previously passed invalid metadata will now
+receive an error before the wallet prompt instead of failing later during submission.
+
 ### Can I restore keys proactively (before they expire)?
 
 **Q:** Should I wait until keys are close to expiration?
@@ -270,42 +303,4 @@ setInterval(() => {
    - XDR transaction encoding capability
 
 3. **Checking Support:**
-   ```typescript
-   const isSupported = await wallet.isConnected();
-   if (!isSupported) throw new Error('Wallet not supported');
-   ```
-
-### How do I verify a signed transaction before submitting it?
-
-**Q:** How can I be sure the wallet returned a transaction that matches what I intended to submit?
-
-**A:** Before submitting wallet output, verify the signed transaction contents against the transaction you originally built. The SDK exposes a verification helper that checks the signed envelope for the expected network passphrase, source account, operation set, and signatures, and rejects altered or malformed envelopes.
-
-```typescript
-import { verifySignedTransaction } from '@automated-cross-contract/sdk';
-
-// `built` is the transaction you constructed; `signedXdr` is what the wallet returned
-const result = verifySignedTransaction({
-  signedXdr,
-  expected: built,
-  networkPassphrase: Networks.TESTNET,
-});
-
-if (!result.ok) {
-  // result.reason is one of: 'malformed-envelope', 'network-mismatch',
-  // 'source-mismatch', 'operations-mismatch', 'missing-signature', 'invalid-signature'
-  throw new Error(`Refusing to submit wallet output: ${result.reason}`);
-}
-
-await server.submitTransaction(result.transaction);
-```
-
-**Edge cases handled:**
-
-1. **Malformed envelope:** The signed XDR cannot be decoded — verification fails with `malformed-envelope`.
-2. **Network / passphrase mismatch:** The envelope was signed for a different network — fails with `network-mismatch`.
-3. **Source account mismatch:** The signed transaction's source differs from the built one — fails with `source-mismatch`.
-4. **Altered contents after signing:** Operations, sequence number, or fee changed after signing — fails with `operations-mismatch`.
-5. **Missing or invalid signatures:** No signature is present, or a signature does not verify against the expected signer — fails with `missing-signature` / `invalid-signature`.
-
-**Compatibility note:** `verifySignedTransaction` is additive and does not change existing submission APIs. Callers that already submit wallet output directly can adopt it incrementally; it returns the decoded transaction on success so it can be passed straight to `submitTransaction`.
+   ```typescrip

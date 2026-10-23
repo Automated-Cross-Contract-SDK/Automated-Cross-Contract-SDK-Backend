@@ -9,6 +9,15 @@ entries below `## [Unreleased]` by hand** — they are managed by the release
 pipeline (`.github/workflows/release.yml`). The `0.1.0` section below is retained
 as the historical baseline.
 
+## [Unreleased]
+
+### Added
+
+- `npm run verify:exports` — validates export maps from a clean `npm pack` consumer and resolution in Node (ESM/CJS) and browser/node bundlers (#603, #604)
+- `npm run bench:bundle` — tracks gzipped bundle size and Node import time against `scripts/bundle-budgets.json` (#601)
+- `npm run profile:footprint` — profiles large-footprint parsing in Node and in the browser (#602)
+- See [docs/package_verification.md](docs/package_verification.md)
+
 ## [0.1.0] — 2026-07-13
 
 ### Added
