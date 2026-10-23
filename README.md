@@ -85,6 +85,7 @@ npm run typecheck
 
 ## API stability
 
-Public APIs of the framework entry points are stable. Any intentional breaking
-change is documented in the package changelog and called out in the release
-notes.
+- #438: [react] Progress events not wired: IDLE_PROGRESS exists but restore:batch:complete is never mapped to setProgress
+
+<!-- handsoff-issue-572 -->
+- #572: Test malformed and oversized persisted history data at storage boundaries

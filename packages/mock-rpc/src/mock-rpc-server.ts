@@ -1,10 +1,4 @@
-import {
-  SorobanRpc,
-  xdr,
-  Account,
-  SorobanDataBuilder,
-  Transaction,
-} from '@stellar/stellar-sdk'
+import { SorobanRpc, xdr, Account, SorobanDataBuilder, Transaction } from '@stellar/stellar-sdk';
 import type {
   MockRpcConfig,
   NetworkCondition,
@@ -14,7 +8,7 @@ import type {
   RpcFixture,
   SimulatedLedgerEntry,
   RecordedInteraction,
-} from './types.js'
+} from './types.js';
 import type {
   SorobanRpcClient,
   SorobanRpcApiSimulateTransactionResponse,
@@ -22,10 +16,10 @@ import type {
   SorobanRpcApiGetTransactionResponse,
   SorobanRpcApiGetLedgerEntriesResponse,
   SorobanRpcApiNetworkInfo,
-} from '@soroban-resurrect/types'
-import { MockLedgerState } from './ledger-state.js'
-import { SequenceManager } from './sequence-manager.js'
-import { FixtureRecorder } from './fixture-recorder.js'
+} from '@soroban-resurrect/types';
+import { MockLedgerState } from './ledger-state.js';
+import { SequenceManager } from './sequence-manager.js';
+import { FixtureRecorder } from './fixture-recorder.js';
 
 /**
  * A mock Soroban RPC server for deterministic unit testing.
@@ -65,18 +59,18 @@ import { FixtureRecorder } from './fixture-recorder.js'
  */
 export class MockRpcServer implements SorobanRpcClient {
   /** The simulated ledger state manager. */
-  readonly ledgerState: MockLedgerState
+  readonly ledgerState: MockLedgerState;
   /** Deterministic sequence number manager. */
-  readonly sequenceManager: SequenceManager
+  readonly sequenceManager: SequenceManager;
   /** Fixture recorder for capturing and replaying interactions. */
-  readonly fixtures: FixtureRecorder
+  readonly fixtures: FixtureRecorder;
 
-  private config: Required<MockRpcConfig>
-  private stats: MockRpcStats
-  private methodOverrides: Map<string, MethodOverride['handler']> = new Map()
-  private perMethodConditions: Map<string, NetworkSimulationOptions> = new Map()
-  private loadedFixture: RpcFixture | null = null
-  private fixtureMode: 'none' | 'replay' | 'record' = 'none'
+  private config: Required<MockRpcConfig>;
+  private stats: MockRpcStats;
+  private methodOverrides: Map<string, MethodOverride['handler']> = new Map();
+  private perMethodConditions: Map<string, NetworkSimulationOptions> = new Map();
+  private loadedFixture: RpcFixture | null = null;
+  private fixtureMode: 'none' | 'replay' | 'record' = 'none';
 
   constructor(config: MockRpcConfig = {}) {
     this.config = {
@@ -88,14 +82,11 @@ export class MockRpcServer implements SorobanRpcClient {
       networkPassphrase: 'Test SDF Network ; September 2015',
       protocolVersion: 22,
       ...config,
-    }
+    };
 
-    this.ledgerState = new MockLedgerState(
-      {},
-      this.config.currentLedgerSeq,
-    )
-    this.sequenceManager = new SequenceManager()
-    this.fixtures = new FixtureRecorder()
+    this.ledgerState = new MockLedgerState({}, this.config.currentLedgerSeq);
+    this.sequenceManager = new SequenceManager();
+    this.fixtures = new FixtureRecorder();
 
     this.stats = {
       totalCalls: 0,
@@ -104,19 +95,19 @@ export class MockRpcServer implements SorobanRpcClient {
       errors: 0,
       slowResponses: 0,
       totalDelayMs: 0,
-    }
+    };
   }
 
   // ── Network condition control ────────────────────────────────────────────
 
   /** Set the global network condition for all methods. */
   setNetworkCondition(condition: NetworkCondition): void {
-    this.config.networkCondition = condition
+    this.config.networkCondition = condition;
   }
 
   /** Get the current global network condition. */
   getNetworkCondition(): NetworkCondition {
-    return this.config.networkCondition
+    return this.config.networkCondition;
   }
 
   /**
@@ -125,50 +116,50 @@ export class MockRpcServer implements SorobanRpcClient {
    * @param options - The network simulation options
    */
   setMethodCondition(method: string, options: NetworkSimulationOptions): void {
-    this.perMethodConditions.set(method, options)
+    this.perMethodConditions.set(method, options);
   }
 
   /** Clear a per-method network condition override. */
   clearMethodCondition(method: string): void {
-    this.perMethodConditions.delete(method)
+    this.perMethodConditions.delete(method);
   }
 
   /** Clear all per-method overrides and reset global condition to 'healthy'. */
   resetConditions(): void {
-    this.config.networkCondition = 'healthy'
-    this.perMethodConditions.clear()
+    this.config.networkCondition = 'healthy';
+    this.perMethodConditions.clear();
   }
 
   // ── Fixture control ──────────────────────────────────────────────────────
 
   /** Load a fixture for replay. */
   loadFixture(fixture: RpcFixture): void {
-    this.loadedFixture = fixture
-    this.fixtureMode = 'replay'
+    this.loadedFixture = fixture;
+    this.fixtureMode = 'replay';
   }
 
   /** Load a fixture from a file path. */
   loadFixtureFromFile(filePath: string): void {
-    this.loadedFixture = this.fixtures.loadFixture(filePath)
-    this.fixtureMode = 'replay'
+    this.loadedFixture = this.fixtures.loadFixture(filePath);
+    this.fixtureMode = 'replay';
   }
 
   /** Start recording interactions to a fixture. */
   startRecording(): void {
-    this.fixtureMode = 'record'
-    this.fixtures.startRecording()
+    this.fixtureMode = 'record';
+    this.fixtures.startRecording();
   }
 
   /** Stop recording and return the recorded interactions. */
   stopRecording(): RecordedInteraction[] {
-    const interactions = this.fixtures.stopRecording()
-    this.fixtureMode = 'none'
-    return interactions
+    const interactions = this.fixtures.stopRecording();
+    this.fixtureMode = 'none';
+    return interactions;
   }
 
   /** Save recorded interactions to a fixture file. */
   saveFixture(filePath: string, name: string, metadata?: RpcFixture['metadata']): void {
-    this.fixtures.saveFixture(filePath, name, metadata)
+    this.fixtures.saveFixture(filePath, name, metadata);
   }
 
   // ── Method overrides ─────────────────────────────────────────────────────
@@ -178,24 +169,24 @@ export class MockRpcServer implements SorobanRpcClient {
    * The handler receives the call params and must return the response.
    */
   setMethodOverride(method: string, handler: MethodOverride['handler']): void {
-    this.methodOverrides.set(method, handler)
+    this.methodOverrides.set(method, handler);
   }
 
   /** Remove a method override. */
   clearMethodOverride(method: string): void {
-    this.methodOverrides.delete(method)
+    this.methodOverrides.delete(method);
   }
 
   /** Clear all method overrides. */
   clearAllOverrides(): void {
-    this.methodOverrides.clear()
+    this.methodOverrides.clear();
   }
 
   // ── Statistics ───────────────────────────────────────────────────────────
 
   /** Get call statistics for test assertions. */
   getStats(): MockRpcStats {
-    return { ...this.stats }
+    return { ...this.stats };
   }
 
   /** Reset call statistics. */
@@ -207,33 +198,33 @@ export class MockRpcServer implements SorobanRpcClient {
       errors: 0,
       slowResponses: 0,
       totalDelayMs: 0,
-    }
+    };
   }
 
   // ── SorobanRpcClient interface implementation ───────────────────────────────────────────
 
   async getAccount(accountId: string): Promise<Account> {
-    return this.handleGetAccount(accountId) as Promise<Account>
+    return this.handleGetAccount(accountId) as Promise<Account>;
   }
 
   async simulateTransaction(tx: Transaction): Promise<SorobanRpcApiSimulateTransactionResponse> {
-    return this.handleSimulateTransaction(tx) as Promise<SorobanRpcApiSimulateTransactionResponse>
+    return this.handleSimulateTransaction(tx) as Promise<SorobanRpcApiSimulateTransactionResponse>;
   }
 
   async sendTransaction(tx: Transaction): Promise<SorobanRpcApiSendTransactionResponse> {
-    return this.handleSendTransaction(tx) as Promise<SorobanRpcApiSendTransactionResponse>
+    return this.handleSendTransaction(tx) as Promise<SorobanRpcApiSendTransactionResponse>;
   }
 
   async getTransaction(hash: string): Promise<SorobanRpcApiGetTransactionResponse> {
-    return this.handleGetTransaction(hash) as Promise<SorobanRpcApiGetTransactionResponse>
+    return this.handleGetTransaction(hash) as Promise<SorobanRpcApiGetTransactionResponse>;
   }
 
   async getLedgerEntries(...keys: xdr.LedgerKey[]): Promise<SorobanRpcApiGetLedgerEntriesResponse> {
-    return this.handleGetLedgerEntries(keys) as Promise<SorobanRpcApiGetLedgerEntriesResponse>
+    return this.handleGetLedgerEntries(keys) as Promise<SorobanRpcApiGetLedgerEntriesResponse>;
   }
 
   async getNetwork(): Promise<SorobanRpcApiNetworkInfo> {
-    return this.handleGetNetwork() as Promise<SorobanRpcApiNetworkInfo>
+    return this.handleGetNetwork() as Promise<SorobanRpcApiNetworkInfo>;
   }
 
   // ── Legacy getServer method for backward compatibility ───────────────────────────────────────────
@@ -254,9 +245,9 @@ export class MockRpcServer implements SorobanRpcClient {
       getHealth: () => this.handleGetHealth(),
       getNetwork: () => this.handleGetNetwork(),
       getLatestLedger: () => this.handleGetLatestLedger(),
-    } as unknown as SorobanRpc.Server
+    } as unknown as SorobanRpc.Server;
 
-    return server
+    return server;
   }
 
   // ── Private: request pipeline ────────────────────────────────────────────
@@ -266,42 +257,42 @@ export class MockRpcServer implements SorobanRpcClient {
     params: unknown[],
     handler: () => T | Promise<T>,
   ): Promise<T> {
-    this.stats.totalCalls++
-    this.stats.callsByMethod[method] = (this.stats.callsByMethod[method] ?? 0) + 1
+    this.stats.totalCalls++;
+    this.stats.callsByMethod[method] = (this.stats.callsByMethod[method] ?? 0) + 1;
 
     // 1. Check method override (takes highest priority)
-    const override = this.methodOverrides.get(method)
+    const override = this.methodOverrides.get(method);
     if (override) {
-      return override(params) as T
+      return override(params) as T;
     }
 
     // 2. Check fixture replay mode
     if (this.fixtureMode === 'replay' && this.loadedFixture) {
-      const interaction = this.fixtures.findInteraction(this.loadedFixture, method, params)
+      const interaction = this.fixtures.findInteraction(this.loadedFixture, method, params);
       if (interaction) {
         await this.applyNetworkSimulation(
           method,
           interaction.networkCondition,
           interaction.delayMs,
-        )
-        return interaction.response as T
+        );
+        return interaction.response as T;
       }
     }
 
     // 3. Apply network simulation
-    const condition = this.getEffectiveCondition(method)
-    await this.applyNetworkSimulation(method, condition)
+    const condition = this.getEffectiveCondition(method);
+    await this.applyNetworkSimulation(method, condition);
 
     // 4. Execute the actual handler
-    const result = await handler()
+    const result = await handler();
 
     // 5. Record if in record mode
     if (this.fixtureMode === 'record') {
-      const effectiveCondition = this.getEffectiveCondition(method)
-      this.fixtures.record(method, params, result, effectiveCondition)
+      const effectiveCondition = this.getEffectiveCondition(method);
+      this.fixtures.record(method, params, result, effectiveCondition);
     }
 
-    return result
+    return result;
   }
 
   /**
@@ -309,9 +300,9 @@ export class MockRpcServer implements SorobanRpcClient {
    * override takes precedence over global.
    */
   private getEffectiveCondition(method: string): NetworkCondition {
-    const perMethod = this.perMethodConditions.get(method)
-    if (perMethod) return perMethod.condition
-    return this.config.networkCondition
+    const perMethod = this.perMethodConditions.get(method);
+    if (perMethod) return perMethod.condition;
+    return this.config.networkCondition;
   }
 
   /**
@@ -322,74 +313,75 @@ export class MockRpcServer implements SorobanRpcClient {
     condition: NetworkCondition,
     overrideDelayMs?: number,
   ): Promise<void> {
-    const perMethod = this.perMethodConditions.get(method)
-    const errorMessage = perMethod?.errorMessage ?? this.config.errorMessage
+    const perMethod = this.perMethodConditions.get(method);
+    const errorMessage = perMethod?.errorMessage ?? this.config.errorMessage;
 
     switch (condition) {
       case 'timeout':
-        this.stats.timeouts++
+        this.stats.timeouts++;
         // Simulate timeout by throwing a timeout-like error
-        throw new Error(`Simulated timeout for ${method}`)
+        throw new Error(`Simulated timeout for ${method}`);
 
       case 'error':
-        this.stats.errors++
-        throw new Error(errorMessage)
+        this.stats.errors++;
+        throw new Error(errorMessage);
 
       case 'slow': {
-        this.stats.slowResponses++
-        const delay = overrideDelayMs ?? perMethod?.delayMs ?? this.config.slowDelayMs
-        this.stats.totalDelayMs += delay
-        await new Promise(resolve => setTimeout(resolve, delay))
-        break
+        this.stats.slowResponses++;
+        const delay = overrideDelayMs ?? perMethod?.delayMs ?? this.config.slowDelayMs;
+        this.stats.totalDelayMs += delay;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        break;
       }
 
       case 'healthy':
         // No delay or error
-        break
+        break;
     }
   }
 
   // ── Private: RPC method implementations ──────────────────────────────────
 
-  private async handleSimulateTransaction(tx: unknown): Promise<SorobanRpcApiSimulateTransactionResponse> {
+  private async handleSimulateTransaction(
+    tx: unknown,
+  ): Promise<SorobanRpcApiSimulateTransactionResponse> {
     return this.handleRequest('simulateTransaction', [tx], () => {
       // Build a minimal successful simulation response
       // Use the ledgerState to determine archived keys in the footprint
 
-      const txObj = tx as any
-      let sorobanData: xdr.SorobanTransactionData | undefined
+      const txObj = tx as any;
+      let sorobanData: xdr.SorobanTransactionData | undefined;
 
       try {
         if (typeof txObj?.sorobanData === 'function') {
-          sorobanData = txObj.sorobanData() as xdr.SorobanTransactionData
+          sorobanData = txObj.sorobanData() as xdr.SorobanTransactionData;
         } else if (txObj?.sorobanData) {
-          sorobanData = txObj.sorobanData
+          sorobanData = txObj.sorobanData;
         }
       } catch {
         // Ignore — no sorobanData
       }
 
-      const readOnlyKeys: xdr.LedgerKey[] = []
-      const readWriteKeys: xdr.LedgerKey[] = []
+      const readOnlyKeys: xdr.LedgerKey[] = [];
+      const readWriteKeys: xdr.LedgerKey[] = [];
 
       if (sorobanData) {
         try {
-          const resources = sorobanData.resources()
-          const footprint = resources.footprint()
-          if (footprint.readOnly) readOnlyKeys.push(...footprint.readOnly())
-          if (footprint.readWrite) readWriteKeys.push(...footprint.readWrite())
+          const resources = sorobanData.resources();
+          const footprint = resources.footprint();
+          if (footprint.readOnly) readOnlyKeys.push(...footprint.readOnly());
+          if (footprint.readWrite) readWriteKeys.push(...footprint.readWrite());
         } catch {
           // Ignore key extraction failures
         }
       }
 
-      const allKeys = [...readOnlyKeys, ...readWriteKeys]
-      const archivedKeys = this.ledgerState.getArchivedEntries(allKeys)
+      const allKeys = [...readOnlyKeys, ...readWriteKeys];
+      const archivedKeys = this.ledgerState.getArchivedEntries(allKeys);
 
       // Build the SorobanTransactionData with the footprint
-      const dataBuilder = new SorobanDataBuilder()
-        .setFootprint(readOnlyKeys, readWriteKeys)
-      const txData = dataBuilder.build()
+      const dataBuilder = new SorobanDataBuilder().setFootprint(readOnlyKeys, readWriteKeys);
+      const txData = dataBuilder.build();
 
       const response = {
         id: `mock-sim-${Date.now()}`,
@@ -401,13 +393,14 @@ export class MockRpcServer implements SorobanRpcClient {
           memBytes: '0',
         },
         latestLedger: this.ledgerState.getCurrentLedgerSeq(),
-        restorePreamble: archivedKeys.length > 0
-          ? {
-              minResourceFee: '500',
-              transactionData: txData,
-            }
-          : undefined,
-      }
+        restorePreamble:
+          archivedKeys.length > 0
+            ? {
+                minResourceFee: '500',
+                transactionData: txData,
+              }
+            : undefined,
+      };
 
       // If there are archived keys, force a simulation restore response
       if (archivedKeys.length > 0) {
@@ -415,49 +408,51 @@ export class MockRpcServer implements SorobanRpcClient {
           ...response,
           error: undefined,
           // SorobanRpc.Api.isSimulationRestore checks for restorePreamble
-        }
+        };
       }
 
       return {
         ...response,
         // SorobanRpc.Api.isSimulationSuccess checks for results
-      }
-    })
+      };
+    });
   }
 
-  private async handleGetLedgerEntries(keys: xdr.LedgerKey[]): Promise<SorobanRpcApiGetLedgerEntriesResponse> {
+  private async handleGetLedgerEntries(
+    keys: xdr.LedgerKey[],
+  ): Promise<SorobanRpcApiGetLedgerEntriesResponse> {
     return this.handleRequest('getLedgerEntries', keys, () => {
-      const liveEntries = this.ledgerState.getLiveEntries(keys)
+      const liveEntries = this.ledgerState.getLiveEntries(keys);
 
       return {
-        entries: liveEntries.map(entry => ({
+        entries: liveEntries.map((entry) => ({
           key: entry.key,
           xdr: entry.data,
           lastModifiedLedgerSeq: entry.lastLiveLedgerSeq,
         })),
         latestLedger: this.ledgerState.getCurrentLedgerSeq(),
-      }
-    })
+      };
+    });
   }
 
   private async handleGetAccount(accountId: string): Promise<Account> {
     return this.handleRequest('getAccount', [accountId], () => {
-      const account = this.sequenceManager.buildMockAccount(accountId)
-      return account
-    })
+      const account = this.sequenceManager.buildMockAccount(accountId);
+      return account;
+    });
   }
 
   private async handleSendTransaction(tx: unknown): Promise<SorobanRpcApiSendTransactionResponse> {
     return this.handleRequest('sendTransaction', [tx], () => {
-      const hash = `mock-tx-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+      const hash = `mock-tx-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
       // We could store the pending tx but for unit tests, just return PENDING
       return {
         status: 'PENDING',
         hash,
         latestLedger: this.ledgerState.getCurrentLedgerSeq(),
         latestLedgerCloseTime: Math.floor(Date.now() / 1000),
-      }
-    })
+      };
+    });
   }
 
   private async handleGetTransaction(hash: string): Promise<SorobanRpcApiGetTransactionResponse> {
@@ -468,7 +463,7 @@ export class MockRpcServer implements SorobanRpcClient {
       latestLedgerCloseTime: Math.floor(Date.now() / 1000),
       createdAt: Math.floor(Date.now() / 1000) - 5,
       // Return SUCCESS immediately so unit tests don't block on polling
-    }))
+    }));
   }
 
   private async handleGetHealth(): Promise<unknown> {
@@ -477,22 +472,22 @@ export class MockRpcServer implements SorobanRpcClient {
       latestLedger: this.ledgerState.getCurrentLedgerSeq(),
       oldestLedger: 1,
       ledgerRetentionWindow: 17280,
-    }))
+    }));
   }
 
   private async handleGetNetwork(): Promise<SorobanRpcApiNetworkInfo> {
     return this.handleRequest('getNetwork', [], () => ({
       passphrase: this.config.networkPassphrase ?? 'Test SDF Network ; September 2015',
-      protocolVersion: 22,
+      protocolVersion: this.config.protocolVersion,
       friendbotUrl: 'https://friendbot.stellar.org',
-    }))
+    }));
   }
 
   private async handleGetLatestLedger(): Promise<unknown> {
     return this.handleRequest('getLatestLedger', [], () => ({
       id: `mock-ledger-${this.ledgerState.getCurrentLedgerSeq()}`,
-      protocolVersion: 22,
+      protocolVersion: this.config.protocolVersion,
       sequence: this.ledgerState.getCurrentLedgerSeq(),
-    }))
+    }));
   }
 }

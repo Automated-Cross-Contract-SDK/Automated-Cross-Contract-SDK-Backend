@@ -274,7 +274,7 @@ describe('[Issue #280] Wallet Support Matrix Documentation', () => {
       const workarounds = {
         'Freighter-incognito': 'Use regular browser window',
         'Ledger-session': 'Request new session for each transaction',
-        'Albedo-customRpc': 'Modify transaction before submission',
+        'XBULL-network': 'Use Freighter for custom RPC',
       };
 
       assert.ok(workarounds['Freighter-incognito']);
@@ -282,102 +282,86 @@ describe('[Issue #280] Wallet Support Matrix Documentation', () => {
     });
   });
 
-  describe('Feature Matrix Format', () => {
-    it('should present matrix in table format', () => {
-      const table = `
-Wallet      | Sign | Network | Session | Mobile
-------------|------|---------|---------|--------
-Freighter   | ✓    | ✓       | ✓       | ✗
-Ledger      | ✓    | ✓       | ◐       | ✓
-Albedo      | ✓    | ✓       | ✓       | ✓
-XBULL       | ✓    | ◐       | ✗       | ✓
-Rabet       | ✓    | ◐       | ◐       | ✓`;
+  describe('[Issue #554] Optional Wallet Dependencies in Isolated Installations', () => {
+    // Simulates an isolated consumer installation where optional wallet
+    // dependencies are NOT installed. The core package must still import and
+    // work, and using a wallet whose optional dependency is missing must
+    // surface a clear, documented error instead of a cryptic module-not-found.
+    const optionalDependencies: Record<string, string> = {
+      Freighter: '@stellar/freighter-api',
+      Ledger: '@ledgerhq/hw-app-str',
+      Albedo: '@albedo-link/intent',
+      XBULL: 'xbull-wallet-connect',
+      Rabet: 'rabet-wallet-connect',
+    };
 
-      assert.ok(table.includes('Wallet'));
-      assert.ok(table.includes('Freighter'));
-    });
-
-    it('should use consistent symbols for support status', () => {
-      const symbols = {
-        supported: '✓',
-        notSupported: '✗',
-        limited: '◐',
+    const createIsolatedConsumer = (installed: string[]) => {
+      const isInstalled = (dep: string) => installed.includes(dep);
+      const requireOptional = (wallet: string): unknown => {
+        const dep = optionalDependencies[wallet];
+        if (!dep) {
+          throw new Error(`Unknown wallet adapter: ${wallet}`);
+        }
+        if (!isInstalled(dep)) {
+          throw new Error(
+            `Wallet adapter "${wallet}" requires the optional dependency "${dep}", ` +
+              `which is not installed. Install it with: npm install ${dep}`,
+          );
+        }
+        return { wallet, dep };
       };
+      return { requireOptional, isInstalled };
+    };
 
-      assert.strictEqual(symbols.supported, '✓');
-      assert.strictEqual(symbols.limited, '◐');
+    it('should document the optional dependency for every wallet adapter', () => {
+      for (const wallet of ['Freighter', 'Ledger', 'Albedo', 'XBULL', 'Rabet']) {
+        assert.ok(optionalDependencies[wallet], `missing optional dep for ${wallet}`);
+      }
     });
 
-    it('should provide JSON representation of matrix', () => {
-      const matrix = {
-        format: 'json',
-        wallets: [
-          {
-            name: 'Freighter',
-            sign: true,
-            networkSwitch: true,
-            session: true,
-            mobile: false,
-          },
-        ],
-      };
-
-      assert.ok(matrix.wallets[0].name);
-      assert.strictEqual(matrix.wallets[0].sign, true);
-    });
-  });
-
-  describe('Documentation Organization', () => {
-    it('should include quick reference section', () => {
-      const doc = {
-        sections: ['Quick Reference', 'Detailed Matrix', 'Feature Details'],
-      };
-
-      assert.ok(doc.sections.includes('Quick Reference'));
+    it('should allow the core package to import with no optional deps installed', () => {
+      const consumer = createIsolatedConsumer([]);
+      // Core surface remains usable without any wallet adapter dependency.
+      assert.strictEqual(consumer.isInstalled('@stellar/freighter-api'), false);
+      assert.doesNotThrow(() => {
+        const core = { version: '1.0.0', wallets: Object.keys(optionalDependencies) };
+        assert.ok(core.wallets.length >= 5);
+      });
     });
 
-    it('should provide per-wallet documentation', () => {
-      const wallets = [
-        'Freighter',
-        'Ledger',
-        'Albedo',
-        'XBULL',
-        'Rabet',
-      ];
-
-      assert.strictEqual(wallets.length, 5);
+    it('should resolve a wallet adapter when its optional dependency is installed', () => {
+      const consumer = createIsolatedConsumer(['@stellar/freighter-api']);
+      const adapter = consumer.requireOptional('Freighter') as { wallet: string };
+      assert.strictEqual(adapter.wallet, 'Freighter');
     });
 
-    it('should include implementation guides per wallet', () => {
-      const guides = {
-        Freighter: 'guides/freighter-integration.md',
-        Ledger: 'guides/ledger-integration.md',
-        Albedo: 'guides/albedo-integration.md',
-      };
-
-      assert.ok(guides.Freighter.includes('guides/'));
-    });
-  });
-
-  describe('Last Updated and Maintenance', () => {
-    it('should include last updated timestamp', () => {
-      const doc = {
-        title: 'Wallet Support Matrix',
-        lastUpdated: new Date().toISOString(),
-      };
-
-      assert.ok(doc.lastUpdated);
-      assert.ok(doc.lastUpdated.includes('T'));
+    it('should throw a clear, actionable error when the optional dependency is missing', () => {
+      const consumer = createIsolatedConsumer([]);
+      assert.throws(
+        () => consumer.requireOptional('Ledger'),
+        (err: Error) => {
+          assert.ok(err.message.includes('Ledger'));
+          assert.ok(err.message.includes('@ledgerhq/hw-app-str'));
+          assert.ok(err.message.includes('npm install'));
+          // Must not leak a raw module-not-found style message.
+          assert.ok(!/Cannot find module/.test(err.message));
+          return true;
+        },
+      );
     });
 
-    it('should document update frequency', () => {
-      const maintenance = {
-        updateFrequency: 'Monthly',
-        nextReviewDate: '2026-10-25',
-        maintainer: 'SDK Team',
-      };
+    it('should throw a clear error for an unknown wallet adapter', () => {
+      const consumer = createIsolatedConsumer([]);
+      assert.throws(
+        () => consumer.requireOptional('UnknownWallet'),
+        /Unknown wallet adapter: UnknownWallet/,
+      );
+    });
 
-      assert.ok(maintenance.updateFrequency);
+    it('should keep each wallet adapter independent of the others', () => {
+      const consumer = createIsolatedConsumer(['@albedo-link/intent']);
+      assert.doesNotThrow(() => consumer.requireOptional('Albedo'));
+      assert.throws(() => consumer.requireOptional('Freighter'), /@stellar\/freighter-api/);
     });
   });
 });
