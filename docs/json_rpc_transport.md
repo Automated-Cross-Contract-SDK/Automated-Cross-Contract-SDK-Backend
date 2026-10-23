@@ -61,7 +61,8 @@ only what is retained in persisted history. No public API changes are required t
 | `JsonRpcTransportError` | The request failed before a usable response was received | `status` (undefined for network), `retryable`, `cause` |
 
 HTTP `429` and `5xx` responses, and rejected `fetch` calls, are marked `retryable: true`.
-Other non-2xx responses are not.
+Other non-2xx responses are not. Error messages that reference the endpoint use the
+redacted URL described above.
 
 ## Response validation
 
