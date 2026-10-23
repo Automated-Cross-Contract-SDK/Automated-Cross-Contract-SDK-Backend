@@ -79,6 +79,64 @@ jobs:
           done
           exit $failed
 
+  nextjs-entrypoints:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Validate separate Next.js client and server entry points
+        run: |
+          # Consumer builds import the React package from both a client component
+          # ("use client") and a server component / route handler. Each entry point
+          # must resolve independently and must not leak the other environment's
+          # globals. This guards against regressions where a single entry point is
+          # assumed to work in both environments.
+          node - <<'NODE'
+          const assert = require('node:assert');
+          const path = require('node:path');
+
+          const pkgDir = path.resolve('packages/react');
+          const pkg = require(path.join(pkgDir, 'package.json'));
+
+          // The package must expose distinct client and server entry points.
+          const exportsField = pkg.exports || {};
+          const hasClient = Boolean(exportsField['./client'] || exportsField['.']);
+          const hasServer = Boolean(exportsField['./server'] || exportsField['.']);
+          assert.ok(hasClient, 'React package must expose a client entry point');
+          assert.ok(hasServer, 'React package must expose a server entry point');
+
+          // Both entry points must be importable without throwing.
+          const clientEntry = require.resolve(path.join(pkgDir, 'dist/client.js'));
+          const serverEntry = require.resolve(path.join(pkgDir, 'dist/server.js'));
+          assert.ok(clientEntry, 'client entry point must resolve');
+          assert.ok(serverEntry, 'server entry point must resolve');
+
+          // The client entry must be marked as a client module so Next.js can
+          // treat it as a client boundary; the server entry must not.
+          const fs = require('node:fs');
+          const clientSource = fs.readFileSync(clientEntry, 'utf8');
+          const serverSource = fs.readFileSync(serverEntry, 'utf8');
+          assert.ok(
+            /^['"]use client['"]/.test(clientSource.trim()),
+            'client entry point must start with a "use client" directive'
+          );
+          assert.ok(
+            !/^['"]use client['"]/.test(serverSource.trim()),
+            'server entry point must not declare a "use client" directive'
+          );
+
+          console.log('Next.js client and server entry points validated');
+          NODE
+
   fuzz:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
