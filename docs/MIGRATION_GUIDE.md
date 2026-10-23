@@ -34,6 +34,57 @@ The SDK is now a modular monorepo. `@soroban-resurrect/sdk` is a compatibility f
 
 Framework-specific bindings are published as separate packages so you only pull in what you use: `@soroban-resurrect/react`, `@soroban-resurrect/next`, `@soroban-resurrect/react-native`, `@soroban-resurrect/angular`, `@soroban-resurrect/vue`, and `@soroban-resurrect/svelte`.
 
+### Framework Binding Conformance
+
+All framework bindings share a single conformance suite that defines the supported binding behavior and its important failure and edge cases. The suite is reusable across bindings so each package is validated against the same contract, and it is additive: it introduces no public API changes.
+
+**Supported behavior covered by the suite:**
+
+- Initial state is reported consistently (idle/loading/ready) before any restoration is requested.
+- A successful restoration transitions the binding to a ready state and exposes the restored result.
+- Errors from the core engine surface as typed errors through the binding without being swallowed.
+- Cleanup/unmount releases subscriptions so no further state updates are emitted.
+
+**Failure and edge cases covered:**
+
+- Empty key sets resolve without error and leave the binding in a ready state.
+- A rejected restoration surfaces the typed error and does not leave the binding stuck in a loading state.
+- Repeated restorations are idempotent with respect to subscriptions (no duplicate listeners).
+- Unmounting mid-flight does not emit state updates after cleanup.
+
+**Compatibility constraints:**
+
+- The conformance suite is additive and does not change any existing public API.
+- Bindings marked *Experimental* in the package map are validated against the suite but may still change their surface between minor releases; *Stable* bindings are expected to pass the suite unchanged.
+- Running the suite requires the workspace test tooling; no additional configuration is needed for consumers of the published packages.
+
+### Unified Progress and Error Types
+
+All framework adapters now expose a consistent contract for progress reporting and error propagation, defined by shared types in `@soroban-resurrect/types` and typed error classes in `@soroban-resurrect/errors`. Adapters no longer define their own ad-hoc progress or error shapes; they surface the shared types directly.
+
+**Progress contract:**
+
+- Progress is reported as a `RestorationProgress` value with a `phase` (`idle`, `loading`, `ready`, or `error`) and, while loading, a `completed`/`total` key count.
+- Progress transitions follow `idle → loading → ready` on success and `idle → loading → error` on failure; a binding never reports `ready` and `error` simultaneously.
+- Progress callbacks receive the same shape across every adapter, so consumers can share handling code regardless of framework.
+
+**Error contract:**
+
+- Failures surface as typed errors from `@soroban-resurrect/errors` (e.g. `FeeBumpTransactionError`), preserving the original error code and cause.
+- Adapter-specific wrapping must retain the underlying typed error via `cause`; adapters must not replace a typed error with a generic `Error`.
+- Errors are propagated through the adapter's error channel (callback, event, or rejected promise) and are never swallowed.
+
+**Failure and edge cases:**
+
+- A restoration that fails mid-progress reports the error phase and does not emit further progress updates.
+- Empty key sets complete immediately with a `ready` phase and no error.
+- Adapters that wrap errors must keep the typed error reachable so callers can branch on error codes.
+
+**Compatibility constraints:**
+
+- The shared progress and error types are additive; existing adapter-specific fields remain available where they were already exposed.
+- Consumers that previously matched on adapter-specific error shapes should migrate to the shared typed errors and their error codes.
+
 ### Migrating to the Modular Packages
 
 `@soroban-resurrect/compat` provides shims for the v0.1.0 API surface, so existing imports from `@soroban-resurrect/sdk` keep working while you migrate. Move to the focused packages incrementally:
