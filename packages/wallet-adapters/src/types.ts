@@ -7,36 +7,39 @@
  * wallet's SDK.
  */
 
-export type WalletConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error'
+export type WalletConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
 export interface SignTransactionOptions {
   /** Network passphrase the transaction was built for. */
-  networkPassphrase?: string
+  networkPassphrase?: string;
   /** Public key to sign with, when a wallet exposes multiple accounts. */
-  accountToSign?: string
+  accountToSign?: string;
 }
 
 export interface WalletConnectionResult {
   /** Public key (G...) of the connected account. */
-  address: string
+  address: string;
   /** Network identifier reported by the wallet, when available. */
-  network?: string
+  network?: string;
 }
 
 export interface WalletNetworkChange {
-  networkPassphrase?: string
-  network?: string
+  networkPassphrase?: string;
+  network?: string;
 }
 
-export type ConnectionStatusListener = (status: WalletConnectionStatus, result?: WalletConnectionResult) => void
-export type NetworkChangeListener = (change: WalletNetworkChange) => void
+export type ConnectionStatusListener = (
+  status: WalletConnectionStatus,
+  result?: WalletConnectionResult,
+) => void;
+export type NetworkChangeListener = (change: WalletNetworkChange) => void;
 
 /** Capabilities a wallet advertises so dApps can filter before connecting. */
 export interface WalletCapabilities {
   /** Whether the wallet can sign Soroban (smart-contract) transactions. */
-  supportsSoroban: boolean
+  supportsSoroban: boolean;
   /** Whether the wallet can return a human-readable note alongside a signed transaction. */
-  supportsSignedTxNote: boolean
+  supportsSignedTxNote: boolean;
 }
 
 /**
@@ -47,57 +50,57 @@ export interface WalletCapabilities {
 export const DEFAULT_WALLET_CAPABILITIES: WalletCapabilities = {
   supportsSoroban: false,
   supportsSignedTxNote: false,
-}
+};
 
 /**
  * Fallback detection priority for adapters that do not declare one. Built-in
  * adapters use lower values (10-60) and sort ahead of anything unlisted.
  */
-export const DEFAULT_ADAPTER_PRIORITY = 1000
+export const DEFAULT_ADAPTER_PRIORITY = 1000;
 
 /** Resolved adapter metadata used for deterministic detection and UI listing. */
 export interface WalletDescriptor {
-  id: string
-  name: string
-  icon?: string
+  id: string;
+  name: string;
+  icon?: string;
   /** Stable ordering key: lower is offered first. */
-  priority: number
+  priority: number;
   /** Capabilities merged over `DEFAULT_WALLET_CAPABILITIES`. */
-  capabilities: WalletCapabilities
+  capabilities: WalletCapabilities;
 }
 
 /** Adapter contract implemented by each supported wallet integration. */
 export interface SorobanWalletAdapter {
-  readonly id: string
-  readonly name: string
-  readonly icon?: string
+  readonly id: string;
+  readonly name: string;
+  readonly icon?: string;
   /**
    * Stable detection priority. Lower values are detected and offered first;
    * defaults to `DEFAULT_ADAPTER_PRIORITY` when omitted.
    */
-  readonly priority?: number
+  readonly priority?: number;
   /**
    * Features this adapter supports, surfaced on `WalletDescriptor` so dApps can
    * filter (e.g. only wallets that `supportsSoroban`). Merged over
    * `DEFAULT_WALLET_CAPABILITIES`.
    */
-  readonly capabilities?: Partial<WalletCapabilities>
+  readonly capabilities?: Partial<WalletCapabilities>;
   /** Whether this wallet's runtime (extension, bridge, hardware transport) is detectable in the current environment. */
-  isAvailable(): Promise<boolean>
-  connect(): Promise<WalletConnectionResult>
-  disconnect(): Promise<void>
+  isAvailable(): Promise<boolean>;
+  connect(): Promise<WalletConnectionResult>;
+  disconnect(): Promise<void>;
   /** Signs a base64-encoded transaction envelope XDR and returns the signed XDR. */
-  signTransaction(xdr: string, opts?: SignTransactionOptions): Promise<string>
+  signTransaction(xdr: string, opts?: SignTransactionOptions): Promise<string>;
   /** Subscribes to connection status changes reported by this adapter. Returns an unsubscribe function. */
-  onConnectionChange?(listener: ConnectionStatusListener): () => void
+  onConnectionChange?(listener: ConnectionStatusListener): () => void;
   /** Subscribes to network changes reported by this adapter. Returns an unsubscribe function. */
-  onNetworkChange?(listener: NetworkChangeListener): () => void
+  onNetworkChange?(listener: NetworkChangeListener): () => void;
   /**
    * Optional hook invoked when a pending connect() is abandoned (timeout or
    * explicit cancellation) so the adapter can release resources such as
    * iframes, popups, or bridge transports.
    */
-  cancelConnect?(): void | Promise<void>
+  cancelConnect?(): void | Promise<void>;
 }
 
 export type WalletAdapterErrorCode =
@@ -108,7 +111,7 @@ export type WalletAdapterErrorCode =
   | 'DEVICE_DISCONNECTED'
   | 'TIMEOUT'
   | 'CONNECTION_TIMEOUT'
-  | 'INVALID_XDR'
+  | 'INVALID_XDR';
 
 /** Error raised by wallet adapters, with a stable `code` for programmatic handling. */
 export class WalletAdapterError extends Error {
@@ -117,8 +120,8 @@ export class WalletAdapterError extends Error {
     public code: WalletAdapterErrorCode,
     public cause?: unknown,
   ) {
-    super(message)
-    this.name = 'WalletAdapterError'
+    super(message);
+    this.name = 'WalletAdapterError';
   }
 }
 
@@ -128,7 +131,7 @@ export class WalletAdapterError extends Error {
  * iframe or modal (Rabet, WalletConnect) can otherwise hang forever when the
  * user never completes approval.
  */
-export const DEFAULT_CONNECT_TIMEOUT_MS = 120_000
+export const DEFAULT_CONNECT_TIMEOUT_MS = 120_000;
 
 /**
  * Races a wallet connect() promise against a timeout. On timeout the adapter's
@@ -140,14 +143,14 @@ export function withConnectTimeout<T>(
   adapter: Pick<SorobanWalletAdapter, 'name' | 'cancelConnect'>,
   timeoutMs: number = DEFAULT_CONNECT_TIMEOUT_MS,
 ): Promise<T> {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
   return new Promise<T>((resolve, reject) => {
-    let settled = false
+    let settled = false;
     const timer = setTimeout(() => {
-      if (settled) return
-      settled = true
+      if (settled) return;
+      settled = true;
       try {
-        void adapter.cancelConnect?.()
+        void adapter.cancelConnect?.();
       } catch {
         // Cleanup failures must not mask the timeout error.
       }
@@ -156,61 +159,95 @@ export function withConnectTimeout<T>(
           `${adapter.name} connection timed out after ${timeoutMs}ms`,
           'CONNECTION_TIMEOUT',
         ),
-      )
-    }, timeoutMs)
+      );
+    }, timeoutMs);
     promise.then(
       (value) => {
-        if (settled) return
-        settled = true
-        clearTimeout(timer)
-        resolve(value)
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
       },
       (error) => {
-        if (settled) return
-        settled = true
-        clearTimeout(timer)
-        reject(error)
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
       },
-    )
-  })
+    );
+  });
 }
 
 /** Maps a wallet SDK/extension error onto a WalletAdapterError using common rejection/not-installed phrasing. */
 export function mapCommonWalletError(walletName: string, cause: unknown): WalletAdapterError {
-  if (cause instanceof WalletAdapterError) return cause
-  const message = cause instanceof Error ? cause.message : String(cause)
+  if (cause instanceof WalletAdapterError) return cause;
+  const message = cause instanceof Error ? cause.message : String(cause);
   if (/reject|denied|cancel|closed/i.test(message)) {
-    return new WalletAdapterError(`User rejected the ${walletName} request`, 'USER_REJECTED', cause)
+    return new WalletAdapterError(
+      `User rejected the ${walletName} request`,
+      'USER_REJECTED',
+      cause,
+    );
   }
   if (/not\s*installed|not\s*found|no\s*bridge|extension/i.test(message)) {
-    return new WalletAdapterError(`${walletName} not detected`, 'NOT_INSTALLED', cause)
+    return new WalletAdapterError(`${walletName} not detected`, 'NOT_INSTALLED', cause);
   }
-  return new WalletAdapterError(`${walletName} request failed: ${message}`, 'CONNECTION_FAILED', cause)
+  return new WalletAdapterError(
+    `${walletName} request failed: ${message}`,
+    'CONNECTION_FAILED',
+    cause,
+  );
 }
+
+/** Bare npm package specifiers (optionally scoped, with a subpath); rejects relative, absolute, URL and data: specifiers. */
+const BARE_PACKAGE_SPECIFIER =
+  /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9._-]+)*$/;
 
 /**
  * Lazily imports an optional wallet-SDK peer dependency so consumers only
  * pay for the wallets they actually use.
+ *
+ * Trust boundary: only bare package names resolved from the consumer's own
+ * dependency tree are loaded, and the result must be a module namespace object.
  */
-export async function loadOptionalWalletDependency<T = unknown>(moduleName: string, adapterName: string): Promise<T> {
+export async function loadOptionalWalletDependency<T = unknown>(
+  moduleName: string,
+  adapterName: string,
+): Promise<T> {
+  if (!BARE_PACKAGE_SPECIFIER.test(moduleName) || moduleName.split('/').includes('..')) {
+    throw new WalletAdapterError(
+      `${adapterName} refused to load "${moduleName}": only bare npm package names are allowed`,
+      'DEPENDENCY_NOT_INSTALLED',
+    );
+  }
+  let mod: unknown;
   try {
-    return (await import(moduleName)) as T
+    mod = await import(moduleName);
   } catch (cause) {
     throw new WalletAdapterError(
       `${adapterName} requires the optional dependency "${moduleName}". Install it with: npm install ${moduleName}`,
       'DEPENDENCY_NOT_INSTALLED',
       cause,
-    )
+    );
   }
+  if (mod === null || (typeof mod !== 'object' && typeof mod !== 'function')) {
+    throw new WalletAdapterError(
+      `${adapterName} loaded "${moduleName}" but it did not export a module`,
+      'DEPENDENCY_NOT_INSTALLED',
+    );
+  }
+  return mod as T;
 }
 
 /** Encodes raw bytes as base64, working in both browser (btoa) and Node (Buffer) runtimes without requiring @types/node. */
 export function bytesToBase64(bytes: Uint8Array): string {
-  const nodeBuffer = (globalThis as unknown as { Buffer?: { from(b: Uint8Array): { toString(enc: string): string } } }).Buffer
+  const nodeBuffer = (
+    globalThis as unknown as { Buffer?: { from(b: Uint8Array): { toString(enc: string): string } } }
+  ).Buffer;
   if (nodeBuffer) {
-    return nodeBuffer.from(bytes).toString('base64')
+    return nodeBuffer.from(bytes).toString('base64');
   }
-  let binary = ''
-  for (const byte of bytes) binary += String.fromCharCode(byte)
-  return btoa(binary)
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
