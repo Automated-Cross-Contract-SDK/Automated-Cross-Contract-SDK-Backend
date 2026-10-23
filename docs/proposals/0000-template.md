@@ -37,6 +37,20 @@ impact of doing nothing?
 
 What new attack surface, trust assumptions or failure modes does this introduce?
 
+## Threat model
+
+For proposals that change trust assumptions or failure handling, document the
+threat model explicitly. Cover:
+
+- **Assets and actors:** what is being protected, and who can influence it
+  (honest users, malicious providers, colluding providers, network attackers).
+- **Trust assumptions:** what the design assumes about each actor, including any
+  quorum or independence assumptions.
+- **Failure modes:** correlated outages, stale or divergent responses, malicious
+  or colluding providers, and partial availability.
+- **Mitigations and residual risk:** how each failure mode is detected or bounded,
+  and what risk remains after mitigation.
+
 ## Prior art
 
 Links to similar work in other projects or earlier discussion.

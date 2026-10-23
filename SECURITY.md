@@ -104,6 +104,58 @@ as hostile:
 - **Tracing headers**: trace context propagated to RPC endpoints is passed through as
   opaque values. Do not place secrets in trace or baggage headers.
 
+## Threat Model: Failover Across Independent RPC Providers
+
+> **Status: forward-looking proposal.** This section documents the intended threat model
+> and supported behavior for multi-provider RPC failover. It is not a report of a
+> confirmed defect. Where the current implementation does not yet enforce a guarantee
+> below, that gap is called out explicitly so integrators can compensate.
+
+### Supported behavior
+
+When more than one RPC endpoint is configured, the SDK may fail over between them. The
+supported contract is:
+
+- **Failover is availability-oriented, not trust-oriented.** Failover exists to keep the
+  SDK responsive when a provider is down or degraded. It does **not** turn a set of
+  providers into a trusted quorum.
+- **Single-provider trust per request.** Each request is served by one provider at a
+  time. The SDK does not currently cross-check responses across providers before using
+  them.
+- **Ordered fallback.** Providers are tried in configured order; a provider that fails
+  (transport error, timeout, or malformed response) is skipped for that request.
+- **No silent downgrade of transport security.** A plain-HTTP endpoint is only used when
+  explicitly opted in via `allowHttp: true`; failover never relaxes this.
+
+### Threats and edge cases
+
+- **Provider collusion.** If several configured providers are operated by the same
+  party, or collude, failover provides no independent corroboration. "Independent"
+  providers must be independently operated for the availability benefit to hold.
+- **Correlated outages.** Providers that share infrastructure, a cloud region, or an
+  upstream dependency can fail together. Failover does not protect against correlated
+  failure; diversify operators and regions.
+- **Stale or divergent responses.** A lagging provider may return an older ledger view
+  than another. Because responses are not cross-checked, a caller can observe state that
+  differs from another provider's view. Treat ledger-dependent decisions as
+  best-effort and re-validate against a known-good source when correctness is critical.
+- **Malicious provider.** A compromised provider can return fabricated simulation
+  results, ledger entries, or TTL data. Failover does not detect this; responses remain
+  untrusted input (see *Attack Surface*).
+- **Quorum assumptions.** The SDK does **not** implement quorum or majority voting
+  across providers. Do not assume that configuring N providers yields N-of-M agreement.
+- **Failover amplification.** Retrying across many providers can multiply load and
+  latency; bound the number of attempts and set per-request timeouts.
+
+### Integrator guidance
+
+- Configure providers from **distinct operators and regions** to reduce correlated
+  failure and collusion risk.
+- Do **not** rely on failover for correctness or consensus; validate security-critical
+  results independently.
+- Keep `allowHttp` disabled in production and prefer HTTPS endpoints only.
+- Bound retry counts and timeouts to avoid failover amplification.
+
 ## Coordinated Disclosure Timeline
 
 | Stage | Target |
