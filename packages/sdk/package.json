@@ -47,6 +47,7 @@
     "test:watch": "vitest",
     "dev:test": "vitest --watch --reporter=verbose",
     "test:coverage": "vitest run --coverage",
+    "test:docs": "vitest run tests/docs-snippets.test.ts",
     "test:integration": "vitest run --config vitest.integration.ts",
     "test:property": "vitest run tests/property",
     "test:fuzz": "jazzer tests/fuzz/xdr-parsing.fuzz.ts --fuzz_function=fuzz -- -max_total_time=60",

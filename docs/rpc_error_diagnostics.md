@@ -54,6 +54,25 @@ redactUrlsInText('failed: https://rpc.example.com/?token=x')  // failed: https:/
 SorobanResurrect error messages and error context use redacted endpoints. The
 URL used to connect is not changed.
 
+## Authentication headers and persisted history
+
+RPC authentication headers are treated as transient request metadata. They are
+used to sign the outgoing request but are **never** written to persisted
+history (transaction records, error context, or any serialized state).
+
+- Header names are matched case-insensitively, so `Authorization`,
+  `authorization`, and `AUTHORIZATION` are all treated the same.
+- Every authentication header is stripped, including multiple headers and
+  comma-separated values within a single header.
+- When no authentication header is present, persisted history is unchanged.
+- Redaction applies recursively to nested persisted structures (for example
+  request metadata embedded in error context), so a header cannot leak through
+  a nested object.
+
+This is a compatibility constraint: code that relied on reading authentication
+headers back from persisted history must instead keep them in memory for the
+lifetime of the request. No public API signatures change.
+
 ## Locating malformed XDR
 
 ```ts

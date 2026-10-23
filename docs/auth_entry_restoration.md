@@ -2,67 +2,33 @@
 
 Documents the process of restoring revoked or expired Soroban authorization entries.
 
-## Keeping the selected account stable across multi-account wallet sessions
+## RPC authentication headers and persisted history
 
-When a wallet exposes more than one account, the app remembers which account the
-user selected so that the same account is restored on reconnect, on account-list
-refresh, and on session restore. The supported behavior is:
+RPC authentication headers (for example `Authorization`, `X-Api-Key`, and
+other credential-bearing headers) are used only to authenticate a request to
+the RPC endpoint. They are **never** part of the authorization entry itself and
+must not be written into persisted history.
 
-- **Session restore / reconnect:** if a previously selected account is still
-  present in the wallet's account list, it is re-selected automatically. No
-  prompt is shown and the active session is not reset.
-- **Account-list refresh:** the current selection is preserved when the account
-  is still present. Newly added accounts do not steal focus from the current
-  selection.
-- **No prior selection:** when there is no stored selection (first visit, or the
-  stored value was cleared), the first account returned by the wallet is used as
-  the default.
-- **Selected account no longer present:** if the stored account is missing from
-  the refreshed list, the selection falls back to the first available account
-  and the stale stored value is replaced.
-- **Empty account list:** if the wallet returns no accounts, the selection is
-  cleared and no account-dependent actions are enabled until an account becomes
-  available again.
-- **Wallet switch:** switching to a different wallet discards the previous
-  wallet's stored selection; the new wallet starts from its own first account
-  (or the empty state above).
+### Supported behavior
 
-### Compatibility constraints
+- Authentication headers are stripped before any request metadata is persisted
+  to history. Persisted entries contain only the authorization entry data and
+  non-sensitive request context.
+- Header matching is case-insensitive: `authorization`, `Authorization`, and
+  `AUTHORIZATION` are all treated as authentication headers.
+- When multiple authentication headers are present, all of them are removed.
+- When no authentication headers are present, persisted history is unchanged.
+- Redaction applies recursively: authentication headers nested inside persisted
+  structures (for example per-endpoint or per-request maps) are also removed.
 
-- The stored selection is scoped per wallet so that switching wallets never
-  reuses another wallet's account.
-- Stored selections are treated as hints only: they are validated against the
-  live account list on every restore, so a stale or unknown value never leaves
-  the app pointing at a non-existent account.
-- No public API changes are required; the behavior is internal to session and
-  account selection handling.
+### Edge cases
 
-## Restore side effects under React StrictMode
+- Requests that fail authentication still must not leak headers into history.
+- Restoring an entry from history never restores credentials; callers must
+  supply authentication headers again when re-issuing the request.
 
-React StrictMode intentionally mounts, unmounts, and re-mounts components in
-development to surface unsafe side effects. Restore logic must therefore be
-**idempotent**: running the restore effect twice must not trigger duplicate
-restore operations (duplicate network calls, duplicate state writes, or
-repeated prompts).
+### Compatibility
 
-The supported behavior is:
-
-- **Deduplicated restore:** a restore that is already in flight for the same
-  wallet/account is not started again. The second effect invocation reuses the
-  in-flight result instead of issuing a new restore.
-- **Rapid mount/unmount:** if the component unmounts before a restore settles,
-  the pending restore is cancelled and its result is discarded; a subsequent
-  mount starts a fresh restore rather than observing a stale result.
-- **Concurrent restores:** overlapping restore requests for the same target are
-  coalesced into a single operation; callers all observe the same outcome.
-- **Cleanup:** effect cleanup releases any in-flight tracking so that a later
-  mount is not blocked by a previous, already-cancelled restore.
-
-### Compatibility constraints
-
-- Deduplication is keyed by the restore target (wallet and account), so
-  restoring a different target is never suppressed.
-- The behavior is internal to restore handling; no public API changes are
-  required. Consumers do not need to opt in or configure anything.
-- Deduplication applies in both development and production; StrictMode simply
-  makes the double invocation visible in development.
+This is a forward-looking hardening change. The public API for restoring
+authorization entries is unchanged; only the contents of persisted history are
+affected. No configuration is required to enable the behavior.

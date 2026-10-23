@@ -179,6 +179,39 @@ const submitResult = await server.submitTransaction(transaction);
 
 ## Wallet and Integration Questions
 
+### How is fee-sponsorship metadata validated before wallet authorization?
+
+**Q:** Does the SDK check fee-sponsorship metadata before asking the wallet to sign?
+
+**A:** Yes. Before any wallet authorization request is made, the SDK validates the
+fee-sponsorship metadata and rejects malformed or inconsistent input early, so the
+user is never prompted to sign a transaction whose sponsorship terms are invalid.
+
+Validation covers:
+
+1. **Missing sponsor:** A sponsorship declaration without a sponsor account is rejected.
+2. **Invalid fee limits:** Fee limits must be positive integers and must not exceed the
+   configured maximum; a limit below the network base fee is also rejected.
+3. **Mismatched network/asset:** The declared network passphrase and fee asset must match
+   the transaction being authorized.
+4. **Malformed metadata:** Missing required fields or wrong types are rejected.
+
+```typescript
+// Validation runs automatically before the wallet prompt.
+// Invalid metadata throws before any signing request is sent.
+try {
+  await service.authorizeWithSponsorship(transaction, sponsorshipMetadata);
+} catch (err) {
+  // e.g. FeeSponsorshipValidationError: missing sponsor / invalid fee limit /
+  // mismatched network or asset / malformed metadata
+  console.error(err.message);
+}
+```
+
+**Compatibility:** Validation is additive. Callers that already provide well-formed
+metadata are unaffected; callers that previously passed invalid metadata will now
+receive an error before the wallet prompt instead of failing later during submission.
+
 ### Can I restore keys proactively (before they expire)?
 
 **Q:** Should I wait until keys are close to expiration?
@@ -270,32 +303,4 @@ setInterval(() => {
    - XDR transaction encoding capability
 
 3. **Checking Support:**
-   ```typescript
-   // Check if a wallet is available
-   const isAvailable = await wallet.isAvailable();
-   if (!isAvailable) {
-     console.warn('Wallet not installed');
-   }
-   ```
-
-### Are wallet dependencies optional?
-
-**Q:** Do I need to install every wallet adapter to use the SDK?
-
-**A:** No. Wallet adapters are **optional peer dependencies**. The core SDK installs and imports without any wallet adapter present, so you can use restoration, RPC, and batching in headless or server-side environments.
-
-1. **Core package:** Installs and imports with zero wallet adapters.
-2. **Per-wallet install:** Install only the adapters you actually use, e.g.:
-   ```bash
-   npm install @stellar/freighter-api
-   ```
-3. **Compatibility constraint:** An adapter whose optional dependency is missing will throw a clear, documented error when you try to *use* it — not a cryptic `MODULE_NOT_FOUND` at import time. Guard usage with `isAvailable()`:
-   ```typescript
-   if (await wallet.isAvailable()) {
-     await wallet.signTransaction(tx);
-   } else {
-     // Adapter dependency not installed — prompt user to install it
-   }
-   ```
-
-**Isolated consumer installs:** If you install the SDK in a clean project without wallet adapters, importing the core package and running restoration must still work. Only the specific adapter you invoke requires its optional dependency.
+   ```typescrip

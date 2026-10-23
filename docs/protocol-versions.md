@@ -41,3 +41,23 @@ When `MIN_SUPPORTED_PROTOCOL` or `MAX_SUPPORTED_PROTOCOL` changes, update the
 table above and the matrix in the same change. The test at
 `packages/sdk/tests/protocol-version-bounds.test.ts` fails when the document
 and the constants disagree.
+
+## RPC response schemas
+
+`validateRpcResultSchema(method, result, protocolVersion)` from
+`@soroban-resurrect/rpc` checks that a JSON-RPC `result` has the fields the SDK
+reads, for each protocol in the matrix above. It throws `RpcSchemaError` with
+`method`, `protocolVersion` and the offending `field`.
+
+| Method                | Required fields                                  | Since 22 |
+| --------------------- | ------------------------------------------------ | -------- |
+| `getHealth`           | `status`                                         |          |
+| `getNetwork`          | `passphrase`, `protocolVersion`                  |          |
+| `getLatestLedger`     | `id`, `protocolVersion`, `sequence`              |          |
+| `getLedgerEntries`    | `entries`, `latestLedger`                        |          |
+| `simulateTransaction` | `latestLedger`                                   |          |
+| `sendTransaction`     | `status`, `hash`, `latestLedger`                 |          |
+| `getTransaction`      | `status`, `latestLedger`                         | `txHash` |
+
+Extra fields are allowed. Unknown methods and protocols outside
+`SCHEMA_PROTOCOL_LINES` are rejected rather than skipped.
