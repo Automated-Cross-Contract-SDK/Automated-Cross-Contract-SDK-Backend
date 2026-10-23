@@ -395,6 +395,11 @@ export interface SimulationCacheConfig {
   enabled: boolean
   maxSize: number
   ttlMs: number
+  /**
+   * Per-network overrides keyed by network passphrase. Values are merged over
+   * the top-level settings, so each network can have its own capacity/TTL.
+   */
+  perNetwork?: Record<string, Partial<Omit<SimulationCacheConfig, 'perNetwork'>>>
 }
 
 export interface FootprintCacheConfig {

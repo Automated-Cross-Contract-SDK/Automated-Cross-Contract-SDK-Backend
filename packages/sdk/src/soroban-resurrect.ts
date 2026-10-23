@@ -41,8 +41,11 @@ import {
   classifyDeferredKeys,
   encodeLedgerKey,
 } from './footprint-parser.js'
+import { ExponentialBackoff, type RetryPolicy } from './retry-policy.js'
+import { SimulationCache, type SimulationCacheConfig } from './simulation-cache.js'
+import { LedgerReadCoalescer } from './ledger-read-coalescer.js'
 import { ExponentialBackoff, type RetryPolicy } from '@soroban-resurrect/rpc'
-import { SimulationCache, type SimulationCacheConfig } from '@soroban-resurrect/rpc'
+import { SimulationCache, resolveSimulationCacheConfig, type SimulationCacheConfig } from '@soroban-resurrect/rpc'
 import { RpcFailoverManager, type RpcEndpointHealth } from '@soroban-resurrect/rpc'
 import { FootprintCache, type FootprintCacheStatistics } from '@soroban-resurrect/rpc'
 import { Tracer } from './tracing.js'
@@ -100,8 +103,13 @@ function extractInnerTransaction(tx: any): any {
   return tx
 }
 
+/** Upper bound on cached `SorobanRpc.Server` instances per client. */
+const MAX_SERVER_CACHE_SIZE = 16
+
 export class SorobanResurrect {
   private server: SorobanRpc.Server
+  private ledgerReadCoalescer = new LedgerReadCoalescer()
+  private config: Required<Omit<SorobanResurrectConfig, 'timeout'>> & { timeout?: number }
   private config: Required<Omit<SorobanResurrectConfig, 'timeout' | 'logger' | 'onLog'>> & {
     timeout?: number
     logger: Logger
@@ -179,6 +187,13 @@ export class SorobanResurrect {
     // Initialize distributed tracing when configured
     if (this.config.tracing) {
       this.tracer = new Tracer(this.config.tracing)
+    }
+
+    if (config.simulationCache) {
+      const cacheConfig = resolveSimulationCacheConfig(config.simulationCache, config.networkPassphrase)
+      if (cacheConfig.enabled) {
+        this.simulationCache = new SimulationCache(cacheConfig.maxSize, cacheConfig.ttlMs)
+      }
     }
 
     void this.validateNetworkPassphrase()
@@ -429,6 +444,10 @@ export class SorobanResurrect {
     let server = this.serverCache.get(targetUrl)
     if (!server) {
       server = new SorobanRpc.Server(targetUrl, { allowHttp: this.config.allowHttp })
+      if (this.serverCache.size >= MAX_SERVER_CACHE_SIZE) {
+        const oldest = this.serverCache.keys().next()
+        if (!oldest.done) this.serverCache.delete(oldest.value)
+      }
       this.serverCache.set(targetUrl, server)
     }
     return server
@@ -618,6 +637,24 @@ export class SorobanResurrect {
       return { needsRestoration: false, archivedKeys: [], totalKeysInFootprint: 0 }
     }
 
+    // Encode each key once and reuse it for coalescing, matching and error context.
+    const encodedKeys = keys.all.map(encodeLedgerKey)
+
+    let entries: SorobanRpc.Api.LedgerEntryResult[]
+    try {
+      entries = await this.ledgerReadCoalescer.getLedgerEntries(
+        keys.all,
+        batch => this.retryOnFailure(
+          () => this.getServer().getLedgerEntries(...batch),
+          'getLedgerEntries',
+        ).then(r => r.entries),
+        encodedKeys,
+      )
+    } catch (err) {
+      // Build key context for richer error
+      const keyContext = keys.all.map((k, i) => {
+        const classification = classifyLedgerKey(k)
+        return { keyBase64: encodedKeys[i], ...classification }
     return this.telemetry.trace('detect-archived', { 'key.count': keys.all.length }, async (span) => {
       let existingKeys: SorobanRpc.Api.GetLedgerEntriesResponse
       try {
@@ -749,6 +786,19 @@ export class SorobanResurrect {
       }
     }
 
+    const existingEntries = new Set<string>()
+    for (const entry of entries) {
+      existingEntries.add(encodeLedgerKey(entry.key))
+    }
+
+    const archivedKeys: ArchivedKey[] = []
+    const seen = new Set<string>()
+    keys.all.forEach((key, i) => {
+      const encoded = encodedKeys[i]
+      if (existingEntries.has(encoded) || seen.has(encoded)) return
+      seen.add(encoded)
+      archivedKeys.push({ key, keyBase64: encoded, ...classifyLedgerKey(key) })
+    })
     const ledgerResponse = await this.retryOnFailure(
       () => this.getServer().getLedgerEntries(...keys.all),
       'getLedgerEntries(diff)',
@@ -2467,6 +2517,18 @@ export class SorobanResurrect {
   }
 
   /**
+   * Aggregate cache and request-coalescing measurements. Contains counts and
+   * rates only — no ledger keys, contract ids, accounts or RPC URLs — so it is
+   * safe to export to metrics backends.
+   */
+  getMetrics(): {
+    simulationCache: ReturnType<SimulationCache['getStatistics']> | null
+    ledgerReadCoalescing: ReturnType<LedgerReadCoalescer['getStatistics']>
+  } {
+    return {
+      simulationCache: this.simulationCache ? this.simulationCache.getStatistics() : null,
+      ledgerReadCoalescing: this.ledgerReadCoalescer.getStatistics(),
+    }
    * Parse a transaction XDR and extract its footprint keys, with caching.
    *
    * When a `footprintCache` is configured, the result is stored keyed by the

@@ -4,4 +4,4 @@ coverage/
 .env
 *.tsbuildinfo
 .vite/
-tests/fixtures/repro/
+scripts/.out/
