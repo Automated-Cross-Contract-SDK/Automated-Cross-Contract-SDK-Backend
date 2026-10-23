@@ -24,6 +24,35 @@ satisfies this shape.
 If no `fetch` is passed and `globalThis.fetch` is unavailable, the constructor throws
 rather than failing on the first request.
 
+## Authentication headers and persisted history
+
+Authentication headers (such as `Authorization`, `Proxy-Authorization`, `Cookie`,
+`X-Api-Key`, and any header whose name ends in `-token` or `-secret`) are sent on the
+wire but are **never** written into persisted history. This keeps credentials out of
+logs, traces, and any store that records request/response history.
+
+- Header names are matched case-insensitively, so `authorization`, `Authorization`, and
+  `AUTHORIZATION` are all redacted.
+- Every matching header is redacted, not just the first.
+- When a request has no authentication headers, its history entry is recorded unchanged.
+- Redaction applies recursively to nested persisted structures (for example a history
+  entry that embeds the request under `request.headers`), so credentials cannot leak
+  through a nested copy.
+- Redacted values are replaced with a fixed placeholder; the header name is preserved so
+  the shape of the recorded request stays inspectable.
+
+```ts
+const transport = new JsonRpcTransport({
+  url: 'https://soroban-testnet.example.com',
+  headers: { Authorization: 'Bearer secret' },
+});
+
+// Persisted history records `Authorization: '[REDACTED]'`, never the token.
+```
+
+This is a forward-looking guarantee: it does not change the request sent to the server,
+only what is retained in persisted history. No public API changes are required to opt in.
+
 ## Errors
 
 | Error                   | When                                                     | Key fields                                             |
