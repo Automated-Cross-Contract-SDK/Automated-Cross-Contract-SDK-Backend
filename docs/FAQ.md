@@ -179,6 +179,39 @@ const submitResult = await server.submitTransaction(transaction);
 
 ## Wallet and Integration Questions
 
+### How is fee-sponsorship metadata validated before wallet authorization?
+
+**Q:** Does the SDK check fee-sponsorship metadata before asking the wallet to sign?
+
+**A:** Yes. Before any wallet authorization request is made, the SDK validates the
+fee-sponsorship metadata and rejects malformed or inconsistent input early, so the
+user is never prompted to sign a transaction whose sponsorship terms are invalid.
+
+Validation covers:
+
+1. **Missing sponsor:** A sponsorship declaration without a sponsor account is rejected.
+2. **Invalid fee limits:** Fee limits must be positive integers and must not exceed the
+   configured maximum; a limit below the network base fee is also rejected.
+3. **Mismatched network/asset:** The declared network passphrase and fee asset must match
+   the transaction being authorized.
+4. **Malformed metadata:** Missing required fields or wrong types are rejected.
+
+```typescript
+// Validation runs automatically before the wallet prompt.
+// Invalid metadata throws before any signing request is sent.
+try {
+  await service.authorizeWithSponsorship(transaction, sponsorshipMetadata);
+} catch (err) {
+  // e.g. FeeSponsorshipValidationError: missing sponsor / invalid fee limit /
+  // mismatched network or asset / malformed metadata
+  console.error(err.message);
+}
+```
+
+**Compatibility:** Validation is additive. Callers that already provide well-formed
+metadata are unaffected; callers that previously passed invalid metadata will now
+receive an error before the wallet prompt instead of failing later during submission.
+
 ### Can I restore keys proactively (before they expire)?
 
 **Q:** Should I wait until keys are close to expiration?
@@ -271,5 +304,3 @@ setInterval(() => {
 
 3. **Checking Support:**
    ```typescrip
-
-/* … truncated 1495 chars — edit only what you need near the top … */

@@ -61,7 +61,21 @@ migration path for existing users. If there are none, state that explicitly.
 - Coverage for important failure and edge paths.
 - Verification that affected workspace tests and type checks pass.
 
-## Documentation plan
+## Threat model
+
+For proposals that change trust assumptions or failure handling, document the
+threat model explicitly. Cover:
+
+- **Assets and actors:** what is being protected, and who can influence it
+  (honest users, malicious providers, colluding providers, network attackers).
+- **Trust assumptions:** what the design assumes about each actor, including any
+  quorum or independence assumptions.
+- **Failure modes:** correlated outages, stale or divergent responses, malicious
+  or colluding providers, and partial availability.
+- **Mitigations and residual risk:** how each failure mode is detected or bounded,
+  and what risk remains after mitigation.
+
+## Prior art
 
 - User-facing documentation updates for new behavior, configuration, or
   compatibility constraints.

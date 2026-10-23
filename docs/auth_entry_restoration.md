@@ -2,34 +2,33 @@
 
 Documents the process of restoring revoked or expired Soroban authorization entries.
 
-## React Native / Hermes support
+## RPC authentication headers and persisted history
 
-The React Native crypto and authorization-entry restoration paths are supported on
-the Hermes JavaScript engine. Hermes is the default engine for React Native and
-is exercised by the dedicated Hermes test project so that crypto primitives and
-restoration flows are validated on the same runtime used in production apps.
+RPC authentication headers (for example `Authorization`, `X-Api-Key`, and
+other credential-bearing headers) are used only to authenticate a request to
+the RPC endpoint. They are **never** part of the authorization entry itself and
+must not be written into persisted history.
 
-### Configuration
+### Supported behavior
 
-- No additional configuration is required to use the crypto and restoration
-  modules on Hermes; the public API is unchanged.
-- The Hermes test project runs the React Native crypto and restoration suites
-  against the Hermes runtime. Run it with the workspace test command targeting
-  the Hermes project (for example `yarn test --project hermes`).
+- Authentication headers are stripped before any request metadata is persisted
+  to history. Persisted entries contain only the authorization entry data and
+  non-sensitive request context.
+- Header matching is case-insensitive: `authorization`, `Authorization`, and
+  `AUTHORIZATION` are all treated as authentication headers.
+- When multiple authentication headers are present, all of them are removed.
+- When no authentication headers are present, persisted history is unchanged.
+- Redaction applies recursively: authentication headers nested inside persisted
+  structures (for example per-endpoint or per-request maps) are also removed.
 
-### Compatibility constraints
+### Edge cases
 
-- Hermes does not provide the full Node.js `crypto` module. The React Native
-  crypto layer relies on the platform-provided primitives (via the React Native
-  crypto polyfill) rather than Node built-ins.
-- If a required crypto primitive is missing or invalid on the runtime, the
-  crypto and restoration calls reject with an explicit error instead of
-  silently producing incorrect results. Callers should handle these rejections
-  when restoring authorization entries.
-- Restoration of auth entries requires valid, non-expired entries; expired or
-  revoked entries surface an error that callers must handle.
+- Requests that fail authentication still must not leak headers into history.
+- Restoring an entry from history never restores credentials; callers must
+  supply authentication headers again when re-issuing the request.
 
-### API changes
+### Compatibility
 
-None. This documents existing behavior and the Hermes compatibility surface; the
-public API remains backward compatible.
+This is a forward-looking hardening change. The public API for restoring
+authorization entries is unchanged; only the contents of persisted history are
+affected. No configuration is required to enable the behavior.
