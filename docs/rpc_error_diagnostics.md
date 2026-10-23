@@ -34,6 +34,37 @@ Error messages never include the response body.
 `parseJsonRpcResponse` performs the content type and parse checks without
 reading the envelope. Use it when you need the raw envelope.
 
+## Sanitizing provider error payloads
+
+Provider `error` members are untrusted. Before a provider error is surfaced to
+a dApp, `@soroban-resurrect/rpc` normalizes it into a stable, safe shape so that
+raw or unsafe fields never reach the dApp.
+
+```ts
+import { sanitizeProviderError } from '@soroban-resurrect/rpc'
+
+const safe = sanitizeProviderError(rawError)
+// { code: number, message: string, data?: unknown }
+```
+
+- `code` is preserved when it is a finite number; otherwise it defaults to
+  `-32603` (internal error).
+- `message` is preserved when it is a string; otherwise it defaults to
+  `"Provider error"`. Messages are passed through `redactUrlsInText` so
+  credentials embedded in URLs are removed.
+- `data` is preserved only when it is a JSON-safe value (object, array, string,
+  number, boolean or `null`). Functions, symbols, `undefined` and cyclic
+  structures are dropped. Nested strings are redacted with `redactUrlsInText`.
+- Any other top-level fields on the raw error are discarded.
+- A non-object input (string, number, `null`, `undefined`) yields the default
+  `{ code: -32603, message: "Provider error" }`.
+
+`RpcResponseError` with `kind === 'JSON_RPC_ERROR'` exposes the sanitized
+payload via `err.rpcError`; `err.rpcCode` and `err.message` are derived from it.
+This is a compatibility constraint: consumers that previously read arbitrary
+fields off the raw provider error must read them from `err.rpcError.data`
+instead.
+
 ## Redacting endpoint URLs
 
 ```ts
