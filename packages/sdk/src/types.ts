@@ -85,6 +85,11 @@ export interface SorobanResurrectConfig {
    */
   maxRestoreFeeStroops?: string
   /**
+   * Enables the in-memory simulation cache. Use `perNetwork` (keyed by network
+   * passphrase) to give each network its own capacity/TTL.
+   */
+  simulationCache?: Partial<SimulationCacheConfig>
+  /**
    * Timeout in milliseconds for RPC requests made by SorobanRpc.Server.
    * Defaults to the Stellar SDK default when not set.
    */

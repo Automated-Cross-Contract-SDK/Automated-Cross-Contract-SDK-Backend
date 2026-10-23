@@ -45,7 +45,7 @@ import { ExponentialBackoff, type RetryPolicy } from './retry-policy.js'
 import { SimulationCache, type SimulationCacheConfig } from './simulation-cache.js'
 import { LedgerReadCoalescer } from './ledger-read-coalescer.js'
 import { ExponentialBackoff, type RetryPolicy } from '@soroban-resurrect/rpc'
-import { SimulationCache, type SimulationCacheConfig } from '@soroban-resurrect/rpc'
+import { SimulationCache, resolveSimulationCacheConfig, type SimulationCacheConfig } from '@soroban-resurrect/rpc'
 import { RpcFailoverManager, type RpcEndpointHealth } from '@soroban-resurrect/rpc'
 import { FootprintCache, type FootprintCacheStatistics } from '@soroban-resurrect/rpc'
 import { Tracer } from './tracing.js'
@@ -102,6 +102,9 @@ function extractInnerTransaction(tx: any): any {
   }
   return tx
 }
+
+/** Upper bound on cached `SorobanRpc.Server` instances per client. */
+const MAX_SERVER_CACHE_SIZE = 16
 
 export class SorobanResurrect {
   private server: SorobanRpc.Server
@@ -184,6 +187,13 @@ export class SorobanResurrect {
     // Initialize distributed tracing when configured
     if (this.config.tracing) {
       this.tracer = new Tracer(this.config.tracing)
+    }
+
+    if (config.simulationCache) {
+      const cacheConfig = resolveSimulationCacheConfig(config.simulationCache, config.networkPassphrase)
+      if (cacheConfig.enabled) {
+        this.simulationCache = new SimulationCache(cacheConfig.maxSize, cacheConfig.ttlMs)
+      }
     }
 
     void this.validateNetworkPassphrase()
@@ -434,6 +444,10 @@ export class SorobanResurrect {
     let server = this.serverCache.get(targetUrl)
     if (!server) {
       server = new SorobanRpc.Server(targetUrl, { allowHttp: this.config.allowHttp })
+      if (this.serverCache.size >= MAX_SERVER_CACHE_SIZE) {
+        const oldest = this.serverCache.keys().next()
+        if (!oldest.done) this.serverCache.delete(oldest.value)
+      }
       this.serverCache.set(targetUrl, server)
     }
     return server

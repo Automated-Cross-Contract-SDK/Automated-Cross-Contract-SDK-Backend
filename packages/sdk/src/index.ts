@@ -70,6 +70,7 @@ export {
 export {
   SimulationCache,
 } from '@soroban-resurrect/rpc'
+export { resolveSimulationCacheConfig, DEFAULT_SIMULATION_CACHE_CONFIG } from '@soroban-resurrect/rpc'
 
 export {
   FootprintCache,

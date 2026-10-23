@@ -196,3 +196,19 @@ console.log('Archived keys:', result.archivedKeys.length)
 ```
 
 The REPL provides a convenient environment for offline experimentation with mock RPC server support.
+
+## Simulation Cache
+
+Enable the in-memory simulation cache and size it per network (keyed by network passphrase):
+
+```ts
+new SorobanResurrect({
+  rpcUrl, networkPassphrase,
+  simulationCache: {
+    maxSize: 1000, ttlMs: 60_000,
+    perNetwork: { 'Public Global Stellar Network ; September 2015': { maxSize: 5000 } },
+  },
+})
+```
+
+Invalid capacities fall back to the default (`1000`). Eviction is O(1) LRU, so cache memory is bounded by `maxSize`. The internal RPC server cache is also capped (16 endpoints). Run `BENCH=1 npx vitest bench tests/benchmarks/cache-warmth.perf.test.ts` to compare cold vs warm cache behavior across networks and accounts.
