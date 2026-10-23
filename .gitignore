@@ -5,5 +5,4 @@ temp_auto_push.bat
 .env
 *.tsbuildinfo
 .vite/
-.gitignore
-branch_structure.json
+scripts/.out/

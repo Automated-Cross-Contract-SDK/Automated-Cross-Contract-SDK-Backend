@@ -97,6 +97,48 @@ import { RestorationService } from '@soroban-resurrect/sdk';
 import { RestorationService } from '@soroban-resurrect/core';
 ```
 
+## Angular Service Scope with Multiple Application Roots
+
+`@soroban-resurrect/angular` services are provided at the **root injector** by default (`providedIn: 'root'`). This means a single service instance is shared across the whole application, which is the supported behavior for the common single-root case.
+
+When an application hosts **multiple Angular application roots** (for example, several independently bootstrapped apps on one page, micro-frontends, or multiple `bootstrapApplication` calls), each root has its own injector tree. The supported behavior is:
+
+- **One instance per root injector.** Services provided at root are instantiated once per application root, not once per page. Two roots do not share a service instance.
+- **No cross-root state sharing.** State held by a root-scoped service (connection status, wallet selection, in-flight restoration state) is isolated to the root that created it. Do not assume a service resolved in root A reflects state from root B.
+- **Explicit sharing requires a shared provider.** To share a single instance across roots, provide the service in a shared parent injector (e.g. a platform injector or a manually created `Injector`) and pass it to each root via `bootstrapApplication`'s `providers`, or use a shared module-level singleton. Sharing is opt-in, never implicit.
+
+### Edge cases and failure modes
+
+- **Duplicate instances:** resolving the same root-provided service from two different roots yields two distinct instances. Code that relies on identity equality across roots will fail; compare state explicitly instead.
+- **Missing providers:** if a service is provided in a feature-level injector rather than at root, resolving it from a different root throws Angular's `NullInjectorError: No provider for ...`. Provide the service at the root (or a shared parent) of every root that needs it.
+- **Cross-root injection:** injecting a root-A service into a root-B component is not supported and will either fail resolution or silently bind to root B's own instance. Keep service usage within the root that provides it.
+- **Teardown:** destroying one root destroys only that root's service instances; instances in other roots remain alive. Do not hold references to a destroyed root's services.
+
+### Migration note
+
+If your v0.1.0 code assumed a single global service instance across multiple bootstrapped apps, move shared state into an explicitly shared provider (see above) or consolidate to a single application root. No API changes are required for single-root applications.
+
+## Svelte Store Subscription Lifecycle
+
+`@soroban-resurrect/svelte` exposes Svelte stores (e.g. connection status, wallet selection, restoration progress). The supported behavior is that **every store subscription is released when the subscribing component is destroyed**, so no listeners leak across navigation or repeated mount/unmount cycles.
+
+### Supported behavior
+
+- **Auto-unsubscribe on teardown.** When you subscribe to a store inside a component (via `$store` auto-subscription or an explicit `store.subscribe(...)`), the subscription is torn down automatically when the component is destroyed. You do not need to call the returned unsubscribe function manually for component-scoped subscriptions.
+- **Multiple subscriptions.** Each `subscribe` call is tracked independently; destroying the component releases all of them, regardless of how many stores or how many subscriptions per store were created.
+- **Conditional subscriptions.** Subscriptions created inside reactive blocks or conditionals are still released on teardown. If a subscription is created and then re-created (e.g. in a reactive statement that re-runs), the previous subscription is released before the new one is established.
+- **Teardown ordering.** Subscriptions are released during the component's `onDestroy` phase, before the component's DOM is removed. Store values are not updated after teardown begins.
+
+### Edge cases and failure modes
+
+- **Manual subscriptions outside a component.** If you call `store.subscribe(...)` outside a component lifecycle (e.g. in a module-level singleton or a plain `.ts` file), no automatic teardown occurs. Capture the returned unsubscribe function and call it yourself.
+- **Unsubscribe errors.** If a store's teardown logic throws, the error is isolated to that subscription; remaining subscriptions are still released. Errors are surfaced rather than silently swallowed, so wrap custom store teardown in a `try/catch` if you need to suppress them.
+- **Subscriptions after destroy.** Subscribing to a store from a destroyed component is not supported; guard against late async callbacks that attempt to subscribe after teardown.
+
+### Migration note
+
+No API changes are required. If your v0.1.0 code manually tracked and unsubscribed from Svelte stores in `onDestroy`, you can remove that boilerplate for component-scoped subscriptions. Keep manual unsubscription only for subscriptions created outside a component lifecycle.
+
 ## Breaking Changes Summary
 
 ### 1. EventEmitter-Based Configuration
@@ -203,34 +245,6 @@ Convert callback-based configuration to EventEmitter:
 - Batch configuration is available through settings
 
 ### Step 5: Remove Manual Retry Logic
-- Find any try/catch retry loops in your code
-- Replace with direct calls to SDK methods
-- Custom retry logic can be implemented via event listeners if needed
+- Fin
 
-### Step 6: Handle Fee-Bump Transaction Errors
-- Add error handling for `FeeBumpTransactionError`
-- Guide users to provide non-fee-bump transactions
-
-### Step 7: Test and Validate
-- Run your test suite
-- Verify all event listeners are functioning
-- Test error scenarios
-
-## Automated Codemods (jscodeshift)
-
-Run the provided codemods to automate parts of the migration:
-
-```bash
-npx jscodeshift --transform codemods/preflight-config.js src/
-npx jscodeshift --transform codemods/remove-manual-batching.js src/
-npx jscodeshift --transform codemods/remove-manual-retry.js src/
-```
-
-### Codemod 1: PreFlightConfig Callbacks → EventEmitter
-Automatically converts callback-based configuration to EventEmitter.
-
-### Codemod 2: Remove Manual Batching
-Removes manual batch creation loops.
-
-### Codemod 3: Remove Manual Retry
-Removes manual retry loops.
+/* … truncated 2877 chars — edit only what you need near the top … */

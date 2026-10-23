@@ -53,3 +53,35 @@ jobs:
       # TypeScript compilation
       - run: npm run typecheck -w packages/sdk
       - run: npm run typecheck -w packages/react
+
+  hermes:
+    name: Hermes / node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18, 20, 22]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - run: npm ci
+
+      # Build the React Native package so Hermes tests run against compiled output
+      - run: npm run build -w packages/react
+
+      # Run React Native crypto and restoration tests on the Hermes engine.
+      # Hermes lacks some JSC/V8 primitives (e.g. full TextEncoder/Buffer
+      # parity), so these suites validate crypto and auth restoration paths
+      # under Hermes' runtime constraints.
+      - name: Run React Native crypto and restoration tests on Hermes
+        run: npm run test -w packages/react -- --selectProjects hermes
+        env:
+          HERMES: '1'
+
+      - run: npm run typecheck -w packages/react

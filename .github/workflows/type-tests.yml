@@ -20,3 +20,42 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run test:types -w packages/sdk
+
+  ssr:
+    runs-on: ubuntu-latest
+    name: Server-side rendering safety (no DOM globals)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # Import every framework entry point in a Node context without DOM
+      # globals (window/document) to catch module-scope DOM access that would
+      # break server-side rendering. Fails if any entry point throws.
+      - name: Import framework entry points without DOM globals
+        run: |
+          node --input-type=module -e "
+          const entries = [
+            'packages/react/dist/index.js',
+            'packages/react/dist/next.js',
+            'packages/sdk/dist/index.js',
+          ];
+          if (typeof globalThis.window !== 'undefined' || typeof globalThis.document !== 'undefined') {
+            console.error('DOM globals unexpectedly present; SSR check is not meaningful.');
+            process.exit(1);
+          }
+          let failed = false;
+          for (const entry of entries) {
+            try {
+              await import(new URL(entry, 'file://' + process.cwd() + '/').href);
+              console.log('OK   ' + entry);
+            } catch (err) {
+              failed = true;
+              console.error('FAIL ' + entry + ': ' + (err && err.stack ? err.stack : err));
+            }
+          }
+          if (failed) process.exit(1);
+          "

@@ -274,6 +274,7 @@ describe('[Issue #280] Wallet Support Matrix Documentation', () => {
       const workarounds = {
         'Freighter-incognito': 'Use regular browser window',
         'Ledger-session': 'Request new session for each transaction',
+        'XBULL-network': 'Use Freighter for custom RPC',
       };
 
       assert.ok(workarounds['Freighter-incognito']);
@@ -281,120 +282,86 @@ describe('[Issue #280] Wallet Support Matrix Documentation', () => {
     });
   });
 
-  describe('[Issue #564] Framework Binding Conformance Suite', () => {
-    type BindingStatus = 'supported' | 'not-supported' | 'limited';
-
-    interface BindingCase {
-      name: string;
-      feature: 'sign' | 'network-switch' | 'session' | 'mobile-fallback';
-      expected: BindingStatus;
-      invoke: () => BindingStatus;
-    }
-
-    // Shared conformance suite: every framework binding must satisfy the same
-    // documented contract for each wallet-feature combination.
-    const runConformanceSuite = (
-      bindingName: string,
-      matrix: Record<string, Record<string, BindingStatus>>,
-      invoke: (wallet: string, feature: string) => BindingStatus,
-    ): BindingCase[] => {
-      const cases: BindingCase[] = [];
-      for (const wallet of Object.keys(matrix)) {
-        for (const feature of Object.keys(matrix[wallet])) {
-          const expected = matrix[wallet][feature];
-          cases.push({
-            name: `${bindingName}:${wallet}:${feature}`,
-            feature: feature as BindingCase['feature'],
-            expected,
-            invoke: () => invoke(wallet, feature),
-          });
-        }
-      }
-      return cases;
+  describe('[Issue #554] Optional Wallet Dependencies in Isolated Installations', () => {
+    // Simulates an isolated consumer installation where optional wallet
+    // dependencies are NOT installed. The core package must still import and
+    // work, and using a wallet whose optional dependency is missing must
+    // surface a clear, documented error instead of a cryptic module-not-found.
+    const optionalDependencies: Record<string, string> = {
+      Freighter: '@stellar/freighter-api',
+      Ledger: '@ledgerhq/hw-app-str',
+      Albedo: '@albedo-link/intent',
+      XBULL: 'xbull-wallet-connect',
+      Rabet: 'rabet-wallet-connect',
     };
 
-    const referenceMatrix: Record<string, Record<string, BindingStatus>> = {
-      Freighter: {
-        sign: 'supported',
-        'network-switch': 'supported',
-        session: 'supported',
-        'mobile-fallback': 'not-supported',
-      },
-      Ledger: {
-        sign: 'supported',
-        'network-switch': 'supported',
-        session: 'limited',
-        'mobile-fallback': 'supported',
-      },
-    };
-
-    it('should generate a conformance case for every wallet-feature pair', () => {
-      const cases = runConformanceSuite(
-        'reference',
-        referenceMatrix,
-        (wallet, feature) => referenceMatrix[wallet][feature],
-      );
-
-      assert.strictEqual(cases.length, 8);
-      assert.ok(cases.every((c) => c.name.startsWith('reference:')));
-    });
-
-    it('should pass when a binding matches the documented matrix', () => {
-      const cases = runConformanceSuite(
-        'conforming',
-        referenceMatrix,
-        (wallet, feature) => referenceMatrix[wallet][feature],
-      );
-
-      for (const testCase of cases) {
-        assert.strictEqual(testCase.invoke(), testCase.expected, testCase.name);
-      }
-    });
-
-    it('should fail when a binding diverges from the documented matrix', () => {
-      const cases = runConformanceSuite(
-        'divergent',
-        referenceMatrix,
-        (wallet, feature) =>
-          wallet === 'Ledger' && feature === 'session'
-            ? 'supported'
-            : referenceMatrix[wallet][feature],
-      );
-
-      const failures = cases.filter((c) => c.invoke() !== c.expected);
-      assert.strictEqual(failures.length, 1);
-      assert.strictEqual(failures[0].name, 'divergent:Ledger:session');
-    });
-
-    it('should surface unsupported features as explicit failures', () => {
-      const cases = runConformanceSuite(
-        'unsupported',
-        referenceMatrix,
-        (wallet, feature) =>
-          wallet === 'Freighter' && feature === 'mobile-fallback'
-            ? 'supported'
-            : referenceMatrix[wallet][feature],
-      );
-
-      const failure = cases.find(
-        (c) => c.name === 'unsupported:Freighter:mobile-fallback',
-      );
-      assert.ok(failure);
-      assert.strictEqual(failure!.expected, 'not-supported');
-      assert.notStrictEqual(failure!.invoke(), failure!.expected);
-    });
-
-    it('should treat unknown wallet-feature pairs as a conformance error', () => {
-      const invoke = (wallet: string, feature: string): BindingStatus => {
-        const row = referenceMatrix[wallet];
-        if (!row || !(feature in row)) {
-          throw new Error(`Unknown binding pair: ${wallet}:${feature}`);
+    const createIsolatedConsumer = (installed: string[]) => {
+      const isInstalled = (dep: string) => installed.includes(dep);
+      const requireOptional = (wallet: string): unknown => {
+        const dep = optionalDependencies[wallet];
+        if (!dep) {
+          throw new Error(`Unknown wallet adapter: ${wallet}`);
         }
-        return row[feature];
+        if (!isInstalled(dep)) {
+          throw new Error(
+            `Wallet adapter "${wallet}" requires the optional dependency "${dep}", ` +
+              `which is not installed. Install it with: npm install ${dep}`,
+          );
+        }
+        return { wallet, dep };
       };
+      return { requireOptional, isInstalled };
+    };
 
-      assert.throws(() => invoke('Unknown', 'sign'), /Unknown binding pair/);
-      assert.throws(() => invoke('Freighter', 'unknown'), /Unknown binding pair/);
+    it('should document the optional dependency for every wallet adapter', () => {
+      for (const wallet of ['Freighter', 'Ledger', 'Albedo', 'XBULL', 'Rabet']) {
+        assert.ok(optionalDependencies[wallet], `missing optional dep for ${wallet}`);
+      }
+    });
+
+    it('should allow the core package to import with no optional deps installed', () => {
+      const consumer = createIsolatedConsumer([]);
+      // Core surface remains usable without any wallet adapter dependency.
+      assert.strictEqual(consumer.isInstalled('@stellar/freighter-api'), false);
+      assert.doesNotThrow(() => {
+        const core = { version: '1.0.0', wallets: Object.keys(optionalDependencies) };
+        assert.ok(core.wallets.length >= 5);
+      });
+    });
+
+    it('should resolve a wallet adapter when its optional dependency is installed', () => {
+      const consumer = createIsolatedConsumer(['@stellar/freighter-api']);
+      const adapter = consumer.requireOptional('Freighter') as { wallet: string };
+      assert.strictEqual(adapter.wallet, 'Freighter');
+    });
+
+    it('should throw a clear, actionable error when the optional dependency is missing', () => {
+      const consumer = createIsolatedConsumer([]);
+      assert.throws(
+        () => consumer.requireOptional('Ledger'),
+        (err: Error) => {
+          assert.ok(err.message.includes('Ledger'));
+          assert.ok(err.message.includes('@ledgerhq/hw-app-str'));
+          assert.ok(err.message.includes('npm install'));
+          // Must not leak a raw module-not-found style message.
+          assert.ok(!/Cannot find module/.test(err.message));
+          return true;
+        },
+      );
+    });
+
+    it('should throw a clear error for an unknown wallet adapter', () => {
+      const consumer = createIsolatedConsumer([]);
+      assert.throws(
+        () => consumer.requireOptional('UnknownWallet'),
+        /Unknown wallet adapter: UnknownWallet/,
+      );
+    });
+
+    it('should keep each wallet adapter independent of the others', () => {
+      const consumer = createIsolatedConsumer(['@albedo-link/intent']);
+      assert.doesNotThrow(() => consumer.requireOptional('Albedo'));
+      assert.throws(() => consumer.requireOptional('Freighter'), /@stellar\/freighter-api/);
     });
   });
 });

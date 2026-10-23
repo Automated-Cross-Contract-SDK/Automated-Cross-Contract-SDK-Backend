@@ -1,0 +1,8 @@
+{
+  "@soroban-resurrect/sdk": { "gzipBytes": 30000, "importMs": 1500 },
+  "@soroban-resurrect/react": { "gzipBytes": 15000, "importMs": 1500 },
+  "@soroban-resurrect/next": { "gzipBytes": 15000, "importMs": 1500 },
+  "@soroban-resurrect/vue": { "gzipBytes": 15000, "importMs": 1500 },
+  "@soroban-resurrect/svelte": { "gzipBytes": 15000, "importMs": 1500 },
+  "@soroban-resurrect/angular": { "gzipBytes": 15000, "importMs": 1500 }
+}

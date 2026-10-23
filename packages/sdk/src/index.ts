@@ -70,6 +70,7 @@ export {
 export {
   SimulationCache,
 } from '@soroban-resurrect/rpc'
+export { resolveSimulationCacheConfig, DEFAULT_SIMULATION_CACHE_CONFIG } from '@soroban-resurrect/rpc'
 
 export {
   FootprintCache,
@@ -77,6 +78,14 @@ export {
 
 export { RpcFailoverManager } from '@soroban-resurrect/rpc'
 
+export { RpcFailoverManager } from './rpc-failover.js'
+export type { RpcEndpointHealth, RpcFailoverConfig } from './rpc-failover.js'
+
+export { LedgerReadCoalescer } from './ledger-read-coalescer.js'
+export type { CoalescingStatistics } from './ledger-read-coalescer.js'
+
+export { measureParserPerformance } from './parser-benchmark.js'
+export type { ParserBenchmarkResult } from './parser-benchmark.js'
 export {
   batchKeysByContract,
   groupKeysByPriority,

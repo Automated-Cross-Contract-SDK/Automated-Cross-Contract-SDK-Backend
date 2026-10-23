@@ -1,0 +1,15 @@
+{
+  "package": "@soroban-resurrect/react",
+  "runtime": [
+    "SorobanResurrectContext",
+    "SorobanResurrectProvider",
+    "useSorobanResurrect",
+    "useSorobanResurrectContext"
+  ],
+  "types": [
+    "SorobanResurrectContextValue",
+    "SorobanResurrectProviderProps",
+    "UseSorobanResurrectOptions",
+    "UseSorobanResurrectReturn"
+  ]
+}

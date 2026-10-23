@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { SorobanResurrect } from '../src/soroban-resurrect.js'
 import { SorobanResurrectError } from '../src/types.js'
+import { recordRpc } from './helpers/mock-rpc-recorder.js'
 
 const RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org'
 const NETWORK_PASSPHRASE = process.env.SOROBAN_NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015'
@@ -13,6 +14,14 @@ describe('SorobanResurrect [integration]', () => {
     rpcUrl: RPC_URL,
     networkPassphrase: NETWORK_PASSPHRASE,
     allowHttp: true,
+  })
+
+  // On failure, export every RPC call/response to tests/fixtures/repro/ for offline replay.
+  beforeEach(ctx => {
+    if (!RUN_INTEGRATION) return
+    const { server } = recordRpc(client.getRpcServer(), ctx.task.name, RPC_URL)
+    vi.spyOn(client as any, 'getServer').mockReturnValue(server)
+    vi.spyOn(client, 'getRpcServer').mockReturnValue(server)
   })
 
   itIf('connects to the Soroban RPC endpoint', async () => {
