@@ -172,6 +172,15 @@ export interface SorobanResurrectConfig {
    * entries when a new ledger closes.
    */
   footprintCache?: FootprintCacheConfig
+  /**
+   * Cancels in-flight signing, submission and confirmation polling when
+   * aborted. The SDK checks the signal before signing, after signing (before
+   * `sendTransaction`), after submission and before every poll. The rejection
+   * is an `AbortError` whose `stage` names where it stopped; when the
+   * transaction was already submitted, `txHash` is set because the network
+   * may still apply it.
+   */
+  signal?: AbortSignal
 }
 
 /**
