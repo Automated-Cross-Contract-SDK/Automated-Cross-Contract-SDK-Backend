@@ -6,7 +6,7 @@ The Soroban Resurrect SDK batches archived ledger keys for efficient restoration
 
 ## Batching Constraints
 
-Restore batches are split when **any** of the following limits are exceeded:
+Restore batches are split when **any** of the following limits is exceeded:
 
 | Constraint | Config Field | Type | Purpose |
 |-----------|--------------|------|---------|
@@ -218,17 +218,46 @@ A: The XDR size limit (100 KB) is likely the real constraint. Each key's XDR rep
 
 These checks run around every restore-then-original flow.
 
-- **Restoration confirmation (#508).** Before the original transaction is submitted, each successful restore transaction is read back with `getTransaction` and must report `SUCCESS`. Otherwise the call rejects with `RESTORE_FAILED` and the original is never sent.
-- **Signer matches source (#509).** After the wallet signs, the returned envelope must have the same source account as the unsigned XDR and carry a signature from that account. A mismatch is rejected before submission with `INVALID_XDR`.
-- **Fee ceiling (#510).** Set `maxFeeStroops` (decimal string, stroops) to cap the fee of any transaction the SDK asks the wallet to sign. Transactions above the ceiling are rejected before the wallet prompt. Leaving it unset imposes no limit.
+- **Restoration confirmation (#508).** Before the original transaction is submitted, each successful restore transaction is read back with `getTransaction` and must report `SUCCESS`. Otherwise the call rejects with `RESTORE_NOT_CONFIRMED`.
 
-## Per-Batch Outcomes (#511)
+## React StrictMode: Duplicate Restore Side Effects (#555)
 
-Each `RestoreBatchResult` in a concurrent or sequential run carries typed failure fields:
+React 18+ StrictMode intentionally mounts, unmounts, and remounts components in development to surface unsafe side effects. If a restore is triggered from an effect (e.g. `useEffect(() => { client.restore(...) }, [])`), StrictMode's double invocation can otherwise submit the **same restore twice**.
 
-| Field        | Set when        | Meaning                                                                 |
-| ------------ | --------------- | ----------------------------------------------------------------------- |
-| `errorCode`  | `status: 'failed'` | One of `NETWORK_ERROR`, `RESTORE_FAILED`, `ORIGINAL_TX_FAILED`, `INVALID_XDR`, `UNKNOWN`. |
-| `retryable`  | `status: 'failed'` | Whether retrying the batch can succeed. Unrecognised errors are `UNKNOWN` and not retryable. |
+### Supported behavior
 
-`failedBatchIndices` on the concurrent result lists the failed batches, so callers can retry only the retryable ones.
+Restore side effects are **idempotent and deduplicated** so that StrictMode's double effect invocation does not produce duplicate restore operations:
+
+- **In-flight deduplication.** Concurrent restore requests for the same set of archived keys (same source account and network) share a single in-flight restore operation. The second caller awaits the same result instead of submitting a new transaction.
+- **Post-completion deduplication.** Once a restore for a given key set has completed successfully, a subsequent identical restore request within the same client instance is a no-op that resolves with the prior result. This covers the mount → unmount → remount cycle where the first effect's restore has already finished before the second effect runs.
+- **Cleanup safety.** Aborting or unmounting between the two effect invocations does not cancel an already-submitted restore; the deduplicated second invocation simply observes the shared result.
+
+### Edge cases
+
+| Scenario | Behavior |
+|----------|----------|
+| Two effects fire before the first restore resolves | Both await the same in-flight restore; one transaction submitted |
+| First restore completes, then remount fires again | Second request is deduplicated against the completed result; no new transaction |
+| Restore fails | The failure is surfaced to all awaiting callers; a later retry is **not** deduplicated against the failed attempt |
+| Different key sets / source accounts | Treated as distinct operations; no cross-deduplication |
+| Rapid mount/unmount/mount | No duplicate submission; cleanup does not orphan an in-flight restore |
+
+### Compatibility notes
+
+- This is a **behavioral hardening**, not an API change. Existing method signatures and return types are unchanged.
+- Deduplication is scoped to a single client instance; separate client instances do not share restore state.
+- Deduplication keys on the archived key set plus source account and network passphrase, so intentionally re-restoring a *different* key set is unaffected.
+- If you need to force a fresh restore attempt after a failure, simply retry — failed attempts are not cached.
+
+### Example
+
+```typescript
+function RestoreOnMount({ client, keys, source }: Props) {
+  useEffect(() => {
+    // Safe under StrictMode: the double invocation is deduplicated.
+    void client.restore(keys, source)
+  }, [client, keys, source])
+
+  return null
+}
+```
