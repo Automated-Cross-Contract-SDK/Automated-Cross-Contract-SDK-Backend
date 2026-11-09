@@ -128,7 +128,7 @@ export function classifySacKey(
 
     // scvSymbol("Admin"|"Name"|"Symbol"|"Decimals")
     if (typeVal === SCV_SYMBOL) {
-      const sym: string = dataKey.value().toString()
+      const sym = String(dataKey.value() ?? '')
       if (sym === 'Admin') return 'sacAdmin'
       if (SAC_SYMBOL_KEYS.has(sym)) return 'sacMetadata'
       return undefined
@@ -140,7 +140,7 @@ export function classifySacKey(
       if (Array.isArray(vec) && vec.length >= 1) {
         const head = vec[0]
         if (head.switch().value === SCV_SYMBOL) {
-          const sym: string = head.value().toString()
+          const sym = String(head.value() ?? '')
           if (sym === 'Balance') return 'sacBalance'
           if (sym === 'Allowance') return 'sacAllowance'
         }

@@ -392,7 +392,7 @@ export interface SorobanResurrectEvents {
  */
 export interface SorobanResurrectErrorBase {
   message: string
-  code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR' | 'ABORTED'
+  code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR' | 'ABORTED' | 'RPC_METHOD_UNAVAILABLE' | 'NETWORK_MISMATCH' | 'UNKNOWN'
   cause?: unknown
   rpcUrl?: string
   txHash?: string

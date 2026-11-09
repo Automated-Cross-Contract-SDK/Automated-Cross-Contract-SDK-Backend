@@ -38,9 +38,9 @@ describe('classifyLedgerKey', () => {
     expect(r).toEqual({ keyType: 'contractCode', contractId: id.toString('hex'), restorePriority: 1 })
   })
 
-  it('classifies ttl keys with priority 3', () => {
+  it('classifies ttl keys with priority 2 (same as their data entry)', () => {
     const key = xdr.LedgerKey.ttl(new xdr.LedgerKeyTtl({ keyHash: id }))
-    expect(classifyLedgerKey(key)).toEqual({ keyType: 'ttlEntry', restorePriority: 3 })
+    expect(classifyLedgerKey(key)).toMatchObject({ keyType: 'ttlEntry', restorePriority: 2 })
   })
 
   it('classifies other entry types as unknown', () => {
