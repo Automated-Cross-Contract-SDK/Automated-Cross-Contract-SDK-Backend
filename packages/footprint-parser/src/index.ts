@@ -288,3 +288,57 @@ export function encodeLedgerKey(key: xdr.LedgerKey): string {
  * Parse a transaction XDR and extract footprint keys us
 
 /* … truncated 2537 chars — edit only what you need near the top … */
+
+/** Reads the Soroban footprint from a v1 or fee-bump envelope, or `null`. */
+function footprintFromEnvelope(envelope: xdr.TransactionEnvelope): FootprintKeys | null {
+  const kind = envelope.switch().name
+  const v1 =
+    kind === 'envelopeTypeTx'
+      ? envelope.v1()
+      : kind === 'envelopeTypeTxFeeBump'
+        ? envelope.feeBump().tx().innerTx().v1()
+        : null
+  if (!v1) return null
+  const ext = v1.tx().ext()
+  if (ext.switch() !== 1) return null
+  const footprint = ext.sorobanData().resources().footprint()
+  return footprint ? extractKeysFromFootprint(footprint) : null
+}
+
+/**
+ * Parses a transaction XDR and returns its footprint keys, or `null` when the
+ * input is not a Soroban transaction or cannot be decoded.
+ *
+ * Builds the full Transaction object. For large transactions (over
+ * `STREAMING_THRESHOLD_BYTES`), prefer `extractFootprintFromTransactionStreaming`.
+ */
+export function extractFootprintFromTransaction(txXDR: string, networkPassphrase: string): FootprintKeys | null {
+  try {
+    return footprintFromEnvelope(TransactionBuilder.fromXDR(txXDR, networkPassphrase).toEnvelope())
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Lower-memory variant of `extractFootprintFromTransaction`: decodes only the
+ * transaction envelope (v1 or fee-bump) without building Transaction objects
+ * or needing the network passphrase. Returns `null` when there is no Soroban
+ * footprint.
+ */
+export function extractFootprintFromTransactionStreaming(txXDR: string): FootprintKeys | null {
+  try {
+    return footprintFromEnvelope(xdr.TransactionEnvelope.fromXDR(txXDR, 'base64'))
+  } catch {
+    return null
+  }
+}
+
+/** Target peak memory (bytes) for the streaming parser. Exported for benchmarks. */
+export const STREAMING_PARSER_MEMORY_TARGET = 50 * 1024 * 1024 // 50 MB
+
+/**
+ * Decoded transaction size (bytes) above which the streaming parser is
+ * preferred over the full-object parser.
+ */
+export const STREAMING_THRESHOLD_BYTES = 1024 * 1024 // 1 MB

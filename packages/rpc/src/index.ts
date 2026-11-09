@@ -6,6 +6,7 @@ export { parseJsonRpcResponse, parseJsonRpcResult, RpcResponseError } from './js
 export type { RpcResponseErrorKind } from './json-rpc-response.js'
 export { redactRpcUrl, redactRpcUrls, redactUrlsInText } from './redact-url.js'
 export { describeXdrEncoding } from './xdr-diagnostics.js'
+export { probeRpcMethods, RESTORE_REQUIRED_METHODS } from './rpc-method-probe.js'
 export type { XdrEncodingDiagnostic } from './xdr-diagnostics.js'
 
 export type { RetryPolicy } from '@soroban-resurrect/types';

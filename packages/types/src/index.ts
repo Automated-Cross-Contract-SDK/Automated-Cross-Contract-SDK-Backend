@@ -138,7 +138,7 @@ export interface SorobanResurrectConfig {
    * failure. The underlying HTTP request is not aborted.
    */
   rpcMethodTimeouts?: RpcMethodTimeouts
-  onLog?: (level: 'info' | 'warn' | 'error', message: string, data?: unknown) => void
+  onLog?: (level: 'debug' | 'info' | 'warn' | 'error', message: string, data?: unknown) => void
   /**
    * When `true`, the SDK attempts to subscribe to transaction status updates
    * via WebSocket instead of polling with `getTransaction`. If the server does
@@ -172,6 +172,27 @@ export interface SorobanResurrectConfig {
    * entries when a new ledger closes.
    */
   footprintCache?: FootprintCacheConfig
+  /**
+   * Simulate and sign but never submit transactions to the network.
+   * Defaults to `false`.
+   */
+  simulateOnly?: boolean
+  /**
+   * Retry policy for transient RPC failures. Defaults to exponential backoff
+   * with 3 retries and a 500 ms base delay.
+   */
+  retryPolicy?: RetryPolicy
+  /**
+   * Maximum number of independent restore batches submitted in parallel.
+   * Defaults to `DEFAULT_MAX_CONCURRENCY` from `@soroban-resurrect/utils`.
+   */
+  maxConcurrency?: number
+  /**
+   * Estimate restore fees by simulating a placeholder transaction instead of
+   * always using `restoreFee`. Falls back to `restoreFee` on any failure.
+   * Defaults to `false`.
+   */
+  dynamicFeeEstimation?: boolean
   /**
    * Cancels in-flight signing, submission and confirmation polling when
    * aborted. The SDK checks the signal before signing, after signing (before
@@ -392,7 +413,7 @@ export interface SorobanResurrectEvents {
  */
 export interface SorobanResurrectErrorBase {
   message: string
-  code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR' | 'ABORTED' | 'RPC_METHOD_UNAVAILABLE' | 'NETWORK_MISMATCH' | 'UNKNOWN'
+  code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR' | 'ABORTED' | 'RPC_METHOD_UNAVAILABLE' | 'NETWORK_MISMATCH' | 'SUBMISSION_AMBIGUOUS' | 'UNKNOWN'
   cause?: unknown
   rpcUrl?: string
   txHash?: string
