@@ -6,3 +6,11 @@
 
 # React package
 /packages/react/ @Automated-Cross-Contract-SDK/react-maintainers
+
+# Security-sensitive paths: changes here need maintainer review
+/.vscode/ @Automated-Cross-Contract-SDK/maintainers
+/.devcontainer/ @Automated-Cross-Contract-SDK/maintainers
+/.github/ @Automated-Cross-Contract-SDK/maintainers
+/.husky/ @Automated-Cross-Contract-SDK/maintainers
+/public/ @Automated-Cross-Contract-SDK/maintainers
+**/package.json @Automated-Cross-Contract-SDK/maintainers
