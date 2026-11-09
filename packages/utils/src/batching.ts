@@ -1,5 +1,41 @@
+import { hash } from '@stellar/stellar-sdk'
 import type { ArchivedKey, ContractKeyGroup } from '@soroban-resurrect/types'
 import type { BatchingOptions } from './types.js'
+
+/** Stable identity of a key: its base64 XDR encoding. */
+function keyId(key: ArchivedKey): string {
+  return key.keyBase64
+}
+
+/**
+ * For a TTL entry, returns the id of the archived key it extends.
+ *
+ * A Soroban TTL ledger key stores `keyHash = sha256(LedgerKey XDR)` of the
+ * entry whose lifetime it tracks, so we match it against the hash of every
+ * other key in the set. Returns undefined for non-TTL keys or when the
+ * sibling is not part of `keys`.
+ */
+function buildTtlSiblingLookup(keys: ArchivedKey[]): (key: ArchivedKey) => string | undefined {
+  if (!keys.some(key => key.keyType === 'ttlEntry')) return () => undefined
+
+  const idByHash = new Map<string, string>()
+  for (const key of keys) {
+    if (key.keyType === 'ttlEntry') continue
+    try {
+      idByHash.set(hash(key.key.toXDR()).toString('hex'), keyId(key))
+    } catch {
+      // Not a decodable LedgerKey; it cannot be the sibling of a TTL entry.
+    }
+  }
+  return (key) => {
+    if (key.keyType !== 'ttlEntry') return undefined
+    try {
+      return idByHash.get(key.key.ttl().keyHash().toString('hex'))
+    } catch {
+      return undefined
+    }
+  }
+}
 
 /**
  * Groups archived keys by contract ID to enable parallel restoration
@@ -14,16 +50,17 @@ export function batchKeysByContract(keys: ArchivedKey[]): ContractKeyGroup[] {
   // Resolve the effective contract for each key. TTL keys may not carry a
   // contractId themselves, so fall back to the contract of the sibling
   // contractData key they extend (matched by the TTL's inner key).
+  const extendsKeyId = buildTtlSiblingLookup(keys)
   const contractByKeyId = new Map<string, string>()
   for (const key of keys) {
     if (key.contractId) {
-      contractByKeyId.set(key.id, key.contractId)
+      contractByKeyId.set(keyId(key), key.contractId)
     }
   }
 
   const resolveContractId = (key: ArchivedKey): string => {
     if (key.contractId) return key.contractId
-    const siblingId = key.extendsKeyId
+    const siblingId = extendsKeyId(key)
     if (siblingId) {
       const siblingContract = contractByKeyId.get(siblingId)
       if (siblingContract) return siblingContract
@@ -132,22 +169,19 @@ export function createBatches(keys: ArchivedKey[], options: BatchingOptions = {}
 function keepTtlWithSibling(keys: ArchivedKey[]): ArchivedKey[] {
   const result: ArchivedKey[] = []
   const placed = new Set<string>()
-  const byId = new Map<string, ArchivedKey>()
-  for (const key of keys) {
-    byId.set(key.id, key)
-  }
+  const extendsKeyId = buildTtlSiblingLookup(keys)
 
   for (const key of keys) {
-    if (placed.has(key.id)) continue
+    if (placed.has(keyId(key))) continue
     result.push(key)
-    placed.add(key.id)
+    placed.add(keyId(key))
 
     // Pull forward any TTL entries that extend this key.
     for (const candidate of keys) {
-      if (placed.has(candidate.id)) continue
-      if (candidate.extendsKeyId === key.id) {
+      if (placed.has(keyId(candidate))) continue
+      if (extendsKeyId(candidate) === keyId(key)) {
         result.push(candidate)
-        placed.add(candidate.id)
+        placed.add(keyId(candidate))
       }
     }
   }

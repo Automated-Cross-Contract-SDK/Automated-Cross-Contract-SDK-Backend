@@ -315,6 +315,194 @@ export function useSorobanResurrect<TSigner extends SigningStrategy = SigningStr
     }
   }, [getClient, options])
 
-  const abort = useCallback((
+  const abort = useCallback(() => {
+    abortControllerRef.current?.abort()
+  }, [])
 
-/* … truncated 5950 chars — edit only what you need near the top … */
+  const executeWithRestore = useCallback(async (
+    txXDR: string,
+    signTransaction?: (xdr: string) => Promise<string>,
+    { forceRefresh = false }: { forceRefresh?: boolean } = {},
+  ): Promise<ExecutionResult> => {
+    const sign = signTransaction ?? resolveSigner(options.signingStrategy)
+    if (!sign) {
+      throw new Error(
+        'executeWithRestore requires a signTransaction argument or a signingStrategy option',
+      )
+    }
+
+    const startedAt = Date.now()
+    setIsExecuting(true)
+    setError(null)
+    setProgress({ ...IDLE_PROGRESS, status: 'checking' })
+
+    const client = getClient()
+    let listeners: Array<[string, (...args: any[]) => void]> = []
+    const addListener = (event: string, listener: (...args: any[]) => void) => {
+      listeners.push([event, listener])
+      ;(client as any).on(event, listener)
+    }
+    const removeListeners = () => {
+      for (const [event, listener] of listeners) (client as any).off(event, listener)
+      listeners = []
+    }
+
+    try {
+      const simulation = await getCachedSimulation(txXDR, forceRefresh)
+      throwIfAborted()
+
+      if (!simulation.needsRestoration) {
+        const signedXDR = await sign(txXDR)
+        const hash = computeHash(signedXDR, options.networkPassphrase)
+        const result: ExecutionResult = {
+          success: true,
+          originalTxHash: hash,
+          entriesRestored: 0,
+        }
+        setLastResult(result)
+        setProgress(p => ({ ...p, status: 'done' }))
+        options.preFlight?.onRestoreComplete?.(result)
+        addHistoryRecord({
+          id: generateId(),
+          originalTxHash: result.originalTxHash,
+          archivedKeys: [],
+          status: 'success',
+          timestamp: startedAt,
+          durationMs: Date.now() - startedAt,
+        })
+        return result
+      }
+
+      setNeedsRestore(true)
+      setArchivedKeys(simulation.archivedKeys)
+      options.preFlight?.onRestoreNeeded?.(simulation.archivedKeys)
+
+      setProgress({
+        status: 'restoring',
+        currentBatch: 0,
+        totalBatches: 0,
+        keysRestored: 0,
+        totalKeys: simulation.archivedKeys.length,
+      })
+
+      if (optimisticEnabled) {
+        setLastResult({
+          success: true,
+          entriesRestored: simulation.archivedKeys.length,
+        })
+        setIsOptimistic(true)
+      }
+
+      const batchStartTime = Date.now()
+      addListener('restore:batch:complete', (batchIndex: number, totalBatches: number) => {
+        const completed = batchIndex + 1
+        const elapsed = Date.now() - batchStartTime
+        const avgPerBatch = elapsed / completed
+        const remainingBatches = Math.max(totalBatches - completed, 0)
+        setProgress(p => ({
+          ...p,
+          currentBatch: completed,
+          totalBatches,
+          estimatedTimeRemainingMs: Math.round(avgPerBatch * remainingBatches),
+        }))
+      })
+      addListener('restore:complete', (result: { keysRestored: number }) => {
+        setProgress(p => ({ ...p, keysRestored: result.keysRestored }))
+      })
+      addListener('original:start', () => {
+        setProgress(p => ({ ...p, status: 'submitting', estimatedTimeRemainingMs: 0 }))
+      })
+
+      const accountID = parseSource(txXDR, options.networkPassphrase)
+      const restoreTx = await client.buildRestoreTransaction(
+        simulation.archivedKeys,
+        accountID,
+      )
+      throwIfAborted()
+
+      const result = await client.executeRestoreThenOriginal(
+        restoreTx.transactionXDR,
+        txXDR,
+        async (xdr: string) => {
+          const signed = await sign(xdr)
+          return signed
+        },
+      )
+      throwIfAborted()
+
+      setLastResult(result)
+      setIsOptimistic(false)
+      setProgress(p => ({ ...p, status: 'done', keysRestored: restoreTx.keysRestored }))
+      options.preFlight?.onRestoreComplete?.(result)
+      addHistoryRecord({
+        id: generateId(),
+        originalTxHash: result.originalTxHash,
+        restoreTxHash: result.restoreTxHash,
+        archivedKeys: simulation.archivedKeys,
+        status: result.success ? 'success' : 'failed',
+        error: result.error,
+        timestamp: startedAt,
+        durationMs: Date.now() - startedAt,
+      })
+      return result
+    } catch (err) {
+      const aborted = err instanceof SorobanResurrectError && err.code === 'ABORTED'
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
+      setProgress(p => ({ ...p, status: 'error' }))
+
+      if (optimisticEnabled) {
+        setLastResult(prevLastResult)
+        setIsOptimistic(false)
+      }
+      if (aborted) {
+        setNeedsRestore(prevNeedsRestore)
+        setArchivedKeys(prevArchivedKeys)
+      }
+
+      const error = err instanceof Error ? err : new Error(message)
+      options.onError?.(error)
+      options.preFlight?.onError?.(error)
+      addHistoryRecord({
+        id: generateId(),
+        archivedKeys,
+        status: 'failed',
+        error: message,
+        timestamp: startedAt,
+        durationMs: Date.now() - startedAt,
+      })
+      if (err instanceof SorobanResurrectError) throw err
+      throw new SorobanResurrectError(message, 'ORIGINAL_TX_FAILED', err)
+    } finally {
+      removeListeners()
+      if (abortControllerRef.current === controller) abortControllerRef.current = null
+      setIsExecuting(false)
+    }
+  }, [getClient, options, addHistoryRecord, archivedKeys])
+
+  const reset = useCallback(() => {
+    setIsChecking(false)
+    setIsExecuting(false)
+    setLastResult(null)
+    setError(null)
+    setNeedsRestore(false)
+    setArchivedKeys([])
+    setIsOptimistic(false)
+    setProgress(IDLE_PROGRESS)
+  }, [])
+
+  return {
+    executeWithRestore,
+    checkTransaction,
+    isChecking,
+    isExecuting,
+    lastResult,
+    error,
+    needsRestore,
+    archivedKeys,
+    reset,
+    signer: options.signingStrategy,
+    history,
+    clearHistory,
+  }
+}

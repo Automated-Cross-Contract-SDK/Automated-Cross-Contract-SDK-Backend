@@ -51,6 +51,23 @@ export interface ConnectOptions {
   timeoutMs?: number
 }
 
+/**
+ * Sort key for an adapter: app-level override ids come first, in list order;
+ * every other adapter follows, ordered by its declared priority (or the
+ * default). Ties are broken by the caller using registration order.
+ */
+function rankAdapter(
+  adapter: SorobanWalletAdapter,
+  overrideRanks: Map<string, number>,
+  hasOverride: boolean,
+): number {
+  if (hasOverride) {
+    const override = overrideRanks.get(adapter.id)
+    if (override !== undefined) return override
+  }
+  return overrideRanks.size + (adapter.priority ?? DEFAULT_ADAPTER_PRIORITY)
+}
+
 /** Sorts adapters by a priority list of ids; unlisted adapters keep their relative order, placed after listed ones. */
 function orderByPriority(adapters: SorobanWalletAdapter[], priority?: string[]): SorobanWalletAdapter[] {
   const overrideRanks = new Map<string, number>()

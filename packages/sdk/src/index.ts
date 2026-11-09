@@ -25,6 +25,8 @@ export {
   SorobanResurrectError,
 } from '@soroban-resurrect/errors'
 
+// Types used by the SorobanResurrect class come from the shared types package,
+// so they always match the class exported above.
 export type {
   ArchivedKey,
   SacKeyType,
@@ -34,13 +36,16 @@ export type {
   RestoreTransactionResult,
   RestoreBatchResult,
   RestoreAllBatchesResult,
-  RestoreExecutionReceipt,
   ConcurrentRestoreResult,
   ContractKeyGroup,
   ExecutionResult,
   FailedRestoreState,
   PreFlightConfig,
   FeeBumpMetadata,
+} from '@soroban-resurrect/types'
+// Types that only the SDK defines.
+export type {
+  RestoreExecutionReceipt,
   SimulationDiff,
   LedgerEntryDiff,
   TtlChange,
@@ -77,9 +82,7 @@ export {
 } from '@soroban-resurrect/rpc'
 
 export { RpcFailoverManager } from '@soroban-resurrect/rpc'
-
-export { RpcFailoverManager } from './rpc-failover.js'
-export type { RpcEndpointHealth, RpcFailoverConfig } from './rpc-failover.js'
+export type { RpcEndpointHealth, RpcFailoverConfig } from '@soroban-resurrect/rpc'
 
 export { LedgerReadCoalescer } from './ledger-read-coalescer.js'
 export type { CoalescingStatistics } from './ledger-read-coalescer.js'
@@ -141,6 +144,8 @@ export { Container, Token, BindingBuilder, ContainerError } from './container.js
  */
 export { VersionNegotiator } from './version-negotiator.js'
 export type {
-  VersionNegotiatorConfig,
-  VersionNegotiationResult,
+  ServerVersionInfo,
+  ProtocolSupport,
+  XdrEncodingOptions,
+  ProtocolCompatibilityConfig,
 } from './version-negotiator.js'

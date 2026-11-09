@@ -8,6 +8,7 @@ import {
   SorobanDataBuilder,
   BASE_FEE,
   StrKey,
+  Keypair,
 } from '@stellar/stellar-sdk'
 import {
   ArchivedKey,
@@ -26,6 +27,7 @@ import {
   TransactionWaitResult,
   FootprintCacheStatistics,
   RpcMethodName,
+  RestoreBatchErrorCode,
 } from '@soroban-resurrect/types'
 import { SorobanResurrectError, isRetryable } from '@soroban-resurrect/errors'
 import {
@@ -121,12 +123,24 @@ function extractInnerTransaction(tx: any): any {
   return tx
 }
 
+/** Config options that always have a value after defaults are applied. */
+type DefaultedConfigKey =
+  | 'allowHttp'
+  | 'restoreFee'
+  | 'maxRestoreBatchSize'
+  | 'simulateOnly'
+  | 'retryPolicy'
+  | 'onLog'
+  | 'useWebSocket'
+  | 'pollIntervalMs'
+  | 'maxPollAttempts'
+  | 'restoreConfirmationPolicy'
+  | 'rpcMethodTimeouts'
+type ResolvedConfig = SorobanResurrectConfig & Required<Pick<SorobanResurrectConfig, DefaultedConfigKey>>
+
 export class SorobanResurrect {
   private server: SorobanRpc.Server
-  private config: Required<Omit<SorobanResurrectConfig, 'timeout' | 'signal'>> & {
-    timeout?: number
-    signal?: AbortSignal
-  }
+  private config: ResolvedConfig
   private listeners: Record<string, Set<any>> = {}
   private failoverManager!: RpcFailoverManager
   private serverCache: Map<string, SorobanRpc.Server> = new Map()
@@ -1149,17 +1163,11 @@ export class SorobanResurrect {
     if (this.config.simulateOnly) {
       this.log('info', 'simulateOnly mode: skipping transaction submission')
       
-      let keysRestored = 0
-      try {
-        const restoreTx = TransactionBuilder.fromXDR(restoreXDR, this.config.networkPassphrase)
-        const sorobanRaw = 'sorobanData' in restoreTx ? (restoreTx as any).sorobanData : null
-        const sorobanDataSD = sorobanRaw as xdr.SorobanTransactionData | null
-        const resources = sorobanDataSD?.resources()
-        const footprint = resources?.footprint()
-        keysRestored = footprint ? extractKeysFromFootprint(footprint).all.length : 0
-      } catch {
+      const footprint = extractFootprintFromTransaction(restoreXDR, this.config.networkPassphrase)
+      if (!footprint) {
         this.log('warn', 'Could not parse restore transaction XDR for key counting')
       }
+      const keysRestored = footprint ? footprint.all.length : 0
 
       return {
         success: true,
@@ -1195,6 +1203,8 @@ export class SorobanResurrect {
         signTransaction,
         this.restoreAwaitsConfirmation(),
       )
+      // Never submit the original unless the restore landed successfully (#508).
+      await this.verifyRestorationConfirmed(restoreTxHash)
       this.log('info', `Restore transaction confirmed: ${restoreTxHash}`)
     } catch (err) {
       const resurrErr = new SorobanResurrectError(
@@ -1381,6 +1391,7 @@ export class SorobanResurrect {
     signTransaction: (xdr: string) => Promise<string>,
     awaitConfirmation = true,
   ): Promise<string> {
+    this.assertFeeWithinCeiling(txXDR)
     await this.ensureNetworkIdentityMatches()
 
     this.throwIfCancelled('signing')
@@ -1428,8 +1439,89 @@ export class SorobanResurrect {
    * Returns `null` when the URL scheme cannot be mapped to a WS scheme
    * (e.g. plain `http://` without `allowHttp`).
    */
-  private get redactedRpcUrl(): string | string[] {
-    return redactRpcUrls(this.config.rpcUrl)
+  /**
+   * Rejects a transaction whose total fee exceeds `maxFeeStroops` before the
+   * wallet is asked to sign it (#510). No ceiling applies when it is unset.
+   */
+  private assertFeeWithinCeiling(txXDR: string): void {
+    const ceiling = this.config.maxFeeStroops
+    if (ceiling === undefined) return
+    if (!/^\d+$/.test(ceiling)) {
+      throw new SorobanResurrectError(`maxFeeStroops must be a decimal string of stroops, got "${ceiling}"`, 'INVALID_XDR')
+    }
+    const fee = TransactionBuilder.fromXDR(txXDR, this.config.networkPassphrase).fee
+    if (BigInt(fee) > BigInt(ceiling)) {
+      throw new SorobanResurrectError(
+        `Transaction fee ${fee} stroops exceeds the configured ceiling of ${ceiling} stroops`,
+        'INVALID_XDR',
+      )
+    }
+  }
+
+  /**
+   * Checks that the wallet signed the transaction it was given, as the
+   * transaction's source account (#509). Runs before submission.
+   *
+   * Throws when the signed envelope is a different transaction (for example,
+   * its source account was swapped) or carries no valid signature from the
+   * source account.
+   */
+  private assertSignerMatchesSource(unsignedXDR: string, signedTx: Transaction): void {
+    const expected = new Transaction(unsignedXDR, this.config.networkPassphrase)
+    if (!expected.hash().equals(signedTx.hash())) {
+      throw new SorobanResurrectError(
+        'Wallet returned a different transaction than the one it was asked to sign',
+        'INVALID_XDR',
+      )
+    }
+
+    const source = Keypair.fromPublicKey(signedTx.source)
+    const txHash = signedTx.hash()
+    const signedBySource = signedTx.signatures.some(
+      sig => sig.hint().equals(source.signatureHint()) && source.verify(txHash, sig.signature()),
+    )
+    if (!signedBySource) {
+      throw new SorobanResurrectError(
+        `Transaction is not signed by its source account ${signedTx.source}`,
+        'INVALID_XDR',
+      )
+    }
+  }
+
+  /**
+   * Reads a restore transaction back from the network and requires it to have
+   * succeeded before the original transaction is submitted (#508).
+   */
+  private async verifyRestorationConfirmed(txHash: string): Promise<void> {
+    const result = await this.retryOnFailure(
+      () => this.withMethodTimeout('getTransaction', () => this.getServer().getTransaction(txHash)),
+      'getTransaction',
+    )
+    if (result.status !== SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+      throw new SorobanResurrectError(
+        `Restore transaction ${txHash} was not confirmed as SUCCESS (status: ${result.status}); the original transaction was not submitted`,
+        'RESTORE_FAILED',
+        undefined,
+        { txHash, rpcUrl: this.redactedRpcUrl },
+      )
+    }
+  }
+
+  /**
+   * Typed failure details for a restore batch (#511). Errors without a known
+   * batch error code are reported as `UNKNOWN` and not retryable.
+   */
+  private describeBatchFailure(err: unknown): { errorCode: RestoreBatchErrorCode; retryable: boolean } {
+    const code = err instanceof SorobanResurrectError ? err.code : undefined
+    const errorCode: RestoreBatchErrorCode =
+      code && KNOWN_BATCH_ERROR_CODES.has(code as RestoreBatchErrorCode) ? (code as RestoreBatchErrorCode) : 'UNKNOWN'
+    return { errorCode, retryable: errorCode !== 'UNKNOWN' && isRetryable(errorCode) }
+  }
+
+  /** Configured RPC URL(s) with credentials removed, safe for errors and logs. */
+  private get redactedRpcUrl(): string {
+    const redacted = redactRpcUrls(this.config.rpcUrl)
+    return Array.isArray(redacted) ? redacted.join(', ') : redacted
   }
 
   private getWebSocketUrl(): string | null {
@@ -1619,7 +1711,7 @@ export class SorobanResurrect {
         ))
       }
 
-      ws.onclose = (event: CloseEvent) => {
+      ws.onclose = (event: { code: number; reason?: string }) => {
         if (!settled) {
           finish(new SorobanResurrectError(
             `WebSocket closed unexpectedly (code ${event.code}) while waiting for ${hash}`,
@@ -2048,7 +2140,9 @@ export class SorobanResurrect {
     try {
       const network = await this.server.getNetwork()
       networkPassphrase = network.passphrase
-      protocolVersion = network.protocolVersion ?? null
+      // stellar-sdk types protocolVersion as a string; normalise to a number.
+      const version = Number(network.protocolVersion)
+      protocolVersion = Number.isFinite(version) ? version : null
     } catch (err) {
       networkError = err instanceof Error ? err.message : String(err)
     }

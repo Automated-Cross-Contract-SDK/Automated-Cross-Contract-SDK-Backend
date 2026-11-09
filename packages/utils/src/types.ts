@@ -10,4 +10,8 @@ export interface PollingOptions {
   intervalMs?: number
   /** Maximum number of polling attempts */
   maxAttempts?: number
+  /** Random extra delay (0..jitterMs) added to each interval to spread out retries */
+  jitterMs?: number
+  /** Stops polling with a PollingAbortedError when aborted */
+  signal?: AbortSignal
 }
