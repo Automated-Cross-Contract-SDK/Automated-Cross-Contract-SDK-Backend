@@ -28,7 +28,7 @@ jobs:
       - run: npm run build
 
       - name: Check bundle size budgets
-        uses: andresz1/size-limit-action@dd31dce7d85a7d0f0f0f0f0f0f0f0f0f0f0f0f0f # v1.8.0
+        uses: andresz1/size-limit-action@94bc357df29c36c8f8d50ea497c3e225c3c95d1d # v1.8.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           script: npm run size
