@@ -1,7 +1,7 @@
 {
   "name": "@soroban-resurrect/vue",
   "version": "0.1.0",
-  "description": "Vue composable & plugin for @soroban-resurrect/sdk — pre-flight state restoration for Soroban dApps",
+  "description": "Vue composable & plugin for @soroban-resurrect/sdk \u2014 pre-flight state restoration for Soroban dApps",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -40,5 +40,8 @@
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^12.0.0"
+  },
+  "devDependencies": {
+    "vue": "^3.4.0"
   }
 }

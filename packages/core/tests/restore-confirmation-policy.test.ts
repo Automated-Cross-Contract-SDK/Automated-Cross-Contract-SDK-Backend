@@ -1,18 +1,19 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Account, Keypair, SorobanRpc, xdr } from '@stellar/stellar-sdk'
-import { SorobanResurrect } from '../src/soroban-resurrect.js'
-import type { RestoreConfirmationPolicy } from '@soroban-resurrect/types'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Account, Keypair, SorobanRpc, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
+import { SorobanResurrect } from '../src/soroban-resurrect.js';
+import type { RestoreConfirmationPolicy } from '@soroban-resurrect/types';
 
-const RPC_URL = 'https://soroban-testnet.stellar.org'
-const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015'
-const SOURCE = Keypair.random().publicKey()
-const SUBMITTED_HASH = 'pending-restore-hash'
+const RPC_URL = 'https://soroban-testnet.stellar.org';
+const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
+const SOURCE_KEYPAIR = Keypair.random();
+const SOURCE = SOURCE_KEYPAIR.publicKey();
+const SUBMITTED_HASH = 'pending-restore-hash';
 
 function archivedKey(): { key: xdr.LedgerKey; keyBase64: string } {
   const key = xdr.LedgerKey.account(
     new xdr.LedgerKeyAccount({ accountId: Keypair.random().xdrPublicKey() }),
-  )
-  return { key, keyBase64: key.toXDR('base64') }
+  );
+  return { key, keyBase64: key.toXDR('base64') };
 }
 
 function createClient(policy?: RestoreConfirmationPolicy): SorobanResurrect {
@@ -22,60 +23,69 @@ function createClient(policy?: RestoreConfirmationPolicy): SorobanResurrect {
     pollIntervalMs: 10,
     maxPollAttempts: 3,
     ...(policy ? { restoreConfirmationPolicy: policy } : {}),
-  })
+  });
 }
 
 describe('restoreConfirmationPolicy', () => {
   beforeEach(() => {
+    // Skip the live RPC method probe; restore-methods.test.ts covers it.
+    vi.spyOn(SorobanResurrect.prototype as any, 'ensureRestoreMethodsAvailable').mockResolvedValue(
+      undefined,
+    );
     vi.spyOn(SorobanRpc.Server.prototype, 'getNetwork').mockResolvedValue({
       passphrase: NETWORK_PASSPHRASE,
-    } as never)
+    } as never);
     vi.spyOn(SorobanRpc.Server.prototype, 'getAccount').mockResolvedValue(
       new Account(SOURCE, '100') as never,
-    )
+    );
     vi.spyOn(SorobanRpc.Server.prototype, 'sendTransaction').mockResolvedValue({
       status: 'PENDING',
       hash: SUBMITTED_HASH,
-    } as never)
+    } as never);
     vi.spyOn(SorobanRpc.Server.prototype, 'getTransaction').mockResolvedValue({
       status: 'SUCCESS',
-    } as never)
-  })
+    } as never);
+  });
 
   afterEach(() => {
-    vi.restoreAllMocks()
-  })
+    vi.restoreAllMocks();
+  });
 
   async function executeOneBatch(client: SorobanResurrect) {
-    vi.spyOn(client, 'estimateRestoreFee').mockResolvedValue('100')
-    const batches = await client.buildRestoreTransactionBatches([archivedKey()], SOURCE)
-    return client.executeRestoreBatches(batches, async xdrIn => xdrIn)
+    vi.spyOn(client, 'estimateRestoreFee').mockResolvedValue('100');
+    const batches = await client.buildRestoreTransactionBatches([archivedKey()], SOURCE);
+    // Sign as the source account, as a real wallet would (#509 rejects unsigned txs).
+    return client.executeRestoreBatches(batches, async (xdrIn) => {
+      const tx = TransactionBuilder.fromXDR(xdrIn, NETWORK_PASSPHRASE);
+      tx.sign(SOURCE_KEYPAIR);
+      return tx.toXDR();
+    });
   }
 
   it('waits for on-chain confirmation by default', async () => {
-    const client = createClient()
+    const client = createClient();
 
-    const result = await executeOneBatch(client)
+    const result = await executeOneBatch(client);
 
-    expect(result.success).toBe(true)
-    expect(SorobanRpc.Server.prototype.getTransaction).toHaveBeenCalledWith(SUBMITTED_HASH)
-  })
+    expect(result.success).toBe(true);
+    expect(SorobanRpc.Server.prototype.getTransaction).toHaveBeenCalledWith(SUBMITTED_HASH);
+  });
 
   it('waits for confirmation when the policy is explicitly "confirmed"', async () => {
-    const client = createClient('confirmed')
+    const client = createClient('confirmed');
 
-    await executeOneBatch(client)
+    await executeOneBatch(client);
 
-    expect(SorobanRpc.Server.prototype.getTransaction).toHaveBeenCalledWith(SUBMITTED_HASH)
-  })
+    expect(SorobanRpc.Server.prototype.getTransaction).toHaveBeenCalledWith(SUBMITTED_HASH);
+  });
 
   it('returns once the RPC accepts the restore when the policy is "submitted"', async () => {
-    const client = createClient('submitted')
+    const client = createClient('submitted');
 
-    const result = await executeOneBatch(client)
+    const result = await executeOneBatch(client);
 
-    expect(result.success).toBe(true)
-    expect(result.batches[0].txHash).toBe(SUBMITTED_HASH)
-    expect(SorobanRpc.Server.prototype.getTransaction).not.toHaveBeenCalled()
-  })
-})
+    expect(result.success).toBe(true);
+    expect(result.batches[0].txHash).toBe(SUBMITTED_HASH);
+    expect(SorobanRpc.Server.prototype.getTransaction).not.toHaveBeenCalled();
+  });
+});

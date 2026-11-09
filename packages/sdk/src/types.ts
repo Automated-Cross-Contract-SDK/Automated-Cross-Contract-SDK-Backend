@@ -264,9 +264,6 @@ export interface RestoreAllBatchesResult {
   totalKeysRestored: number
   failedAtBatchIndex?: number
   error?: string
-}
-
-/** Outcome of concurrent batch execution; every batch is attempted. */
   /**
    * True when the failing batch was accepted by the network but its outcome
    * could not be confirmed (for example a confirmation timeout). The batch may
@@ -286,6 +283,7 @@ export interface RestoreExecutionReceipt {
   batches: RestoreBatchResult[]
 }
 
+/** Outcome of concurrent batch execution; every batch is attempted. */
 export interface ConcurrentRestoreResult {
   success: boolean
   batches: RestoreBatchResult[]
@@ -294,12 +292,6 @@ export interface ConcurrentRestoreResult {
   failedBatchIndices: number[]
   error?: string
   concurrencyUsed: number
-}
-
-  failedBatchCount?: number
-  failedBatchIndices?: number[]
-  error?: string
-  concurrencyUsed?: number
 }
 
 export type { RpcEndpointHealth } from '@soroban-resurrect/types'
@@ -392,8 +384,7 @@ export class SorobanResurrectError extends Error {
 
   constructor(
     message: string,
-    public code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR' | 'SUBMISSION_AMBIGUOUS',
-    public code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR' | 'ABORTED',
+    public code: 'SIMULATION_FAILED' | 'RESTORE_FAILED' | 'ORIGINAL_TX_FAILED' | 'NO_ACCOUNT' | 'INVALID_XDR' | 'ARCHIVE_DETECTION_FAILED' | 'NETWORK_ERROR' | 'SUBMISSION_AMBIGUOUS' | 'ABORTED',
     public cause?: unknown,
     context?: SorobanResurrectErrorContext,
   ) {
