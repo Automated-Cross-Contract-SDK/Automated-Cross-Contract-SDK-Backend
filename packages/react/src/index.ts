@@ -17,9 +17,6 @@ export type {
   SignOptions,
   TransactionRecord,
   RestoreProgress,
-  AdapterProgress,
-  AdapterError,
-  AdapterErrorCode,
 } from './types.js'
 export type { SorobanResurrectProviderProps } from './SorobanResurrectProvider.js'
 
@@ -42,5 +39,3 @@ export type {
   WalletContextValue,
 } from './wallet/types.js'
 
-export { useBatchedProgress } from './useBatchedProgress.js'
-export type { UseBatchedProgressOptions } from './useBatchedProgress.js'

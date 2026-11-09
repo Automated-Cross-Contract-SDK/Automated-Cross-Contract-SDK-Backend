@@ -245,6 +245,144 @@ Convert callback-based configuration to EventEmitter:
 - Batch configuration is available through settings
 
 ### Step 5: Remove Manual Retry Logic
-- Fin
+- Find any try/catch retry loops in your code
+- Replace with direct calls to SDK methods
+- Custom retry logic can be implemented via event listeners if needed
 
-/* … truncated 2877 chars — edit only what you need near the top … */
+### Step 6: Handle Fee-Bump Transaction Errors
+- Add error handling for `FeeBumpTransactionError`
+- Guide users to provide non-fee-bump transactions
+
+### Step 7: Test and Validate
+- Run your test suite
+- Verify all event listeners are functioning
+- Test error scenarios
+
+## Automated Codemods (jscodeshift)
+
+Run the provided codemods to automate parts of the migration:
+
+```bash
+npx jscodeshift --transform codemods/preflight-config.js src/
+npx jscodeshift --transform codemods/remove-manual-batching.js src/
+npx jscodeshift --transform codemods/remove-manual-retry.js src/
+```
+
+### Codemod 1: PreFlightConfig Callbacks → EventEmitter
+Automatically converts callback-based configuration to EventEmitter.
+
+### Codemod 2: Remove Manual Batching
+Removes manual batch creation loops.
+
+### Codemod 3: Remove Manual Retry Logic
+Removes try/catch retry patterns.
+
+## Before/After Code Examples
+
+### Example 1: Complete Restoration Service Integration
+
+**Before (v0.1.0):**
+```typescript
+import { RestorationService, PreFlightConfig } from '@soroban-resurrect/sdk';
+
+const preflight = new PreFlightConfig({
+  onSuccess: (result) => {
+    console.log('Preflight successful:', result);
+  },
+  onError: (error) => {
+    console.error('Preflight failed:', error);
+  }
+});
+
+const service = new RestorationService(preflight);
+
+// Manual batching
+const keys = getKeysToRestore();
+const batchSize = 25;
+for (let i = 0; i < keys.length; i += batchSize) {
+  const batch = keys.slice(i, i + batchSize);
+  
+  // Manual retry logic
+  let result;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      result = await service.restoreKeys(batch);
+      break;
+    } catch (error) {
+      if (attempt === 2) throw error;
+      await delay(Math.pow(2, attempt) * 1000);
+    }
+  }
+  
+  console.log('Restored batch:', result);
+}
+```
+
+**After (v1.0.0):**
+```typescript
+import { RestorationService, PreFlightConfig } from '@soroban-resurrect/sdk';
+
+const preflight = new PreFlightConfig();
+preflight.on('success', (result) => {
+  console.log('Preflight successful:', result);
+});
+preflight.on('error', (error) => {
+  console.error('Preflight failed:', error);
+});
+
+const service = new RestorationService(preflight);
+
+// Automatic batching and retry logic
+const keys = getKeysToRestore();
+const results = await service.restoreKeys(keys);
+console.log('Restored keys:', results);
+```
+
+### Example 2: Event Handling
+
+**Before (v0.1.0):**
+```typescript
+const preflight = new PreFlightConfig({
+  onSuccess: (result) => handleSuccess(result),
+  onError: (error) => handleError(error),
+  onWarning: (warning) => handleWarning(warning) // Not available
+});
+```
+
+**After (v1.0.0):**
+```typescript
+const preflight = new PreFlightConfig();
+preflight.on('success', (result) => handleSuccess(result));
+preflight.on('error', (error) => handleError(error));
+preflight.on('warning', (warning) => handleWarning(warning)); // Now available
+preflight.on('progress', (progress) => updateProgress(progress)); // New event type
+```
+
+## Testing Checklist After Migration
+
+- [ ] TypeScript compilation succeeds without errors
+- [ ] All unit tests pass
+- [ ] Integration tests with Soroban RPC pass
+- [ ] EventEmitter listeners fire correctly
+- [ ] Large key batches are processed correctly
+- [ ] Error handling works for fee-bump transactions
+- [ ] Retry logic activates on transient failures
+- [ ] No manual batching code remains in codebase
+- [ ] No manual retry patterns remain in codebase
+- [ ] ESM imports work in both Node.js and bundled environments
+- [ ] Performance is improved or equal to v0.1.0
+
+## Support and Questions
+
+If you encounter any issues during migration:
+
+1. Check this guide for your specific use case
+2. Review the ADRs in `docs/adr/` for design rationale
+3. Check the Troubleshooting guide for common errors
+4. Open an issue on GitHub with a minimal reproduction case
+
+## Timeline
+
+- **v1.0.0 released:** [Release date]
+- **v0.1.0 security updates:** Until [EOL date]
+- **v0.1.0 removed:** After [EOL date]

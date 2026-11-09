@@ -284,10 +284,6 @@ export function encodeLedgerKey(key: xdr.LedgerKey): string {
   return key.toXDR('base64')
 }
 
-/**
- * Parse a transaction XDR and extract footprint keys us
-
-/* … truncated 2537 chars — edit only what you need near the top … */
 
 /** Reads the Soroban footprint from a v1 or fee-bump envelope, or `null`. */
 function footprintFromEnvelope(envelope: xdr.TransactionEnvelope): FootprintKeys | null {

@@ -16,10 +16,16 @@ function keyId(key: ArchivedKey): string {
  * sibling is not part of `keys`.
  */
 function buildTtlSiblingLookup(keys: ArchivedKey[]): (key: ArchivedKey) => string | undefined {
+  if (!keys.some(key => key.keyType === 'ttlEntry')) return () => undefined
+
   const idByHash = new Map<string, string>()
   for (const key of keys) {
     if (key.keyType === 'ttlEntry') continue
-    idByHash.set(hash(key.key.toXDR()).toString('hex'), keyId(key))
+    try {
+      idByHash.set(hash(key.key.toXDR()).toString('hex'), keyId(key))
+    } catch {
+      // Not a decodable LedgerKey; it cannot be the sibling of a TTL entry.
+    }
   }
   return (key) => {
     if (key.keyType !== 'ttlEntry') return undefined
