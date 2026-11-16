@@ -46,7 +46,7 @@
     "@soroban-resurrect/types": "^0.1.0"
   },
   "devDependencies": {
-    "tsup": "^8.3.0",
+    "tsup": "^9.0.0",
     "typescript": "^5.5.0"
   },
   "publishConfig": {
