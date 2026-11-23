@@ -49,7 +49,7 @@
     "@soroban-resurrect/types": "^0.1.0",
     "@soroban-resurrect/errors": "^0.1.0",
     "@soroban-resurrect/footprint-parser": "^0.1.0",
-    "quick-lru": "^7.3.0"
+    "quick-lru": "^8.0.0"
   },
   "devDependencies": {
     "tsup": "^8.3.0",
